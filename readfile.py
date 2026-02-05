@@ -37,9 +37,28 @@ class ReadFile:
 
         # Use the provided XML data string instead of opening a file            
         root = ET.fromstring(xml_data)
-        alignments = root.findall('Alignment')
 
-        return alignments
+        # Extract stations where cant is defined
+        station = []
+        for km in root.iter():
+            if km.tag.endswith('CantStation'):
+                station.append(km.get('station')) 
+
+        # Extract cant values
+        cant = []
+        for mm in root.iter():
+            if mm.tag.endswith('CantStation'):
+                cant.append(mm.get('appliedCant'))
+            
+        # Convert to numpy arrays
+
+        station = np.array(station)
+        
+        cant = np.array(cant)
+
+        parsedXML = np.column_stack((station, cant))
+
+        return parsedXML
     
     def ParseXMLTTP(self, xml_data):
         

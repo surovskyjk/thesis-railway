@@ -13,7 +13,6 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 
-
 # Local imports
 
 import lang
@@ -21,9 +20,15 @@ import readfile
 
 class MplCanvas(FigureCanvas):
     # Canvas widget for Matplotlib plots
-    def __init__(self, parent=None, width=5, height=4, dpi=100):
+    def __init__(self, parent=None, width=5, height=6, dpi=100):
         self.fig = Figure(figsize=(width, height), dpi=dpi)
-        self.axes = self.fig.add_subplot(111)
+        
+        self.ax_speed = self.fig.add_subplot(211)
+
+        self.ax_cant = self.fig.add_subplot(212, sharex=self.ax_speed)
+
+        self.fig.subplots_adjust(hspace=0.3)
+
         super().__init__(self.fig)
 
 class MainWindow(QMainWindow):
@@ -197,16 +202,34 @@ class MainWindow(QMainWindow):
         self.textboxRawLandXML.setPlainText(file_content)
 
     def openParseLandXML(self):
-        file_content = self.openFile()
+        file_content = self.getFileContent()
         self.textboxRawLandXML.setPlainText(file_content)
-        alignments = readfile.ReadFile().ParseLandXML(file_content)
-        self.tableLandXML.setData(alignments)
-                
-
+        cantData = readfile.ReadFile().ParseLandXML(file_content)
+        self.tableLandXML.setData(cantData)
+        self.plotCant(cantData)
+               
     def openParseXMLTTP(self):
         file_content = self.getFileContent()
         self.textboxRawTTP.setPlainText(file_content)
         speed_limits = readfile.ReadFile().ParseXMLTTP(file_content)
         self.tableTTP.setData(speed_limits)
+        self.plotSpeedLimits(speed_limits)
+
+    def plotCant(self, matrix):
+        self.canvas.ax_cant.clear()
+        self.canvas.ax_cant.plot(matrix[:, 0], matrix[:, 1], marker='o', linestyle='-')
+        self.canvas.ax_cant.set_xlabel('Station (km)')
+        self.canvas.ax_cant.set_ylabel('Cant (mm)')
+        self.canvas.ax_cant.set_title('Cant vs Station')
+        self.canvas.draw()
+
+    def plotSpeedLimits(self, matrix):
+        self.canvas.ax_speed.clear()
+        self.canvas.ax_speed.step(matrix[:, 0], matrix[:, 1], where="post", marker='s', linestyle='-')
+        
+        self.canvas.ax_speed.set_xlabel('Station (km)')
+        self.canvas.ax_speed.set_ylabel('Speed Limit (km/h)')
+        self.canvas.ax_speed.set_title('Speed Limit vs Station')
+        self.canvas.draw()
         
 

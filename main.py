@@ -6,9 +6,11 @@ from gui import MainWindow
 
 def main():
     app = QApplication(sys.argv)
+    app.setStyle("Fusion")
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
+
 
 # Run the application
 
