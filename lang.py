@@ -19,7 +19,10 @@ DIC = {
         "cant_cant-def": "převýšení / nedostatek převýšení [mm]",
         "station": "staničení [km]",
         "speed_lim": "nejvyšší povolená rychlost [km/h]",
-        "app_title": "RailMATH - Optimalizace převýšení a výpočet jízdních dob"
+        "app_title": "COYPU - Clever Optimizer for Yielding of Potential and Utilization",
+        "error": "Chyba",
+        "no_file": "Nebyl vybrán žádný soubor nebo došlo k chybě při čtení souboru.",
+        "clean": "Vyčistit"
         },
 
      "en": {
@@ -39,7 +42,10 @@ DIC = {
         "cant_cant-def": "cant / cant deficiency [mm]",
         "station": "stationing [km]",
         "speed_lim": "speed limit [km/h]",
-         "app_title": "RailMATH - Cant Optimization and Travel Time Calculation"
+         "app_title": "COYPU - Clever Optimizer for Yielding of Potential and Utilization",
+         "error": "Error",
+         "no_file": "No file selected or error reading file.",
+         "clean": "Clean"
         },  
 
      "de": {
@@ -59,6 +65,9 @@ DIC = {
         "cant_cant-def": "Überhöhung / Überhöhungfehlbetrag [mm]",
         "station": "Streckenkilometer [km]",
         "speed_lim": "Geschwindigkeitsbegrenzung [km/h]",
-         "app_title": "RailMATH - Überhöhungsoptimierung und Fahrzeitberechnung"
+         "app_title": "COYPU - Clever Optimizer for Yielding of Potential and Utilization",
+         "error": "Fehler",
+         "no_file": "Kein Datei ausgewählt oder Fehler beim Lesen der Datei.",
+         "clean": "Daten löschen"
         }
     }

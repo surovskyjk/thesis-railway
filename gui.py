@@ -3,7 +3,7 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import (QTabWidget, QApplication, QMainWindow, QPushButton, QWidget,
                                 QHBoxLayout, QVBoxLayout, QLabel, QPlainTextEdit, QFileDialog, 
                                 QSplitter, QMessageBox)
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QIcon
 
 # pyqtgraph imports
 import pyqtgraph as pg
@@ -41,6 +41,7 @@ class MainWindow(QMainWindow):
         self.current_language = "en"
         lan = lang.DIC[self.current_language]
         self.setWindowTitle(lan["app_title"])
+        
 
         # Layouts - main grid
 
@@ -65,23 +66,30 @@ class MainWindow(QMainWindow):
         openFileAction.triggered.connect(self.openFile)
 
         openParseLandXMLAction = QAction(lan["open_parse_landxml"], self)
-        openParseXMLTTPAction = QAction(lan["open_parse_xmlttp"], self)
         self.fileMenu.addAction(openParseLandXMLAction)
-        self.fileMenu.addAction(openParseXMLTTPAction)
         openParseLandXMLAction.triggered.connect(self.openParseLandXML)
+
+        openParseXMLTTPAction = QAction(lan["open_parse_xmlttp"], self)      
+        self.fileMenu.addAction(openParseXMLTTPAction)
         openParseXMLTTPAction.triggered.connect(self.openParseXMLTTP)
+
+        cleanDataAction = QAction(lan["clean"], self)
+        self.fileMenu.addAction(cleanDataAction)
+        cleanDataAction.triggered.connect(self.cleanData)
 
         # Submenus - Language
         self.languageMenu = self.settingsMenu.addMenu(lan["language"])
+        
         langCZAction = QAction("Čeština", self)
-        langENAction = QAction("English", self)
-        langDEAction = QAction("Deutsch", self)
         self.languageMenu.addAction(langCZAction)
-        self.languageMenu.addAction(langENAction)
-        self.languageMenu.addAction(langDEAction)
-
         langCZAction.triggered.connect(lambda: self.change_language("cz"))
+
+        langENAction = QAction("English", self)
+        self.languageMenu.addAction(langENAction)
         langENAction.triggered.connect(lambda: self.change_language("en"))
+
+        langDEAction = QAction("Deutsch", self)
+        self.languageMenu.addAction(langDEAction)
         langDEAction.triggered.connect(lambda: self.change_language("de"))
 
         # Set layouts
@@ -98,8 +106,8 @@ class MainWindow(QMainWindow):
         self.textboxRawTTP.setReadOnly(True)
 
         # Parsed data tables
-        self.tableTTP = pg.TableWidget()
-        self.tableLandXML = pg.TableWidget()
+        self.tableTTP = pg.TableWidget(sortable = False)
+        self.tableLandXML = pg.TableWidget(sortable = False)
 
         # Layout and containers for XML tabs
         layoutXMLTTP_container = QWidget()
@@ -199,37 +207,67 @@ class MainWindow(QMainWindow):
     
     def openFile(self):
         file_content = self.getFileContent()
-        self.textboxRawLandXML.setPlainText(file_content)
+        if file_content is not None:
+            self.textboxRawLandXML.setPlainText(file_content)
+                
 
     def openParseLandXML(self):
         file_content = self.getFileContent()
-        self.textboxRawLandXML.setPlainText(file_content)
-        cantData = readfile.ReadFile().ParseLandXML(file_content)
-        self.tableLandXML.setData(cantData)
-        self.plotCant(cantData)
-               
+        if file_content is not None:
+            self.textboxRawLandXML.setPlainText(file_content)
+            LandXMLData = readfile.ReadFile().ParseLandXML(file_content)
+            self.tableLandXML.setData(LandXMLData)
+            self.plotCant(LandXMLData["stationCant"], LandXMLData["cant"])
+        else:
+            lan = lang.DIC[self.current_language]
+            err = QMessageBox()
+            err.setWindowTitle(lan["error"])
+            err.setText(lan["no_file"])
+            err.setIcon(QMessageBox.Icon.Warning)
+            err.exec()
+
     def openParseXMLTTP(self):
         file_content = self.getFileContent()
-        self.textboxRawTTP.setPlainText(file_content)
-        speed_limits = readfile.ReadFile().ParseXMLTTP(file_content)
-        self.tableTTP.setData(speed_limits)
-        self.plotSpeedLimits(speed_limits)
+        if file_content is not None:
+            self.textboxRawTTP.setPlainText(file_content)
+            XMLTTPData = readfile.ReadFile().ParseXMLTTP(file_content)
+            self.tableTTP.setData(XMLTTPData)
+            self.plotSpeedLimits(XMLTTPData["stationSpeedLimits"], XMLTTPData["speedLimits"])
+        else:
+            lan = lang.DIC[self.current_language]
+            err = QMessageBox()
+            err.setWindowTitle(lan["error"])
+            err.setText(lan["no_file"])
+            err.setIcon(QMessageBox.Icon.Warning)
+            err.exec()
 
-    def plotCant(self, matrix):
+    def plotCant(self, stationCant, cant):
         self.canvas.ax_cant.clear()
-        self.canvas.ax_cant.plot(matrix[:, 0], matrix[:, 1], marker='o', linestyle='-')
+        self.canvas.ax_cant.plot(stationCant, cant, marker='o', linestyle='-')
+        self.canvas.ax_cant.grid(True)
+        self.canvas.ax_cant.autoscale(enable=True, axis='x', tight=True)
         self.canvas.ax_cant.set_xlabel('Station (km)')
         self.canvas.ax_cant.set_ylabel('Cant (mm)')
         self.canvas.ax_cant.set_title('Cant vs Station')
         self.canvas.draw()
 
-    def plotSpeedLimits(self, matrix):
+    def plotSpeedLimits(self, stationSpeedLimits, speedLimits):
         self.canvas.ax_speed.clear()
-        self.canvas.ax_speed.step(matrix[:, 0], matrix[:, 1], where="post", marker='s', linestyle='-')
-        
+        self.canvas.ax_speed.step(stationSpeedLimits, speedLimits, where="post", marker='s', linestyle='-')
+        self.canvas.ax_speed.grid(True)
+        self.canvas.ax_speed.autoscale(enable=True, axis='x', tight=True)
         self.canvas.ax_speed.set_xlabel('Station (km)')
         self.canvas.ax_speed.set_ylabel('Speed Limit (km/h)')
         self.canvas.ax_speed.set_title('Speed Limit vs Station')
+        self.canvas.draw()
+
+    def cleanData(self):
+        self.textboxRawLandXML.setPlainText("")
+        self.textboxRawTTP.setPlainText("")
+        self.tableLandXML.setData({})
+        self.tableTTP.setData({})
+        self.canvas.ax_cant.clear()
+        self.canvas.ax_speed.clear()
         self.canvas.draw()
         
 

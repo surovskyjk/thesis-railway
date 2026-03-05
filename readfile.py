@@ -7,12 +7,7 @@ import re
 class ReadFile:
     def Read(self, filepath):
         try:
-            # filepath = filedialog.askopenfilename(initialdir="C:\\",
-            #                                 title="Open file",
-            #                                 filetypes= (("text files","*.txt"),
-            #                                             ("XML files","*.xml"),
-            #                                 ("all files","*.*")))
-            
+                        
             if filepath:
                 try:
                     with open(filepath, "r", encoding='utf-8-sig') as file:
@@ -27,22 +22,22 @@ class ReadFile:
                             
         except:
             return "Error while opening file"
-        # file.close()
+        
 
-    def ParseLandXML(self, xml_data):
+    def ParseLandXML(self, xml_data) -> dict:
 
         # Check if xml_data is provided
         if not xml_data:
-            return ["No data could be parsed"]
+            return {"error": "No data could be parsed / Keine Daten konnten geparst werden / Žádná data nelze zpracovat."}
 
         # Use the provided XML data string instead of opening a file            
         root = ET.fromstring(xml_data)
 
         # Extract stations where cant is defined
-        station = []
+        stationCant = []
         for km in root.iter():
             if km.tag.endswith('CantStation'):
-                station.append(km.get('station')) 
+                stationCant.append(km.get('station')) 
 
         # Extract cant values
         cant = []
@@ -50,21 +45,56 @@ class ReadFile:
             if mm.tag.endswith('CantStation'):
                 cant.append(mm.get('appliedCant'))
             
+
+        # Extract station, where horizontal alignment is being changed
+        stationHorizontal = []
+        for km in root.iter():
+            if km.tag.endswith('Line') or km.tag.endswith('Spiral') or km.tag.endswith('Curve'):
+                stationHorizontal.append(km.get('staStart'))
+
+        # Extract radius values
+        radius = []
+        for r in root.iter():
+            if r.tag.endswith('Line'):
+                radius.append('INF')  # Infinite radius for straight lines"
+            elif r.tag.endswith('Spiral'):
+                radius.append(r.get('radiusStart'))
+            elif r.tag.endswith('Curve'):
+                radius.append(r.get('radius'))
+
+        # Convert radius to curvature
+        curvature = []
+        for r in radius:
+            try:
+                curvature.append(1/float(r))
+            except:
+                curvature.append(0)
+
         # Convert to numpy arrays
 
-        station = np.array(station)
-        
-        cant = np.array(cant)
+        stationCant = np.array(stationCant, dtype=float)
+        cant = np.array(cant, dtype=float)
+        stationHorizontal = np.array(stationHorizontal, dtype=float)
+        radius = np.array(radius, dtype=float)
+        curvature = np.array(curvature, dtype=float)
 
-        parsedXML = np.column_stack((station, cant))
+        # Combine extracted data into a structured dictionary
+
+        parsedXML = {
+            "stationCant": stationCant,
+            "cant": cant,
+            "stationHorizontal": stationHorizontal,
+            "radius": radius,
+            "curvature": curvature
+        }
 
         return parsedXML
     
-    def ParseXMLTTP(self, xml_data):
+    def ParseXMLTTP(self, xml_data) -> dict:
         
         # Check if xml_data is provided
         if not xml_data:
-            return ["No data could be parsed"]
+            return {"error": "No data could be parsed / Keine Daten konnten geparst werden / Žádná data nelze zpracovat."}
 
         # Use the provided XML data string instead of opening a file            
         root = ET.fromstring(xml_data)
@@ -94,8 +124,16 @@ class ReadFile:
                 stations.pop(i)
                 speedLimits.pop(i)
 
-        stations = np.array(stations)
-        speedLimits = np.array(speedLimits)
-        parsedTTP = np.column_stack((stations, speedLimits))
+        # Convert to numpy arrays
+
+        stationSpeedLimits = np.array(stations, dtype=float)
+        speedLimits = np.array(speedLimits, dtype=float)
+        
+        # Combine extracted data into a structured dictionary
+
+        parsedTTP = {
+            "stationSpeedLimits": stationSpeedLimits,
+            "speedLimits": speedLimits
+        }
                 
         return parsedTTP
