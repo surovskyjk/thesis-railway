@@ -4,7 +4,7 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
 from gui import MainWindow
 
-# Relative path 
+# Relative path for icon resource, compatible with PyInstaller
 def get_resource_path(relative_path):
     base_path = getattr(sys, '_MEIPASS', Path(__file__).parent)
     return base_path / relative_path

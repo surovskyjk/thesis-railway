@@ -24,6 +24,10 @@ class ReadFile:
             return "Error while opening file"
         
 
+    def XMLType(self, xml_data):
+        return None
+
+
     def ParseLandXML(self, xml_data) -> dict:
 
         # Check if xml_data is provided
@@ -70,13 +74,38 @@ class ReadFile:
             except:
                 curvature.append(0)
 
+        # Vertical alignment data
+        
+        stationVertical = []
+        elevation = []
+
+        for vl in root.iter():
+            if vl.tag.endswith('PVI') or vl.tag.endswith('CircCurve'):
+
+                verticalData = vl.text
+
+                if verticalData:
+                    parts = verticalData.strip().split()
+
+                    if len(parts) >= 2:
+                        try:
+                            stationVertical.append((parts[0]))
+                            elevation.append((parts[1]))
+                        
+                        # Error handling, if conversion to float fails or entry is invalid, skip the entry
+                        except ValueError:
+                            continue
+
+
         # Convert to numpy arrays
 
-        stationCant = np.array(stationCant, dtype=float)
+        stationCant = np.array(stationCant, dtype=float)/1000  # Convert from m to km
         cant = np.array(cant, dtype=float)
-        stationHorizontal = np.array(stationHorizontal, dtype=float)
+        stationHorizontal = np.array(stationHorizontal, dtype=float)/1000  # Convert from m to km
         radius = np.array(radius, dtype=float)
         curvature = np.array(curvature, dtype=float)
+        stationVertical = np.array(stationVertical, dtype=float)/1000  # Convert from m to km
+        elevation = np.array(elevation, dtype=float)
 
         # Combine extracted data into a structured dictionary
 
@@ -85,7 +114,9 @@ class ReadFile:
             "cant": cant,
             "stationHorizontal": stationHorizontal,
             "radius": radius,
-            "curvature": curvature
+            "curvature": curvature,
+            "stationVertical": stationVertical,
+            "elevation": elevation
         }
 
         return parsedXML

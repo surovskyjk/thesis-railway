@@ -17,12 +17,20 @@ DIC = {
         "open_parse_landxml": "Otevřít a zpracovat LandXML",
         "open_parse_xmlttp": "Otevřít a zpracovat XML TTP",
         "cant_cant-def": "převýšení / nedostatek převýšení [mm]",
+        "cant": "převýšení [mm]",
         "station": "staničení [km]",
         "speed_lim": "nejvyšší povolená rychlost [km/h]",
         "app_title": "COYPU - Clever Optimizer for Yielding of Potential and Utilization",
         "error": "Chyba",
         "no_file": "Nebyl vybrán žádný soubor nebo došlo k chybě při čtení souboru.",
-        "clean": "Vyčistit"
+        "clean": "Vyčistit",
+        "radius": "poloměr oblouku [m]",
+         "curvature": "křivost [1/m]",
+         "elevation": "výška [m]",
+         "select_sections_for_ttp_title": "Vyberte úsek",
+         "select_sections_for_ttp_description": "Vyberte úseky, které chcete zahrnout do TTP.",
+         "crop_to_landxml": "Oříznout na rozsah LandXML dat"
+         
         },
 
      "en": {
@@ -40,12 +48,20 @@ DIC = {
         "open_parse_landxml": "Open and Parse LandXML",
         "open_parse_xmlttp": "Open and Parse XML TTP",
         "cant_cant-def": "cant / cant deficiency [mm]",
+         "cant": "cant [mm]",
         "station": "stationing [km]",
         "speed_lim": "speed limit [km/h]",
          "app_title": "COYPU - Clever Optimizer for Yielding of Potential and Utilization",
          "error": "Error",
          "no_file": "No file selected or error reading file.",
-         "clean": "Clean"
+         "clean": "Clean",
+         "radius": "radius [m]",
+         "curvature": "curvature [1/m]",
+         "elevation": "elevation [m]",
+         "select_sections_for_ttp_title": "Select Sections for TTP",
+         "select_sections_for_ttp_description": "Select the sections you want to include in the TTP.",
+         "crop_to_landxml": "Crop to LandXML data range"
+         
         },  
 
      "de": {
@@ -63,11 +79,18 @@ DIC = {
         "open_parse_landxml": "LandXML öffnen und verarbeiten",
         "open_parse_xmlttp": "XML TTP öffnen und verarbeiten",
         "cant_cant-def": "Überhöhung / Überhöhungfehlbetrag [mm]",
+         "cant": "Überhöhung [mm]",
         "station": "Streckenkilometer [km]",
         "speed_lim": "Geschwindigkeitsbegrenzung [km/h]",
          "app_title": "COYPU - Clever Optimizer for Yielding of Potential and Utilization",
          "error": "Fehler",
          "no_file": "Kein Datei ausgewählt oder Fehler beim Lesen der Datei.",
-         "clean": "Daten löschen"
+         "clean": "Daten löschen",
+         "radius": "Radius [m]",
+         "curvature": "Krümmung [1/m]",
+         "elevation": "Höhe [m]",
+         "select_sections_for_ttp_title": "Abschnitte für TTP auswählen",
+         "select_sections_for_ttp_description": "Wählen Sie die Abschnitte aus, die Sie in das TTP aufnehmen möchten.",
+         "crop_to_landxml": "Auf LandXML-Datenbereich zuschneiden"
         }
     }
