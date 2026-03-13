@@ -25,8 +25,17 @@ class ReadFile:
         
 
     def XMLType(self, xml_data):
-        return None
-
+        try:
+            root = ET.fromstring(xml_data)
+            
+            if "LandXML" in root.tag:
+                return 1
+            elif "ArrayOfTab6b" in root.tag:
+                return 2
+            else:
+                return 0
+        except:
+            return 0
 
     def ParseLandXML(self, xml_data) -> dict:
 

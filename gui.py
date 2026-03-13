@@ -2,7 +2,7 @@
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import (QTabWidget, QApplication, QMainWindow, QPushButton, QWidget,
                                 QHBoxLayout, QVBoxLayout, QLabel, QPlainTextEdit, QFileDialog, 
-                                QSplitter, QMessageBox)
+                                QSplitter, QMessageBox, QStyle, QToolBar)
 from PySide6.QtGui import QAction, QIcon
 
 # pyqtgraph imports
@@ -42,43 +42,76 @@ class MainWindow(QMainWindow):
 
         # Window settings
 
-        self.resize(QSize(800, 600))
+        self.resize(QSize(1000, 800))
         self.current_language = "en"
         lan = lang.DIC[self.current_language]
         self.setWindowTitle(lan["app_title"])
 
         # Layouts - main grid
 
-        layoutH = QHBoxLayout()
-        layoutV = QVBoxLayout()
-        layoutPlots = QVBoxLayout()
+        # layoutH = QHBoxLayout()
+        # layoutV = QVBoxLayout()
+        # layoutPlots = QVBoxLayout()
         layoutTabsXML = QTabWidget()
+        self.layoutTabsPlots = QTabWidget()
 
-        # Central widget
+        # Central widget - Main Splitter
 
-        widget = QWidget()
-        self.setCentralWidget(widget)
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter.addWidget(layoutTabsXML)
+        self.main_splitter.addWidget(self.layoutTabsPlots)
+        self.setCentralWidget(self.main_splitter)
+
+        self.main_splitter.setStretchFactor(0, 1)
+        self.main_splitter.setStretchFactor(1, 2)
 
         # Menu bar
         main_menu = self.menuBar()
         self.fileMenu = main_menu.addMenu(lan["file"])
+        self.cleanMenu = main_menu.addMenu(lan["clean"])
         self.settingsMenu = main_menu.addMenu(lan["settings"])
+        self.exitMenu = main_menu.addMenu(lan["exit"])
+        self.helpMenu = main_menu.addMenu(lan["help"])
 
-        # Submenus - File
+        # Submenu - Exit
+        exitAction = QAction(lan["exit"], self)
+        self.exitMenu.addAction(exitAction)
+        exitAction.triggered.connect(self.close)
+
+        # Submenu - File
         openFileAction = QAction(lan["open_file"], self)
         self.fileMenu.addAction(openFileAction)
         openFileAction.triggered.connect(self.openFile)
 
+        autodetect_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
+        autodetectXMLAction = QAction(autodetect_icon, lan["autodetect"], self)
+        self.fileMenu.addAction(autodetectXMLAction)
+        autodetectXMLAction.setStatusTip(lan["autodetect_tip"])
+        autodetectXMLAction.setShortcut("Ctrl+O")
+        autodetectXMLAction.triggered.connect(self.openAutodetectXML)
+
         openParseLandXMLAction = QAction(lan["open_parse_landxml"], self)
         self.fileMenu.addAction(openParseLandXMLAction)
-        openParseLandXMLAction.triggered.connect(self.openParseLandXML)
+        openParseLandXMLAction.triggered.connect(self.openLandXML)
 
         openParseXMLTTPAction = QAction(lan["open_parse_xmlttp"], self)      
         self.fileMenu.addAction(openParseXMLTTPAction)
-        openParseXMLTTPAction.triggered.connect(self.openParseXMLTTP)
+        self.fileMenu.addSeparator()
+        openParseXMLTTPAction.triggered.connect(self.openXMLTTP)
+        
 
-        cleanDataAction = QAction(lan["clean"], self)
-        self.fileMenu.addAction(cleanDataAction)
+        # Submenu - Clean
+
+        cleanTTPDataAction = QAction(lan["cleanTTP"], self)
+        self.cleanMenu.addAction(cleanTTPDataAction)
+        cleanTTPDataAction.triggered.connect(self.cleanTTPData)
+
+        cleanLandXMLDataAction = QAction(lan["cleanLandXML"], self)
+        self.cleanMenu.addAction(cleanLandXMLDataAction)
+        cleanLandXMLDataAction.triggered.connect(self.cleanLandXMLData)
+
+        cleanDataAction = QAction(lan["cleanAll"], self)
+        self.cleanMenu.addAction(cleanDataAction)
         cleanDataAction.triggered.connect(self.cleanData)
 
         # Submenus - Language
@@ -96,11 +129,12 @@ class MainWindow(QMainWindow):
         self.languageMenu.addAction(langDEAction)
         langDEAction.triggered.connect(lambda: self.change_language("de"))
 
-        # Set layouts
-        layoutH.addLayout(layoutV)
-        widget.setLayout(layoutH)
-        layoutV.addWidget(layoutTabsXML, stretch=1)
-        layoutH.addLayout(layoutPlots, stretch=2)
+        # Submenus - Help
+
+
+        # Create toolbar for the most common actions
+        toolbar = self.addToolBar(lan["toolbar"])
+        toolbar.addAction(autodetectXMLAction)
 
         # Widgets for XML parsing tabs
         # Raw data
@@ -118,7 +152,11 @@ class MainWindow(QMainWindow):
         layoutXMLLand_container = QWidget()
                 
         layoutXMLTTP = QVBoxLayout(layoutXMLTTP_container)
+        layoutXMLTTP.setContentsMargins(0,0,0,0)
+        layoutXMLTTP.setSpacing(0)
         layoutXMLLand = QVBoxLayout(layoutXMLLand_container)
+        layoutXMLLand.setContentsMargins(0,0,0,0)
+        layoutXMLLand.setSpacing(0)
 
         splitterXMLTTP = QSplitter(Qt.Orientation.Vertical)
         splitterXMLLand = QSplitter(Qt.Orientation.Vertical)
@@ -140,20 +178,20 @@ class MainWindow(QMainWindow):
         layoutXMLLandParsed.setContentsMargins(0,0,0,0)
         layoutXMLLandParsed.setSpacing(0)
 
-        self.labelXMLTTPRaw = QLabel("Raw Data")
-        self.labelXMLTTPParsed = QLabel("Parsed Data")
-        self.labelLandXMLRaw = QLabel("Raw Data")
-        self.labelLandXMLParsed = QLabel("Parsed Data")
+        self.labelXMLTTPRaw = QLabel(lan["raw_data"])
+        self.labelXMLTTPParsed = QLabel(lan["parsed_data"])
+        self.labelLandXMLRaw = QLabel(lan["raw_data"])
+        self.labelLandXMLParsed = QLabel(lan["parsed_data"])
 
-        layoutXMLTTPRaw.addWidget(self.labelXMLTTPRaw)
-        layoutXMLTTPRaw.addWidget(self.textboxRawTTP)
-        layoutXMLTTPParsed.addWidget(self.labelXMLTTPParsed)
-        layoutXMLTTPParsed.addWidget(self.tableTTP)
+        layoutXMLTTPRaw.addWidget(self.labelXMLTTPRaw, stretch=0)
+        layoutXMLTTPRaw.addWidget(self.textboxRawTTP, stretch=1)
+        layoutXMLTTPParsed.addWidget(self.labelXMLTTPParsed, stretch=0)
+        layoutXMLTTPParsed.addWidget(self.tableTTP, stretch=1)
     
-        layoutXMLLandRaw.addWidget(self.labelLandXMLRaw)
-        layoutXMLLandRaw.addWidget(self.textboxRawLandXML)
-        layoutXMLLandParsed.addWidget(self.labelLandXMLParsed)
-        layoutXMLLandParsed.addWidget(self.tableLandXML)
+        layoutXMLLandRaw.addWidget(self.labelLandXMLRaw, stretch=0)
+        layoutXMLLandRaw.addWidget(self.textboxRawLandXML, stretch=1)
+        layoutXMLLandParsed.addWidget(self.labelLandXMLParsed, stretch=0)
+        layoutXMLLandParsed.addWidget(self.tableLandXML, stretch=1)
         
 
         splitterXMLTTP.addWidget(layoutXMLTTPRaw_container)
@@ -169,12 +207,31 @@ class MainWindow(QMainWindow):
         layoutTabsXML.addTab(layoutXMLLand_container, "LandXML")
         layoutTabsXML.addTab(layoutXMLTTP_container, "XML TTP")
 
+        # Plot tabs (plots and map)
+        self.layoutTabsPlots_container = QWidget()
+        layoutPlots = QVBoxLayout(self.layoutTabsPlots_container)
+        layoutPlots.setContentsMargins(0,0,0,0)
+        layoutPlots.setSpacing(0)
+        self.layoutTabsPlotsMap_container = QWidget()
+        layoutPlotsMap = QVBoxLayout(self.layoutTabsPlotsMap_container)
+        layoutPlotsMap.setContentsMargins(0,0,0,0)
+        layoutPlotsMap.setSpacing(0)
 
         # Matplotlib canvas
         self.canvas = MplCanvas(self, width=5, height=4, dpi=100)
         layoutPlots.addWidget(self.canvas, stretch=3)
         self.toolbar = NavigationToolbar(self.canvas, self)
         layoutPlots.addWidget(self.toolbar)
+
+        # Tabs for plots
+        self.layoutTabsPlots.setTabPosition(QTabWidget.TabPosition.East)
+        self.layoutTabsPlots.addTab(self.layoutTabsPlots_container, lan["plots"])
+        
+        # Tab for map
+        self.layoutTabsPlots.addTab(self.layoutTabsPlotsMap_container,lan["map"])
+
+        
+
 
         # Change language function
     def change_language(self, lang_code):
@@ -188,12 +245,15 @@ class MainWindow(QMainWindow):
         self.settingsMenu.setTitle(lan["settings"])
         self.languageMenu.setTitle(lan["language"])
         self.fileMenu.actions()[0].setText(lan["open_file"])
-        self.fileMenu.actions()[1].setText(lan["open_parse_landxml"])
-        self.fileMenu.actions()[2].setText(lan["open_parse_xmlttp"])
+        self.fileMenu.actions()[1].setText(lan["autodetect"])
+        self.fileMenu.actions()[2].setText(lan["open_parse_landxml"])
+        self.fileMenu.actions()[3].setText(lan["open_parse_xmlttp"])
+
         self.labelXMLTTPRaw.setText(lan["raw_data"])
         self.labelXMLTTPParsed.setText(lan["parsed_data"])
         self.labelLandXMLRaw.setText(lan["raw_data"])
         self.labelLandXMLParsed.setText(lan["parsed_data"])
+        
 
 
     def getFileContent(self):
@@ -213,10 +273,35 @@ class MainWindow(QMainWindow):
         file_content = self.getFileContent()
         if file_content is not None:
             self.textboxRawLandXML.setPlainText(file_content)
-                
 
-    def openParseLandXML(self):
+    def openAutodetectXML(self):
         file_content = self.getFileContent()
+        if file_content is None:
+            return
+        
+        xml_type = readfile.ReadFile().XMLType(file_content)
+        if xml_type == 1:
+            self.parseLandXML(file_content)
+        elif xml_type == 2:
+            self.parseXMLTTP(file_content)
+        else:
+            lan = lang.DIC[self.current_language]
+            err = QMessageBox()
+            err.setWindowTitle(lan["error"])
+            err.setText(lan["unknown_xml_type"])
+            err.setIcon(QMessageBox.Icon.Warning)
+            err.exec()
+
+    def openLandXML(self):
+        file_content = self.getFileContent()
+        self.parseLandXML(file_content)
+
+    def openXMLTTP(self):
+        file_content = self.getFileContent()
+        self.parseXMLTTP(file_content)
+
+    def parseLandXML(self, file_content):
+        #file_content = self.getFileContent()
         if file_content is not None:
             self.textboxRawLandXML.setPlainText(file_content)
             LandXMLData = readfile.ReadFile().ParseLandXML(file_content)
@@ -232,8 +317,8 @@ class MainWindow(QMainWindow):
             err.setIcon(QMessageBox.Icon.Warning)
             err.exec()
 
-    def openParseXMLTTP(self):
-        file_content = self.getFileContent()
+    def parseXMLTTP(self, file_content):
+        #file_content = self.getFileContent()
         if file_content is not None:
             self.textboxRawTTP.setPlainText(file_content)
             XMLTTPData = readfile.ReadFile().ParseXMLTTP(file_content)
@@ -283,7 +368,12 @@ class MainWindow(QMainWindow):
                     stations = stations[croppedIndices]
                     speedLimits = speedLimits[croppedIndices]
 
-            self.tableTTP.setData(XMLTTPData)
+            TTPData = {
+                "stationSpeedLimits": stations,
+                "speedLimits": speedLimits
+            }
+
+            self.tableTTP.setData(TTPData)
             self.plotSpeedLimits(stations, speedLimits)
         else:
             lan = lang.DIC[self.current_language]
@@ -363,6 +453,22 @@ class MainWindow(QMainWindow):
         self.canvas.ax_cant.clear()
         self.canvas.ax_speed.clear()
         self.canvas.ax_curvature.clear()
+        self.canvas.draw()
+
+    def cleanTTPData(self):
+        self.textboxRawTTP.setPlainText("")
+        self.tableTTP.setData({})
+        while self.canvas.ax_speed.lines:
+            self.canvas.ax_speed.lines[0].remove()
+        self.canvas.draw()
+
+    def cleanLandXMLData(self):
+        self.textboxRawLandXML.setPlainText("")
+        self.tableLandXML.setData({})
+        while self.canvas.ax_cant.lines:
+            self.canvas.ax_cant.lines[0].remove()
+        while self.canvas.ax_curvature.lines:
+            self.canvas.ax_curvature.lines[0].remove()
         self.canvas.draw()
 
     def updateTableLandXML(self, data):
