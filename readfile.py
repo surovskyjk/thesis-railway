@@ -1,6 +1,8 @@
 import xml.etree.ElementTree as ET
 import numpy as np
 import re
+from pyproj import Transformer
+
 
 # Open file dialog
 
@@ -37,7 +39,7 @@ class ReadFile:
         except:
             return 0
 
-    def ParseLandXML(self, xml_data) -> dict:
+    def ParseLandXML(self, xml_data, epsgInput) -> dict:
 
         # Check if xml_data is provided
         if not xml_data:
@@ -105,8 +107,126 @@ class ReadFile:
                         except ValueError:
                             continue
 
+        # Extract start and end of elements coordinates
 
-        # Convert to numpy arrays
+        lineStartX = []
+        lineStartY = []
+        lineEndX = []
+        lineEndY = []
+
+        for lineCoordinates in root.iter():
+            if lineCoordinates.tag.endswith('Line'):
+                for coordinate in lineCoordinates:
+                    if coordinate.tag.endswith('Start'):
+                        coordinatesTemp = coordinate.text.strip().split()
+                        if len(coordinatesTemp) >= 2:
+                            lineStartX.append(coordinatesTemp[0])
+                            lineStartY.append(coordinatesTemp[1])
+                    elif coordinate.tag.endswith('End'):
+                        coordinatesTemp = coordinate.text.strip().split()
+                        if len(coordinatesTemp) >= 2:
+                            lineEndX.append(coordinatesTemp[0])
+                            lineEndY.append(coordinatesTemp[1])
+
+        spiralStartX = []
+        spiralStartY = []
+        spiralEndX = []
+        spiralEndY = []
+        spiralPIX = []
+        spiralPIY = []
+
+        for spiralCoordinates in root.iter():
+            if spiralCoordinates.tag.endswith('Spiral'):
+                for coordinate in spiralCoordinates:
+                    if coordinate.tag.endswith('Start'):
+                        coordinatesTemp = coordinate.text.strip().split()
+                        if len(coordinatesTemp) >= 2:
+                            spiralStartX.append(coordinatesTemp[0])
+                            spiralStartY.append(coordinatesTemp[1])    
+                    elif coordinate.tag.endswith('End'):
+                        coordinatesTemp = coordinate.text.strip().split()
+                        if len(coordinatesTemp) >= 2:
+                            spiralEndX.append(coordinatesTemp[0])
+                            spiralEndY.append(coordinatesTemp[1])
+                    elif coordinate.tag.endswith('PI'):
+                        coordinatesTemp = coordinate.text.strip().split()
+                        if len(coordinatesTemp) >= 2:
+                            spiralPIX.append(coordinatesTemp[0])
+                            spiralPIY.append(coordinatesTemp[1])
+
+        curveStartX = []
+        curveStartY = []
+        curveEndX = []
+        curveEndY = []
+        curveCenterX = []
+        curveCenterY = []
+
+        for curveCoordinates in root.iter():
+            if curveCoordinates.tag.endswith('Curve'):
+                for coordinate in curveCoordinates:
+                    if coordinate.tag.endswith('Start'):
+                        coordinatesTemp = coordinate.text.strip().split()
+                        if len(coordinatesTemp) >= 2:
+                            curveStartX.append(coordinatesTemp[0])
+                            curveStartY.append(coordinatesTemp[1])
+                    elif coordinate.tag.endswith('End'):
+                        coordinatesTemp = coordinate.text.strip().split()
+                        if len(coordinatesTemp) >= 2:
+                            curveEndX.append(coordinatesTemp[0])
+                            curveEndY.append(coordinatesTemp[1])
+                    elif coordinate.tag.endswith('Center'):
+                        coordinatesTemp = coordinate.text.strip().split()
+                        if len(coordinatesTemp) >= 2:
+                            curveCenterX.append(coordinatesTemp[0])
+                            curveCenterY.append(coordinatesTemp[1])
+                
+        # Parse spiral attributes
+
+        spiralStationStart = []
+        spiralLength = []
+        spiralRadiusStart = []
+        spiralRadiusEnd = []
+        spiralRot = []
+        spiralType = []
+        spiralConst = []
+
+        for spiral in root.iter():
+            if spiral.tag.endswith('Spiral'):
+                
+                spiralStationStart.append(spiral.get('staStart'))
+                
+                spiralLength.append(spiral.get('length'))
+                
+                spiralRadiusStart.append(spiral.get('radiusStart'))
+
+                spiralRadiusEnd.append(spiral.get('radiusEnd'))
+
+                spiralRot.append(spiral.get('rot'))
+
+                spiralType.append(spiral.get('spiType'))
+
+                spiralConst.append(spiral.get('consant'))
+
+
+        # Parse curve attributes
+
+        curveStationStart = []
+        curveRot = []
+        curveType = []
+        curveRadius = []
+
+        for curve in root.iter():
+            if curve.tag.endswith('Curve'):
+                
+                curveStationStart.append(curve.get('staStart'))
+
+                curveRot.append(curve.get('rot'))
+
+                curveType.append(curve.get('crvType'))
+
+                curveRadius.append(curve.get('radius'))
+        
+        # Convert to numpy arrays (float only)
 
         stationCant = np.array(stationCant, dtype=float)/1000  # Convert from m to km
         cant = np.array(cant, dtype=float)
@@ -115,6 +235,22 @@ class ReadFile:
         curvature = np.array(curvature, dtype=float)
         stationVertical = np.array(stationVertical, dtype=float)/1000  # Convert from m to km
         elevation = np.array(elevation, dtype=float)
+        lineStartX = np.array(lineStartX, dtype=float)
+        lineStartY = np.array(lineStartY, dtype=float)
+        lineEndX = np.array(lineEndX, dtype=float)
+        lineEndY = np.array(lineEndY, dtype=float)
+        spiralStartX = np.array(spiralStartX, dtype=float)
+        spiralStartY = np.array(spiralStartY, dtype=float)
+        spiralEndX = np.array(spiralEndX, dtype=float)
+        spiralEndY = np.array(spiralEndY, dtype=float)
+        spiralPIX = np.array(spiralPIX, dtype=float)
+        spiralPIY = np.array(spiralPIY, dtype=float)
+        curveStartX = np.array(curveStartX, dtype=float)
+        curveStartY = np.array(curveStartY, dtype=float)
+        curveEndX = np.array(curveEndX, dtype=float)
+        curveEndY = np.array(curveEndY, dtype=float)
+        curveCenterX = np.array(curveCenterX, dtype=float)
+        curveCenterY = np.array(curveCenterY, dtype=float)
 
         # Combine extracted data into a structured dictionary
 
@@ -125,8 +261,38 @@ class ReadFile:
             "radius": radius,
             "curvature": curvature,
             "stationVertical": stationVertical,
-            "elevation": elevation
+            "elevation": elevation,
+            "lineStartX": lineStartX,
+            "lineStartY": lineStartY,
+            "lineEndX": lineEndX,
+            "lineEndY": lineEndY,
+            "spiralStartX": spiralStartX,
+            "spiralStartY": spiralStartY,
+            "spiralEndX": spiralEndX,
+            "spiralEndY": spiralEndY,
+            "spiralPIX": spiralPIX,
+            "spiralPIY": spiralPIY,
+            "curveStartX": curveStartX,
+            "curveStartY": curveStartY,
+            "curveEndX": curveEndX,
+            "curveEndY": curveEndY,
+            "curveCenterX": curveCenterX,
+            "curveCenterY": curveCenterY,
+            "spiralStationStart": spiralStationStart,
+            "spiralLength": spiralLength,
+            "spiralRadiusStart": spiralRadiusStart,
+            "spiralRadiusEnd": spiralRadiusEnd,
+            "spiralRot": spiralRot,
+            "spiralType": spiralType,
+            "spiralConst": spiralConst,
+            "curveStationStart": curveStationStart,
+            "curveRot": curveRot,
+            "curveType": curveType,
+            "curveRadius": curveRadius
         }
+
+        # Add transformed coordinates and more points for transition curves
+        self.alignmentCoordinates(parsedXML, epsgInput, "EPSG:4326")
 
         return parsedXML
     
@@ -177,3 +343,34 @@ class ReadFile:
         }
                 
         return parsedTTP
+    
+    def alignmentCoordinates(self, parsedXML, epsgInput, epsgOutput):
+        transformer = Transformer.from_crs(epsgInput, epsgOutput, always_xy=True)
+
+        if epsgInput == "EPSG:5514":
+            eastingStart = -np.array(parsedXML["lineStartY"])
+            northingStart = -np.array(parsedXML["lineStartX"])
+            eastingEnd = -np.array(parsedXML["lineEndY"])
+            northingEnd = -np.array(parsedXML["lineEndX"])
+
+        else:
+            eastingStart = parsedXML["lineStartX"]
+            northingStart = parsedXML["lineStartY"]
+            eastingEnd = parsedXML["lineEndX"]
+            northingEnd = parsedXML["lineEndY"]
+
+        lonStart, latStart = transformer.transform(eastingStart, northingStart)
+        lonEnd, latEnd = transformer.transform(eastingEnd, northingEnd)
+
+        parsedXML["lineStartX"], parsedXML["lineStartY"] = lonStart, latStart
+        parsedXML["lineEndX"], parsedXML["lineEndY"] = lonEnd, latEnd
+
+        alignmentCoords = []
+
+        for i in range(len(latStart)):
+            alignmentCoords.append([latStart[i], lonStart[i]])
+            alignmentCoords.append([latEnd[i], lonEnd[i]])
+       
+        parsedXML["alignmentCoordinates"] = alignmentCoords
+        return parsedXML
+                                             

@@ -1,5 +1,4 @@
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QDialogButtonBox, QCheckBox, QLabel, QComboBox
-import lang
+from PySide6.QtWidgets import QDialog, QVBoxLayout, QDialogButtonBox, QCheckBox, QLabel, QComboBox, QFormLayout, QLineEdit
 
 class TTPSelectSectionDialog(QDialog):
     def __init__(self, sections, HasLandXML, lan, parent=None):
@@ -34,3 +33,36 @@ class TTPSelectSectionDialog(QDialog):
 
     def get_selected_section(self):
         return self.combobox.currentData(), self.LandXMLCheckBox.isChecked()
+
+class MapSettingsDialog(QDialog):
+    def __init__(self, currentEPSG, lan, parent=None):
+        super().__init__(parent)
+
+        self.setWindowTitle(lan["mapSettings"])
+
+        layout = QVBoxLayout(self)
+        formLayout = QFormLayout()
+
+        displayValue = currentEPSG
+        self.inputEPSG = QLineEdit(displayValue)
+
+        formLayout.addRow(QLabel(lan["currentEPSG"]), self.inputEPSG)
+        layout.addLayout(formLayout)
+
+        label = QLabel(lan["EPSGinfo"])
+        layout.addWidget(label)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        
+    def getEPSG(self):
+
+        epsg = self.inputEPSG.text().strip().upper()
+
+        if not epsg.startswith("EPSG:"):
+            return f"EPSG:{epsg}"
+        else:
+            return epsg

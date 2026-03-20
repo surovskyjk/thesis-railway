@@ -39,7 +39,11 @@ DIC = {
          "toolbar": "Nástroje",
          "help": "Nápověda",
          "plots": "Grafy",
-         "map": "Mapa"
+         "map": "Mapa",
+         "view": "&Zobrazit",
+         "mapSettings": "Nastavení mapy",
+         "currentEPSG": "Souřadnicový systém LandXML na vstupu",
+         "EPSGinfo": "Výstupní EPSG je vždy WGS-84 - EPSG:4326"
 
         },
 
@@ -80,7 +84,12 @@ DIC = {
          "toolbar": "Tools",
          "help": "Help",
          "plots": "Plots",
-         "map": "Map"
+         "map": "Map",
+         "view": "&View",
+         "mapSettings": "Map Settings",
+         "currentEPSG": "Input EPSG coordinate system of LandXML",
+         "EPSGinfo": "Output EPSG is always WGS-84 - EPSG:4326"
+
 
          
         },  
@@ -122,7 +131,15 @@ DIC = {
          "toolbar": "Werkzeuge",
          "help": "Hilfe",
          "plots": "Diagramme",
-         "map": "Karte"
+         "map": "Karte",
+         "view": "&Anzeigen",
+         "mapSettings": "Karteinstellungen",
+         "currentEPSG": "Eingabe-EPSG-Koordinatensystem von LandXML",
+         "EPSGinfo": "Ausgabe-EPSG ist immer WGS-84 - EPSG:4326"
+        
+        
+        
+        
         
 
         }

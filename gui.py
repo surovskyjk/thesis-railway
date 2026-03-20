@@ -22,6 +22,8 @@ import numpy as np
 import lang
 import readfile
 import gui_overlay
+from map_viewer import MapWidget
+
 
 class MplCanvas(FigureCanvas):
     # Canvas widget for Matplotlib plots
@@ -47,6 +49,9 @@ class MainWindow(QMainWindow):
         lan = lang.DIC[self.current_language]
         self.setWindowTitle(lan["app_title"])
 
+        # Other default settings
+        self.epsgInput = "EPSG:5514"
+
         # Layouts - main grid
 
         # layoutH = QHBoxLayout()
@@ -70,13 +75,9 @@ class MainWindow(QMainWindow):
         self.fileMenu = main_menu.addMenu(lan["file"])
         self.cleanMenu = main_menu.addMenu(lan["clean"])
         self.settingsMenu = main_menu.addMenu(lan["settings"])
+        self.viewMenu = main_menu.addMenu(lan["view"])
         self.exitMenu = main_menu.addMenu(lan["exit"])
         self.helpMenu = main_menu.addMenu(lan["help"])
-
-        # Submenu - Exit
-        exitAction = QAction(lan["exit"], self)
-        self.exitMenu.addAction(exitAction)
-        exitAction.triggered.connect(self.close)
 
         # Submenu - File
         openFileAction = QAction(lan["open_file"], self)
@@ -99,9 +100,7 @@ class MainWindow(QMainWindow):
         self.fileMenu.addSeparator()
         openParseXMLTTPAction.triggered.connect(self.openXMLTTP)
         
-
         # Submenu - Clean
-
         cleanTTPDataAction = QAction(lan["cleanTTP"], self)
         self.cleanMenu.addAction(cleanTTPDataAction)
         cleanTTPDataAction.triggered.connect(self.cleanTTPData)
@@ -114,9 +113,12 @@ class MainWindow(QMainWindow):
         self.cleanMenu.addAction(cleanDataAction)
         cleanDataAction.triggered.connect(self.cleanData)
 
-        # Submenus - Language
+        # Submenu - Settings
         self.languageMenu = self.settingsMenu.addMenu(lan["language"])
+        self.settingsMenu.addSeparator()
         
+
+        # Sub-submenu - Languages
         langCZAction = QAction("Čeština", self)
         self.languageMenu.addAction(langCZAction)
         langCZAction.triggered.connect(lambda: self.change_language("cz"))
@@ -129,6 +131,38 @@ class MainWindow(QMainWindow):
         self.languageMenu.addAction(langDEAction)
         langDEAction.triggered.connect(lambda: self.change_language("de"))
 
+        # Sub-submenu - Map settings
+        mapSettingsAction = QAction(lan["mapSettings"], self)
+        self.settingsMenu.addAction(mapSettingsAction)
+        mapSettingsAction.triggered.connect(self.openMapSettings)
+
+        # Submenu - View
+        self.toggleCantAction = QAction(lan["cant"], self)
+        self.toggleCantAction.setCheckable(True)
+        self.toggleCantAction.setChecked(True)
+        self.toggleCantAction.triggered.connect(self.toggleCantVisibility)
+        self.viewMenu.addAction(self.toggleCantAction)
+        
+        self.toggleCurvatureAction = QAction(lan["curvature"], self)
+        self.toggleCurvatureAction.setCheckable(True)
+        self.toggleCurvatureAction.setChecked(True)
+        self.toggleCurvatureAction.triggered.connect(self.toggleCurvatureVisibility)
+        self.viewMenu.addAction(self.toggleCurvatureAction)
+
+        self.viewMenu.addSeparator()
+
+        self.toggleSpeedAction = QAction(lan["speed_lim"], self)
+        self.toggleSpeedAction.setCheckable(True)
+        self.toggleSpeedAction.setChecked(True)
+        self.toggleSpeedAction.triggered.connect(self.toggleSpeedVisibility)
+        self.viewMenu.addAction(self.toggleSpeedAction)
+
+
+        # Submenu - Exit
+        exitAction = QAction(lan["exit"], self)
+        self.exitMenu.addAction(exitAction)
+        exitAction.triggered.connect(self.close)
+        
         # Submenus - Help
 
 
@@ -217,11 +251,15 @@ class MainWindow(QMainWindow):
         layoutPlotsMap.setContentsMargins(0,0,0,0)
         layoutPlotsMap.setSpacing(0)
 
-        # Matplotlib canvas
+        # Matplotlib canvas - add widget for plots
         self.canvas = MplCanvas(self, width=5, height=4, dpi=100)
         layoutPlots.addWidget(self.canvas, stretch=3)
         self.toolbar = NavigationToolbar(self.canvas, self)
         layoutPlots.addWidget(self.toolbar)
+
+        # Map - add widget for maps
+        self.mapWidget = MapWidget(self)
+        layoutPlotsMap.addWidget(self.mapWidget)
 
         # Tabs for plots
         self.layoutTabsPlots.setTabPosition(QTabWidget.TabPosition.East)
@@ -230,9 +268,6 @@ class MainWindow(QMainWindow):
         # Tab for map
         self.layoutTabsPlots.addTab(self.layoutTabsPlotsMap_container,lan["map"])
 
-        
-
-
         # Change language function
     def change_language(self, lang_code):
         self.current_language = lang_code
@@ -240,20 +275,64 @@ class MainWindow(QMainWindow):
 
     def update_texts(self):
         lan = lang.DIC[self.current_language]
+
+        # Update menu texts
         self.setWindowTitle(lan["app_title"])
         self.fileMenu.setTitle(lan["file"])
         self.settingsMenu.setTitle(lan["settings"])
         self.languageMenu.setTitle(lan["language"])
+        self.viewMenu.setTitle(lan["view"])
+        self.cleanMenu.setTitle(lan["clean"])
+        self.exitMenu.setTitle(lan["exit"])
+        self.helpMenu.setTitle(lan["help"])
+
         self.fileMenu.actions()[0].setText(lan["open_file"])
         self.fileMenu.actions()[1].setText(lan["autodetect"])
         self.fileMenu.actions()[2].setText(lan["open_parse_landxml"])
         self.fileMenu.actions()[3].setText(lan["open_parse_xmlttp"])
 
+        self.settingsMenu.actions()[2].setText(lan["mapSettings"])
+
+        self.viewMenu.actions()[0].setText(lan["cant"])
+        self.viewMenu.actions()[1].setText(lan["curvature"])
+        self.viewMenu.actions()[3].setText(lan["speed_lim"])
+
+        # Update labels
         self.labelXMLTTPRaw.setText(lan["raw_data"])
         self.labelXMLTTPParsed.setText(lan["parsed_data"])
         self.labelLandXMLRaw.setText(lan["raw_data"])
         self.labelLandXMLParsed.setText(lan["parsed_data"])
+
+        # Update matplotlib canvas
+
+        self.canvas.ax_speed.set_xlabel(lan["station"])
+        self.canvas.ax_speed.set_ylabel(lan["speed_lim"])
+        self.canvas.ax_speed.set_title(f'{lan["speed_lim"]} vs {lan["station"]}')
         
+        self.canvas.ax_cant.set_xlabel(lan["station"])
+        self.canvas.ax_cant.set_ylabel(lan["cant"])
+        self.canvas.ax_cant.set_title(f'{lan["cant"]} vs {lan["station"]}', loc = 'left')
+
+
+        self.canvas.ax_curvature.set_xlabel(lan["station"])
+        self.canvas.ax_curvature.set_ylabel(lan["curvature"])
+        self.canvas.ax_curvature.set_title(f'{lan["curvature"]} vs {lan["station"]}', loc ='right')
+
+
+        # Update legends
+        if self.canvas.ax_speed.lines:
+            self.canvas.ax_speed.lines[0].set_label(lan["speed_lim"])
+            self.canvas.ax_speed.legend()
+
+        if self.canvas.ax_cant.lines:
+            self.canvas.ax_cant.lines[0].set_label(lan["cant"])
+            self.canvas.ax_cant.legend(loc = 'upper left')
+
+        if self.canvas.ax_curvature.lines:
+            self.canvas.ax_curvature.lines[0].set_label(lan["curvature"])
+            self.canvas.ax_curvature.legend(loc = 'upper right')
+
+        self.canvas.draw()
 
 
     def getFileContent(self):
@@ -304,11 +383,14 @@ class MainWindow(QMainWindow):
         #file_content = self.getFileContent()
         if file_content is not None:
             self.textboxRawLandXML.setPlainText(file_content)
-            LandXMLData = readfile.ReadFile().ParseLandXML(file_content)
+            LandXMLData = readfile.ReadFile().ParseLandXML(file_content, self.epsgInput)
             self.updateTableLandXML(LandXMLData)
             self.LandXMLStations = LandXMLData["stationHorizontal"]
             self.plotCant(LandXMLData["stationCant"], LandXMLData["cant"])
             self.plotCurvature(LandXMLData["stationHorizontal"], LandXMLData["curvature"])
+            alignment = LandXMLData["alignmentCoordinates"]
+            self.mapWidget.drawAlignment(alignment)
+
         else:
             lan = lang.DIC[self.current_language]
             err = QMessageBox()
@@ -399,6 +481,7 @@ class MainWindow(QMainWindow):
         self.canvas.ax_cant.set_title(f'{lan["cant"]} vs {lan["station"]}', loc = 'left')
         self.canvas.ax_cant.tick_params(axis='y', labelcolor='tab:blue')
         self.canvas.ax_cant.legend(loc = 'upper left')
+        self.canvas.ax_cant.lines[0].set_visible(self.toggleCantAction.isChecked())
         self.canvas.draw()
 
     def plotCurvature(self, stationHorizontal, curvature):
@@ -426,6 +509,7 @@ class MainWindow(QMainWindow):
         self.canvas.ax_curvature.tick_params(axis='y', labelcolor='tab:orange')
         self.canvas.ax_curvature.yaxis.set_major_formatter(FuncFormatter(fractionFormatter))
         self.canvas.ax_curvature.legend(loc = 'upper right')
+        self.canvas.ax_curvature.lines[0].set_visible(self.toggleCurvatureAction.isChecked())
         self.canvas.draw()
 
     def plotSpeedLimits(self, stationSpeedLimits, speedLimits):
@@ -443,6 +527,7 @@ class MainWindow(QMainWindow):
         self.canvas.ax_speed.set_ylabel(lan["speed_lim"])
         self.canvas.ax_speed.set_title(f'{lan["speed_lim"]} vs {lan["station"]}')
         self.canvas.ax_speed.legend()
+        self.canvas.ax_speed.lines[0].set_visible(self.toggleSpeedAction.isChecked())
         self.canvas.draw()
 
     def cleanData(self):
@@ -471,6 +556,30 @@ class MainWindow(QMainWindow):
             self.canvas.ax_curvature.lines[0].remove()
         self.canvas.draw()
 
+    # Set visibility
+    def toggleCantVisibility(self, isChecked):
+        if self.canvas.ax_cant.lines:
+            self.canvas.ax_cant.lines[0].set_visible(isChecked)
+            self.canvas.draw()
+
+    def toggleCurvatureVisibility(self, isChecked):
+        if self.canvas.ax_curvature.lines:
+            self.canvas.ax_curvature.lines[0].set_visible(isChecked)
+            self.canvas.draw()
+
+    def toggleSpeedVisibility(self, isChecked):
+        if self.canvas.ax_speed.lines:
+            self.canvas.ax_speed.lines[0].set_visible(isChecked)
+            self.canvas.draw()
+
+    # Map settings
+    def openMapSettings(self):
+        lan = lang.DIC[self.current_language]
+        dialog = gui_overlay.MapSettingsDialog(self.epsgInput, lan, self)
+        if dialog.exec():
+            self.epsgInput = dialog.getEPSG()
+
+    # Update tables
     def updateTableLandXML(self, data):
         stations = np.concatenate((data["stationCant"], data["stationHorizontal"], data["stationVertical"]))
         uniqueStations = np.unique(stations)
