@@ -8,10 +8,8 @@ class MapWidget(QWidget):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
-        
         self.mapBrowser = QWebEngineView()
         self.layout.addWidget(self.mapBrowser)
-
         self.resetMap()
 
     def resetMap(self):
@@ -22,25 +20,16 @@ class MapWidget(QWidget):
         if len(alignment) < 2:
             return
         
-        startLat, startLon = alignment[0]
-
         # Bounds
         lats = [pt[0] for segment in alignment for pt in segment]
         lons = [pt[1] for segment in alignment for pt in segment]
         centerLat = (min(lats) + max(lats)) / 2
         centerLon = (min(lons) + max(lons)) / 2
-
         m = folium.Map(location=[centerLat, centerLon], zoom_start=11, tiles="CartoDB Positron")
-
         folium.PolyLine(alignment, color="red", weight=2.5, opacity=1, tooltip="Alignment").add_to(m)
-
-        
-
         self.renderMap(m)
-
 
     def renderMap(self, m):
         data = io.BytesIO()
         m.save(data, close_file=False)
         self.mapBrowser.setHtml(data.getvalue().decode())
-

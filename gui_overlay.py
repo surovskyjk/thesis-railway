@@ -1,5 +1,15 @@
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QDialogButtonBox, QCheckBox, QLabel, QListWidget, QListWidgetItem, QFormLayout, QLineEdit
+from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, 
+                               QDialogButtonBox, QCheckBox, QLabel, 
+                               QListWidget, QListWidgetItem, QFormLayout, 
+                               QLineEdit, QTableWidget, QTableWidgetItem, 
+                               QHeaderView, QFileDialog, QMessageBox, 
+                               QDialogButtonBox, QPushButton)
 from PySide6.QtCore import Qt
+
+import csv
+import readfile
+import io
+import default_values
 
 
 class TTPSelectSectionDialog(QDialog):
@@ -86,3 +96,344 @@ class MapSettingsDialog(QDialog):
             return f"EPSG:{epsg}"
         else:
             return epsg
+        
+class HelpDialog(QDialog):
+    def __init__(self, lan, parent=None):
+        super().__init__(parent)
+
+        self.setWindowTitle(lan["help"])
+
+        layout = QVBoxLayout(self)
+        label = QLabel(lan["help_text"])
+        layout.addWidget(label)
+
+class GeometrySettingsDialog(QDialog):
+    def __init__(self, lan, parent=None):
+        super().__init__(parent)
+
+        self.setWindowTitle(lan["geometrySettings"])
+        self.setMinimumSize(600,400)
+
+        layout = QVBoxLayout(self)
+        labelI = QLabel(lan["cant_def"])
+        layout.addWidget(labelI)
+        
+        # Table for editing settings and thresholds for cant deficiency
+        self.tableI = QTableWidget(0, 5)
+        self.tableI.setHorizontalHeaderLabels([
+            lan["Vbottom"],
+            lan["Vtop"],
+            lan["I_std"],
+            lan["I_lim"],
+            lan["I_max"]
+        ])
+
+        headerI = self.tableI.horizontalHeader()
+        headerI.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.tableI)
+
+        # Default values for I according to the Czech standard
+        defaultCZI = default_values.defVal["I"]
+
+        self.populateTable(self.tableI, defaultCZI)
+
+        toolbarLayoutI = QHBoxLayout()
+
+        self.btnImportI = QPushButton(lan["importCSV"])
+        self.btnImportI.clicked.connect(lambda: self.importCSV("tableI"))
+        toolbarLayoutI.addWidget(self.btnImportI)
+
+        self.btnExportI = QPushButton(lan["exportCSV"])
+        self.btnExportI.clicked.connect(lambda: self.exportCSV("tableI"))
+        toolbarLayoutI.addWidget(self.btnExportI)
+
+        layout.addLayout(toolbarLayoutI)
+
+        # Table for editing settings and thresholds for abrupt change of cant deficiency
+        labelDI = QLabel(lan["abrupt_cant_def"])
+        layout.addWidget(labelDI)
+
+        self.tableDI = QTableWidget(0, 5)
+        self.tableDI.setHorizontalHeaderLabels([
+            lan["Vbottom"],
+            lan["Vtop"],
+            lan["dI_std"],
+            lan["dI_lim"],
+            lan["dI_max"]
+        ])
+
+        headerDI = self.tableDI.horizontalHeader()
+        headerDI.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.tableDI)
+
+        # Default values for dI according to the Czech standard
+        defaultCZDI = default_values.defVal["dI"]
+
+        self.populateTable(self.tableDI, defaultCZDI)
+
+        toolbarLayoutDI = QHBoxLayout()
+
+        self.btnImportDI = QPushButton(lan["importCSV"])
+        self.btnImportDI.clicked.connect(lambda: self.importCSV("tableDI"))
+        toolbarLayoutDI.addWidget(self.btnImportDI)
+
+        self.btnExportDI = QPushButton(lan["exportCSV"])
+        self.btnExportDI.clicked.connect(lambda: self.exportCSV("tableDI"))
+        toolbarLayoutDI.addWidget(self.btnExportDI)
+
+        layout.addLayout(toolbarLayoutDI)
+
+        # Table for editing settings and thresholds for cant ramp gradient
+        labelNlin = QLabel(lan["nLin"])
+        layout.addWidget(labelNlin)
+
+        self.tableNlin = QTableWidget(0, 8)
+        self.tableNlin.setHorizontalHeaderLabels([
+            lan["Vbottom"],
+            lan["Vtop"],
+            lan["n_n"],
+            lan["n_n_abs"],
+            lan["n_lim"],
+            lan["n_lim_abs"],
+            lan["n_min"],
+            lan["n_min_abs"]
+        ])
+
+        headerNlin = self.tableNlin.horizontalHeader()
+        headerNlin.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.tableNlin)
+
+        # Default values for nLin according to the Czech standard
+        defaultCZnLin = default_values.defVal["nLin"]
+
+        self.populateTable(self.tableNlin, defaultCZnLin)
+
+        toolbarLayoutNlin = QHBoxLayout()
+
+        self.btnImportNlin = QPushButton(lan["importCSV"])
+        self.btnImportNlin.clicked.connect(lambda: self.importCSV("tableNlin"))
+        toolbarLayoutNlin.addWidget(self.btnImportNlin)
+
+        self.btnExportNlin = QPushButton(lan["exportCSV"])
+        self.btnExportNlin.clicked.connect(lambda: self.exportCSV("tableNlin"))
+        toolbarLayoutNlin.addWidget(self.btnExportNlin)
+
+        layout.addLayout(toolbarLayoutNlin)
+
+        # Table for editing settings and thresholds for cant deficiency gradient
+        labelNIlin = QLabel(lan["nILin"])
+        layout.addWidget(labelNIlin)
+
+        self.tableNIlin = QTableWidget(0, 5)
+        self.tableNIlin.setHorizontalHeaderLabels([
+            lan["Vbottom"],
+            lan["Vtop"],
+            lan["nI_n"],
+            lan["nI_lim"],
+            lan["nI_min"],
+        ])
+
+        headerNIlin = self.tableNIlin.horizontalHeader()
+        headerNIlin.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.tableNIlin)
+
+        # Default values for nILin according to the Czech standard
+        defaultCZnILin = default_values.defVal["nILin"]
+
+        self.populateTable(self.tableNIlin, defaultCZnILin)
+
+        toolbarLayoutNIlin = QHBoxLayout()
+
+        self.btnImportNIlin = QPushButton(lan["importCSV"])
+        self.btnImportNIlin.clicked.connect(lambda: self.importCSV("tableNIlin"))
+        toolbarLayoutNIlin.addWidget(self.btnImportNIlin)
+
+        self.btnExportNIlin = QPushButton(lan["exportCSV"])
+        self.btnExportNIlin.clicked.connect(lambda: self.exportCSV("tableNIlin"))
+        toolbarLayoutNIlin.addWidget(self.btnExportNIlin)
+
+        layout.addLayout(toolbarLayoutNIlin)
+
+        # Buttons for the whole dialog
+        self.buttonBox = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        
+        self.buttonBox.accepted.connect(self.accept)
+        self.buttonBox.rejected.connect(self.reject)
+        layout.addWidget(self.buttonBox)
+
+    def populateTable(self, tableWidget, data):
+        tableWidget.setRowCount(len(data))
+        for row, rowData in enumerate(data):
+            for col, value in enumerate(rowData):
+                item = QTableWidgetItem(str(value))
+                tableWidget.setItem(row, col, item)
+
+    def importCSV(self, table):
+        filepath, _ = QFileDialog.getOpenFileName(self, "Open File", "", "CSV Files (*.csv)")
+        
+        # If cancelled, do nothing
+        if not filepath:
+            return
+        
+        # Read file content 
+        file_content = readfile.ReadFile().Read(filepath)
+        
+        if file_content.startswith("Error"):
+            err = QMessageBox()
+            err.setWindowTitle("Error")
+            err.setIcon(QMessageBox.Icon.Warning)
+            err.exec()
+            return
+        
+        try:
+            # Reads CSV file content
+            reader = csv.reader(io.StringIO(file_content), delimiter=',')
+            # Skips header
+            next(reader, None)
+
+            if table == "tableI":
+                self.populateTable(self.tableI, reader)
+
+            elif table == "tableDI":
+                self.populateTable(self.tableDI, reader)
+
+            elif table == "tableNlin":
+                self.populateTable(self.tableNlin, reader)
+
+            elif table == "tableNIlin":
+                self.populateTable(self.tableNIlin, reader)
+            
+            else:
+                raise ValueError
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
+            return
+        
+    def exportCSV(self, table):
+        filepath, _ = QFileDialog.getSaveFileName(self, "Save File", "", "CSV Files (*.csv)")
+        
+        # If cancelled, do nothing
+        if not filepath:
+            return
+        
+        try:
+            if table == "tableI":
+                with open(filepath, "w", newline="") as file:
+                    writer = csv.writer(file)
+                    headers = ["Vbottom", "Vtop", "I_std", "I_lim", "I_max"]
+                    writer.writerow(headers)
+
+                    for row in range(self.tableI.rowCount()):
+                        rowData = [self.tableI.item(row, col).text() for col in range(self.tableI.columnCount())]
+                        writer.writerow(rowData)
+
+            elif table == "tableDI":
+                with open(filepath, "w", newline="") as file:
+                    writer = csv.writer(file)
+                    headers = ["Vbottom", "Vtop", "dI_std", "dI_lim", "dI_max"]
+                    writer.writerow(headers)
+
+                    for row in range(self.tableDI.rowCount()):
+                        rowData = [self.tableDI.item(row, col).text() for col in range(self.tableDI.columnCount())]
+                        writer.writerow(rowData)
+
+            elif table == "tableNlin":
+                with open(filepath, "w", newline="") as file:
+                    writer = csv.writer(file)
+                    headers = ["Vbottom", "Vtop", "n_n", "n_n_abs", "n_lim", "n_lim_abs", "n_min", "n_min_abs"]
+                    writer.writerow(headers)
+
+                    for row in range(self.tableNlin.rowCount()):
+                        rowData = [self.tableNlin.item(row, col).text() for col in range(self.tableNlin.columnCount())]
+                        writer.writerow(rowData)
+
+            elif table == "tableNIlin":
+                with open(filepath, "w", newline="") as file:
+                    writer = csv.writer(file)
+                    headers = ["Vbottom", "Vtop", "nI_n", "nI_lim", "nI_min"]
+                    writer.writerow(headers)
+
+                    for row in range(self.tableNIlin.rowCount()):
+                        rowData = [self.tableNIlin.item(row, col).text() for col in range(self.tableNIlin.columnCount())]
+                        writer.writerow(rowData)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
+            return
+        
+    def getSettings(self):
+        settingsData = {
+            "I": [],
+            "dI": [],
+            "nLin": [],
+            "nILin": [],
+        }
+
+        # Table I
+        for row in range(self.tableI.rowCount()):
+            try:
+                settingsData["I"].append({
+                    "Vbottom": float(self.tableI.item(row, 0).text()),
+                    "Vtop": float(self.tableI.item(row, 1).text()),
+                    "I_std": float(self.tableI.item(row, 2).text()),
+                    "I_lim": float(self.tableI.item(row, 3).text()),
+                    "I_max": float(self.tableI.item(row, 4).text())
+                })
+
+            except(ValueError, AttributeError):
+                continue
+        
+        # Table dI
+        for row in range(self.tableDI.rowCount()):
+            try:
+                settingsData["dI"].append({
+                    "Vbottom": float(self.tableDI.item(row, 0).text()),
+                    "Vtop": float(self.tableDI.item(row, 1).text()),
+                    "dI_std": float(self.tableDI.item(row, 2).text()),
+                    "dI_lim": float(self.tableDI.item(row, 3).text()),
+                    "dI_max": float(self.tableDI.item(row, 4).text())
+                })
+
+            except(ValueError, AttributeError):
+                continue
+
+        # Table nLin
+        for row in range(self.tableNlin.rowCount()):
+            try:
+                settingsData["dI"].append({
+                    "Vbottom": float(self.tableNlin.item(row, 0).text()),
+                    "Vtop": float(self.tableNlin.item(row, 1).text()),
+                    "n_n": float(self.tableNlin.item(row, 2).text()),
+                    "n_n_abs": float(self.tableNlin.item(row, 3).text()),
+                    "n_lim": float(self.tableNlin.item(row, 4).text()),
+                    "n_lim_abs": float(self.tableNlin.item(row, 5).text()),
+                    "n_min": float(self.tableNlin.item(row, 6).text()),
+                    "n_min_abs": float(self.tableNlin.item(row, 7).text())
+                })
+
+            except(ValueError, AttributeError):
+                continue
+        
+        # Table nILin
+        for row in range(self.tableNIlin.rowCount()):
+            try:
+                settingsData["dI"].append({
+                    "Vbottom": float(self.tableNIlin.item(row, 0).text()),
+                    "Vtop": float(self.tableNIlin.item(row, 1).text()),
+                    "nI_n": float(self.tableNIlin.item(row, 2).text()),
+                    "nI_lim": float(self.tableNIlin.item(row, 3).text()),
+                    "nI_min": float(self.tableNIlin.item(row, 4).text()),
+                })
+
+            except(ValueError, AttributeError):
+                continue
+
+        return settingsData
+    
+class DesignApproachDialog(QDialog):
+    def __init__(self, lan, parent=None):
+        super().__init__(parent)
+        self.lan = lan
+        
+    #def getDesignApproach

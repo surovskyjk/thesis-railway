@@ -18,12 +18,11 @@ from matplotlib.ticker import FuncFormatter
 import numpy as np
 
 # Local imports
-
 import lang
 import readfile
 import gui_overlay
 from map_viewer import MapWidget
-
+import default_values
 
 class MplCanvas(FigureCanvas):
     # Canvas widget for Matplotlib plots
@@ -43,7 +42,6 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window settings
-
         self.resize(QSize(1000, 800))
         self.current_language = "en"
         lan = lang.DIC[self.current_language]
@@ -59,16 +57,18 @@ class MainWindow(QMainWindow):
         self.plotCurvatureData = {}
         self.plotSpeedData = {}
 
-        # Layouts - main grid
+        # Import default values to dataStorage
+        self.dataStorage["settingsData"] = {}
+        self.dataStorage["settingsData"]["dI"] = default_values.defVal["dI"]
+        self.dataStorage["settingsData"]["I"] = default_values.defVal["I"]
+        self.dataStorage["settingsData"]["nLin"] = default_values.defVal["nLin"]
+        self.dataStorage["settingsData"]["nILin"] = default_values.defVal["nILin"]      
 
-        # layoutH = QHBoxLayout()
-        # layoutV = QVBoxLayout()
-        # layoutPlots = QVBoxLayout()
+        # Layouts - main grid
         layoutTabsXML = QTabWidget()
         self.layoutTabsPlots = QTabWidget()
 
         # Central widget - Main Splitter
-
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter.addWidget(layoutTabsXML)
         self.main_splitter.addWidget(self.layoutTabsPlots)
@@ -80,6 +80,7 @@ class MainWindow(QMainWindow):
         # Menu bar
         main_menu = self.menuBar()
         self.fileMenu = main_menu.addMenu(lan["file"])
+        self.calculateMenu = main_menu.addMenu(lan["calculate"])
         self.cleanMenu = main_menu.addMenu(lan["clean"])
         self.settingsMenu = main_menu.addMenu(lan["settings"])
         self.viewMenu = main_menu.addMenu(lan["view"])
@@ -107,6 +108,15 @@ class MainWindow(QMainWindow):
         self.fileMenu.addSeparator()
         openParseXMLTTPAction.triggered.connect(self.openXMLTTP)
         
+        # Submenu - Calculate
+        calculateGeometryAction = QAction(lan["calculate_geometry"], self)
+        self.calculateMenu.addAction(calculateGeometryAction)
+        calculateGeometryAction.triggered.connect(self.calculateGeometry)
+
+        calculateSpeedGeometryAction = QAction(lan["calculate_speed_geometry"], self)
+        self.calculateMenu.addAction(calculateSpeedGeometryAction)
+        calculateSpeedGeometryAction.triggered.connect(self.calculateSpeedGeometry)
+
         # Submenu - Clean
         cleanTTPDataAction = QAction(lan["cleanTTP"], self)
         self.cleanMenu.addAction(cleanTTPDataAction)
@@ -123,7 +133,6 @@ class MainWindow(QMainWindow):
         # Submenu - Settings
         self.languageMenu = self.settingsMenu.addMenu(lan["language"])
         self.settingsMenu.addSeparator()
-        
 
         # Sub-submenu - Languages
         langCZAction = QAction("Čeština", self)
@@ -143,6 +152,16 @@ class MainWindow(QMainWindow):
         self.settingsMenu.addAction(mapSettingsAction)
         mapSettingsAction.triggered.connect(self.openMapSettings)
 
+        # Sub-submenu - Geometry settings
+        geometrySettingsAction = QAction(lan["geometrySettings"], self)
+        self.settingsMenu.addAction(geometrySettingsAction)
+        geometrySettingsAction.triggered.connect(self.openGeometrySettings)
+
+        # Sub-submenu - Design approach selection
+        designApproachAction = QAction(lan["designApproach"], self)
+        self.settingsMenu.addAction(designApproachAction)
+        designApproachAction.triggered.connect(self.openDesignApproach)
+
         # Submenu - View
         self.toggleCantAction = QAction(lan["cant"], self)
         self.toggleCantAction.setCheckable(True)
@@ -156,17 +175,53 @@ class MainWindow(QMainWindow):
         self.toggleCantPossibleAction.triggered.connect(self.toggleCantPossibleVisibility)
         self.viewMenu.addAction(self.toggleCantPossibleAction)
 
-        self.toggleCantDefPossibleAction = QAction(lan["cant_def_possible"], self)
-        self.toggleCantDefPossibleAction.setCheckable(True)
-        self.toggleCantDefPossibleAction.setChecked(True)
-        self.toggleCantDefPossibleAction.triggered.connect(self.toggleCantDefPossibleVisibility)
-        self.viewMenu.addAction(self.toggleCantDefPossibleAction)
+        self.toggleCDef100Action = QAction(lan["cdef_100"], self)
+        self.toggleCDef100Action.setCheckable(True)
+        self.toggleCDef100Action.setChecked(True)
+        self.toggleCDef100Action.triggered.connect(self.toggleCDef100Visibility)
+        self.viewMenu.addAction(self.toggleCDef100Action)
 
-        self.toggleCantPlusCantDefPossibleAction = QAction(lan["cant_plus_cant_def_possible"], self)
-        self.toggleCantPlusCantDefPossibleAction.setCheckable(True)
-        self.toggleCantPlusCantDefPossibleAction.setChecked(True)
-        self.toggleCantPlusCantDefPossibleAction.triggered.connect(self.toggleCantPlusCantDefPossibleVisibility)
-        self.viewMenu.addAction(self.toggleCantPlusCantDefPossibleAction)
+        self.toggleCDef130Action = QAction(lan["cdef_130"], self)
+        self.toggleCDef130Action.setCheckable(True)
+        self.toggleCDef130Action.setChecked(True)
+        self.toggleCDef130Action.triggered.connect(self.toggleCDef130Visibility)
+        self.viewMenu.addAction(self.toggleCDef130Action)
+
+        self.toggleCDef150Action = QAction(lan["cdef_150"], self)
+        self.toggleCDef150Action.setCheckable(True)
+        self.toggleCDef150Action.setChecked(True)
+        self.toggleCDef150Action.triggered.connect(self.toggleCDef150Visibility)
+        self.viewMenu.addAction(self.toggleCDef150Action)
+
+        self.toggleCDefKAction = QAction(lan["cdef_K"], self)
+        self.toggleCDefKAction.setCheckable(True)
+        self.toggleCDefKAction.setChecked(True)
+        self.toggleCDefKAction.triggered.connect(self.toggleCDefKVisibility)
+        self.viewMenu.addAction(self.toggleCDefKAction)
+
+        self.toggleCantDef100Action = QAction(lan["cant_def_100"], self)
+        self.toggleCantDef100Action.setCheckable(True)
+        self.toggleCantDef100Action.setChecked(True)
+        self.toggleCantDef100Action.triggered.connect(self.toggleCantDef100Visibility)
+        self.viewMenu.addAction(self.toggleCantDef100Action)
+
+        self.toggleCantDef130Action = QAction(lan["cant_def_130"], self)
+        self.toggleCantDef130Action.setCheckable(True)
+        self.toggleCantDef130Action.setChecked(True)
+        self.toggleCantDef130Action.triggered.connect(self.toggleCantDef130Visibility)
+        self.viewMenu.addAction(self.toggleCantDef130Action)
+
+        self.toggleCantDef150Action = QAction(lan["cant_def_150"], self)
+        self.toggleCantDef150Action.setCheckable(True)
+        self.toggleCantDef150Action.setChecked(True)
+        self.toggleCantDef150Action.triggered.connect(self.toggleCantDef150Visibility)
+        self.viewMenu.addAction(self.toggleCantDef150Action)
+
+        self.toggleCantDefKAction = QAction(lan["cant_def_K"], self)
+        self.toggleCantDefKAction.setCheckable(True)
+        self.toggleCantDefKAction.setChecked(True)
+        self.toggleCantDefKAction.triggered.connect(self.toggleCantDefKVisibility)
+        self.viewMenu.addAction(self.toggleCantDefKAction)
         
         self.toggleCurvatureAction = QAction(lan["curvature"], self)
         self.toggleCurvatureAction.setCheckable(True)
@@ -218,7 +273,9 @@ class MainWindow(QMainWindow):
         exitAction.triggered.connect(self.close)
         
         # Submenus - Help
-
+        helpAction = QAction(lan["help"], self)
+        self.helpMenu.addAction(helpAction)
+        helpAction.triggered.connect(self.openHelp)
 
         # Create toolbar for the most common actions
         toolbar = self.addToolBar(lan["toolbar"])
@@ -280,7 +337,6 @@ class MainWindow(QMainWindow):
         layoutXMLLandRaw.addWidget(self.textboxRawLandXML, stretch=1)
         layoutXMLLandParsed.addWidget(self.labelLandXMLParsed, stretch=0)
         layoutXMLLandParsed.addWidget(self.tableLandXML, stretch=1)
-        
 
         splitterXMLTTP.addWidget(layoutXMLTTPRaw_container)
         splitterXMLTTP.addWidget(layoutXMLTTPParsed_container)
@@ -346,18 +402,33 @@ class MainWindow(QMainWindow):
         self.fileMenu.actions()[3].setText(lan["open_parse_xmlttp"])
 
         self.settingsMenu.actions()[2].setText(lan["mapSettings"])
+        self.settingsMenu.actions()[3].setText(lan["geometrySettings"])
 
         self.viewMenu.actions()[0].setText(lan["cant"])
         self.viewMenu.actions()[1].setText(lan["cant_possible"])
-        self.viewMenu.actions()[2].setText(lan["cant_def_possible"])
-        self.viewMenu.actions()[3].setText(lan["cant_plus_cant_def_possible"])
-        self.viewMenu.actions()[4].setText(lan["curvature"])
-        self.viewMenu.actions()[5].setText(lan["curvature_new"])
-        self.viewMenu.actions()[7].setText(lan["speed_lim"])
-        self.viewMenu.actions()[8].setText(lan["speed_lim_100"])
-        self.viewMenu.actions()[9].setText(lan["speed_lim_130"])
-        self.viewMenu.actions()[10].setText(lan["speed_lim_150"])
-        self.viewMenu.actions()[11].setText(lan["speed_lim_K"])
+        self.viewMenu.actions()[2].setText(lan["cdef_100"])
+        self.viewMenu.actions()[3].setText(lan["cdef_130"])
+        self.viewMenu.actions()[4].setText(lan["cdef_150"])
+        self.viewMenu.actions()[5].setText(lan["cdef_K"])
+        self.viewMenu.actions()[6].setText(lan["cant_def_100"])
+        self.viewMenu.actions()[7].setText(lan["cant_def_130"])
+        self.viewMenu.actions()[8].setText(lan["cant_def_150"])
+        self.viewMenu.actions()[9].setText(lan["cant_def_K"])
+        self.viewMenu.actions()[11].setText(lan["curvature"])
+        self.viewMenu.actions()[12].setText(lan["curvature_new"])
+        self.viewMenu.actions()[13].setText(lan["speed_lim"])
+        self.viewMenu.actions()[14].setText(lan["speed_lim_100"])
+        self.viewMenu.actions()[15].setText(lan["speed_lim_130"])
+        self.viewMenu.actions()[16].setText(lan["speed_lim_150"])
+        self.viewMenu.actions()[17].setText(lan["speed_lim_K"])
+
+        self.cleanMenu.actions()[0].setText(lan["cleanTTP"])
+        self.cleanMenu.actions()[1].setText(lan["cleanLandXML"])
+        self.cleanMenu.actions()[2].setText(lan["cleanAll"])
+
+        self.exitMenu.actions()[0].setText(lan["exit"])
+
+        self.helpMenu.actions()[0].setText(lan["help"])
 
 
         # Update labels
@@ -610,17 +681,53 @@ class MainWindow(QMainWindow):
             self.plotCantData["cantPossible"] = line
             line.set_visible(self.toggleCantPossibleAction.isChecked())
 
-        cantDefPossible = self.dataStorage.get("cantDefPossible")
-        if (cantDefPossible is not None and len(cantDefPossible)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvas.ax_cant.plot(stationCantPossible, cantDefPossible, marker='o', linestyle='-', color='tab:green', label=lan["cant_def_possible"])
-            self.plotCantData["cantDefPossible"] = line
-            line.set_visible(self.toggleCantDefPossibleAction.isChecked())
+        cDef100 = self.dataStorage.get("cDef100")
+        if (cDef100 is not None and len(cDef100)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
+            line, = self.canvas.ax_cant.plot(stationCantPossible, cDef100, marker='o', linestyle='-', color='tab:green', label=lan["cdef_100"])
+            self.plotCantData["cDef100"] = line
+            line.set_visible(self.toggleCDef100Action.isChecked())
 
-        cantPlusCantDefPossible = self.dataStorage.get("cantPlusCantDefPossible")
-        if (cantPlusCantDefPossible is not None and len(cantPlusCantDefPossible)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvas.ax_cant.plot(stationCantPossible, cantPlusCantDefPossible, marker='o', linestyle='-', color='tab:red', label=lan["cant_plus_cant_def_possible"])
-            self.plotCantData["cantPlusCantDefPossible"] = line
-            line.set_visible(self.toggleCantPlusCantDefPossibleAction.isChecked())
+        cDef130 = self.dataStorage.get("cDef130")
+        if (cDef130 is not None and len(cDef130)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
+            line, = self.canvas.ax_cant.plot(stationCantPossible, cDef130, marker='o', linestyle='-', color='tab:green', label=lan["cdef_130"])
+            self.plotCantData["cDef130"] = line
+            line.set_visible(self.toggleCDef130Action.isChecked())
+
+        cDef150 = self.dataStorage.get("cDef150")
+        if (cDef150 is not None and len(cDef150)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
+            line, = self.canvas.ax_cant.plot(stationCantPossible, cDef150, marker='o', linestyle='-', color='tab:green', label=lan["cdef_150"])
+            self.plotCantData["cDef150"] = line
+            line.set_visible(self.toggleCDef150Action.isChecked())
+
+        cDefK = self.dataStorage.get("cDefK")
+        if (cDefK is not None and len(cDefK)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
+            line, = self.canvas.ax_cant.plot(stationCantPossible, cDefK, marker='o', linestyle='-', color='tab:green', label=lan["cdef_K"])
+            self.plotCantData["cDefK"] = line
+            line.set_visible(self.toggleCDefKAction.isChecked())
+
+        cantDef100 = self.dataStorage.get("cantDef100")
+        if (cantDef100 is not None and len(cantDef100)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
+            line, = self.canvas.ax_cant.plot(stationCantPossible, cantDef100, marker='o', linestyle='-', color='tab:red', label=lan["cant_def_100"])
+            self.plotCantData["cantDef100"] = line
+            line.set_visible(self.toggleCantDef100Action.isChecked())
+
+        cantDef130 = self.dataStorage.get("cantDef130")
+        if (cantDef130 is not None and len(cantDef130)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
+            line, = self.canvas.ax_cant.plot(stationCantPossible, cantDef130, marker='o', linestyle='-', color='tab:red', label=lan["cant_def_130"])
+            self.plotCantData["cantDef130"] = line
+            line.set_visible(self.toggleCantDef130Action.isChecked())
+
+        cantDef150 = self.dataStorage.get("cantDef150")
+        if (cantDef150 is not None and len(cantDef150)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
+            line, = self.canvas.ax_cant.plot(stationCantPossible, cantDef150, marker='o', linestyle='-', color='tab:red', label=lan["cant_def_150"])
+            self.plotCantData["cantDef150"] = line
+            line.set_visible(self.toggleCantDef150Action.isChecked())
+
+        cantDefK = self.dataStorage.get("cantDefK")
+        if (cantDefK is not None and len(cantDefK)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
+            line, = self.canvas.ax_cant.plot(stationCantPossible, cantDefK, marker='o', linestyle='-', color='tab:red', label=lan["cant_def_K"])
+            self.plotCantData["cantDefK"] = line
+            line.set_visible(self.toggleCantDefKAction.isChecked())
 
         self.canvas.ax_cant.grid(True)
         self.canvas.ax_cant.autoscale(enable=True, axis='x', tight=True)
@@ -729,7 +836,6 @@ class MainWindow(QMainWindow):
         self.canvas.ax_speed.legend()
         self.canvas.draw()
 
-
     def cleanData(self):
         self.textboxRawLandXML.setPlainText("")
         self.textboxRawTTP.setPlainText("")
@@ -744,7 +850,6 @@ class MainWindow(QMainWindow):
         self.plotCurvatureData.clear()
         self.canvas.draw()
 
-
     def cleanTTPData(self):
         self.textboxRawTTP.setPlainText("")
         self.tableTTP.setData({})
@@ -754,7 +859,6 @@ class MainWindow(QMainWindow):
         self.dataStorage["speedLimits"] = []
         self.plotSpeedData.clear()
         self.canvas.draw()
-
 
     def cleanLandXMLData(self):
         self.textboxRawLandXML.setPlainText("")
@@ -772,19 +876,49 @@ class MainWindow(QMainWindow):
             self.plotCantData["cant"].set_visible(isChecked)
             self.canvas.draw()
 
-    def toggleCantDefPossibleVisibility(self, isChecked):
-        if 'cantDefPossible' in self.plotCantData:
-            self.plotCantData["cantDefPossible"].set_visible(isChecked)
-            self.canvas.draw()
-
     def toggleCantPossibleVisibility(self, isChecked):
         if 'cantPossible' in self.plotCantData:
             self.plotCantData["cantPossible"].set_visible(isChecked)
             self.canvas.draw()
 
-    def toggleCantPlusCantDefPossibleVisibility(self, isChecked):
-        if 'cantPlusCantDefPossible' in self.plotCantData:
-            self.plotCantData["cantPlusCantDefPossible"].set_visible(isChecked)
+    def toggleCDef100Visibility(self, isChecked):
+        if 'cDef100' in self.plotCantData:
+            self.plotCantData["cDef100"].set_visible(isChecked)
+            self.canvas.draw()
+
+    def toggleCDef130Visibility(self, isChecked):
+        if 'cDef130' in self.plotCantData:
+            self.plotCantData["cDef130"].set_visible(isChecked)
+            self.canvas.draw()
+
+    def toggleCDef150Visibility(self, isChecked):
+        if 'cDef150' in self.plotCantData:
+            self.plotCantData["cDef150"].set_visible(isChecked)
+            self.canvas.draw()
+
+    def toggleCDefKVisibility(self, isChecked):
+        if 'cDefK' in self.plotCantData:
+            self.plotCantData["cDefK"].set_visible(isChecked)
+            self.canvas.draw()
+
+    def toggleCantDef100Visibility(self, isChecked):
+        if 'cantDef100' in self.plotCantData:
+            self.plotCantData["cantDef100"].set_visible(isChecked)
+            self.canvas.draw()
+
+    def toggleCantDef130Visibility(self, isChecked):
+        if 'cantDef100' in self.plotCantData:
+            self.plotCantData["cantDef130"].set_visible(isChecked)
+            self.canvas.draw()
+
+    def toggleCantDef150Visibility(self, isChecked):
+        if 'cantDef150' in self.plotCantData:
+            self.plotCantData["cantDef150"].set_visible(isChecked)
+            self.canvas.draw()
+
+    def toggleCantDefKVisibility(self, isChecked):
+        if 'cantDefK' in self.plotCantData:
+            self.plotCantData["cantDefK"].set_visible(isChecked)
             self.canvas.draw()
 
     def toggleCurvatureVisibility(self, isChecked):
@@ -828,6 +962,28 @@ class MainWindow(QMainWindow):
         dialog = gui_overlay.MapSettingsDialog(self.epsgInput, lan, self)
         if dialog.exec():
             self.epsgInput = dialog.getEPSG()
+
+    # Geometry settings
+    def openGeometrySettings(self):
+        lan = lang.DIC[self.current_language]
+
+        dialog = gui_overlay.GeometrySettingsDialog(lan, self)
+        if dialog.exec():
+            self.dataStorage["settingsData"] = dialog.getSettings()
+
+    # Design approach settings
+    def designApproachSettings(self):
+        lan = lang.DIC[self.current_language]
+
+        dialog = gui_overlay.DesignApproachDialog(lan, self)
+        if dialog.exec():
+            self.dataStorage["designApproach"] = dialog.getDesignApproach()
+
+    # Help
+    def openHelp(self):
+        lan = lang.DIC[self.current_language]
+        dialog = gui_overlay.HelpDialog(lan, self)
+        dialog.exec()
 
     # Update tables
     def updateTableLandXML(self, data):
@@ -881,9 +1037,3 @@ class MainWindow(QMainWindow):
         })
 
         return sections
-
-
-
-    
-        
-

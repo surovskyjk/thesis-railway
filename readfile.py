@@ -480,8 +480,3 @@ class ReadFile:
         y = [spiral.Y(t) for t in spiralLinspace]
 
         return x, y
-   
-
-
-
-        
