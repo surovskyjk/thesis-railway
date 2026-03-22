@@ -10,7 +10,6 @@ def get_resource_path(relative_path):
     return base_path / relative_path
 
 # Main Function
-
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")

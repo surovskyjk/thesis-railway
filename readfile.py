@@ -2,6 +2,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import re
 from pyproj import Transformer
+from pyclothoids import Clothoid
 
 
 # Open file dialog
@@ -251,6 +252,13 @@ class ReadFile:
         curveEndY = np.array(curveEndY, dtype=float)
         curveCenterX = np.array(curveCenterX, dtype=float)
         curveCenterY = np.array(curveCenterY, dtype=float)
+        spiralStationStart = np.array(spiralStationStart, dtype=float)/1000  # Convert from m to km
+        spiralLength = np.array(spiralLength, dtype=float)
+        spiralRadiusStart = np.array(spiralRadiusStart, dtype=float)
+        spiralRadiusEnd = np.array(spiralRadiusEnd, dtype=float)
+        spiralConst = np.array(spiralConst, dtype=float)
+        curveStationStart = np.array(curveStationStart, dtype=float)/1000  # Convert from m to km
+        curveRadius = np.array(curveRadius, dtype=float)
 
         # Combine extracted data into a structured dictionary
 
@@ -345,32 +353,135 @@ class ReadFile:
         return parsedTTP
     
     def alignmentCoordinates(self, parsedXML, epsgInput, epsgOutput):
+        
+        alignmentCoords = []
+        alignmentCoordsOriginal = []
+        
         transformer = Transformer.from_crs(epsgInput, epsgOutput, always_xy=True)
 
-        if epsgInput == "EPSG:5514":
-            eastingStart = -np.array(parsedXML["lineStartY"])
-            northingStart = -np.array(parsedXML["lineStartX"])
-            eastingEnd = -np.array(parsedXML["lineEndY"])
-            northingEnd = -np.array(parsedXML["lineEndX"])
+        # Universal add segment method
 
-        else:
-            eastingStart = parsedXML["lineStartX"]
-            northingStart = parsedXML["lineStartY"]
-            eastingEnd = parsedXML["lineEndX"]
-            northingEnd = parsedXML["lineEndY"]
+        def addSegment(x, y):
 
-        lonStart, latStart = transformer.transform(eastingStart, northingStart)
-        lonEnd, latEnd = transformer.transform(eastingEnd, northingEnd)
+            originalCoords = np.column_stack((x, y)).tolist()
+            alignmentCoordsOriginal.append(originalCoords)
 
-        parsedXML["lineStartX"], parsedXML["lineStartY"] = lonStart, latStart
-        parsedXML["lineEndX"], parsedXML["lineEndY"] = lonEnd, latEnd
+            if epsgInput == "EPSG:5514":
+                easting = -np.array(y)
+                northing = -np.array(x)
 
-        alignmentCoords = []
+            else:
+                easting = np.array(x)
+                northing = np.array(y)
 
-        for i in range(len(latStart)):
-            alignmentCoords.append([latStart[i], lonStart[i]])
-            alignmentCoords.append([latEnd[i], lonEnd[i]])
-       
+            lon, lat = transformer.transform(easting, northing)
+
+            transformedCoords = np.column_stack((lat, lon)).tolist()
+            alignmentCoords.append(transformedCoords)
+
+        # Line
+        if "lineStartX" in parsedXML:
+            for i in range(len(parsedXML["lineStartX"])):
+                addSegment([parsedXML["lineStartX"][i], parsedXML["lineEndX"][i]], [parsedXML["lineStartY"][i], parsedXML["lineEndY"][i]])
+
+        # Spiral
+        if "spiralStartX" in parsedXML:
+            for i in range(len(parsedXML["spiralStartX"])):
+                x, y = self.discretizeSpiral(
+                    parsedXML["spiralStartX"][i],
+                    parsedXML["spiralStartY"][i],
+                    parsedXML["spiralPIX"][i],
+                    parsedXML["spiralPIY"][i],
+                    parsedXML["spiralLength"][i],
+                    parsedXML["spiralRadiusStart"][i],
+                    parsedXML["spiralRadiusEnd"][i],
+                    parsedXML["spiralRot"][i],
+                    smoothness = 50,
+                    epsgInput = epsgInput
+                    )
+                
+                addSegment(x, y)   
+
+        # Curve
+        if "curveStartX" in parsedXML:
+            for i in range(len(parsedXML["curveStartX"])):
+                x, y = self.discretizeCurve(
+                    parsedXML["curveStartX"][i],
+                    parsedXML["curveStartY"][i],
+                    parsedXML["curveEndX"][i],
+                    parsedXML["curveEndY"][i],
+                    parsedXML["curveCenterX"][i],
+                    parsedXML["curveCenterY"][i],
+                    parsedXML["curveRot"][i],
+                    parsedXML["curveRadius"][i],
+                    smoothness = 50,
+                    epsgInput = epsgInput
+                    )
+                
+                addSegment(x, y)
+
         parsedXML["alignmentCoordinates"] = alignmentCoords
+        parsedXML["alignmentCoordsOriginal"] = alignmentCoordsOriginal
+
         return parsedXML
-                                             
+    
+    def discretizeCurve(self, startX, startY, endX, endY, centerX, centerY, rotDir, radius, smoothness, epsgInput):
+        angleStart = np.arctan2(startY-centerY, startX-centerX)
+        angleEnd = np.arctan2(endY-centerY, endX-centerX)
+
+        if epsgInput == "EPSG:5514":
+            if rotDir == "cw":
+                if angleEnd < angleStart:
+                    angleEnd += 2*np.pi
+            else:
+                if angleEnd > angleStart:
+                    angleEnd -= 2*np.pi
+        else:
+            if rotDir == "cw":
+                if angleEnd > angleStart:
+                    angleEnd -= 2*np.pi
+            else:
+                if angleEnd < angleStart:
+                    angleEnd += 2*np.pi
+        
+        anglesLinspace = np.linspace(angleStart, angleEnd, smoothness)
+
+        x = centerX + radius * np.cos(anglesLinspace)
+        y = centerY + radius * np.sin(anglesLinspace)
+
+        return x, y
+    
+    def discretizeSpiral(self, startX, startY, piX, piY, length, radiusStart, radiusEnd, rot, smoothness, epsgInput):
+        # Calculate azimuth for clothoids library
+        azimuth = np.arctan2(piY-startY, piX-startX)
+
+        # Calculate curvature
+
+        kappaStart = 1/radiusStart if (radiusStart != 0 and radiusStart != float('inf')) else 0.0
+        kappaEnd = 1/radiusEnd if (radiusEnd != 0 and radiusEnd != float('inf')) else 0.0
+
+        # Clockwise / Counterclockwise
+        if epsgInput == "EPSG:5514":
+            if rot == "cw":
+                kappaStart, kappaEnd = abs(kappaStart), abs(kappaEnd)
+            else:
+                kappaStart, kappaEnd = -abs(kappaStart), -abs(kappaEnd)
+        else:
+            if rot == "cw":
+                kappaStart, kappaEnd = -abs(kappaStart), -abs(kappaEnd)
+            else:
+                kappaStart, kappaEnd = abs(kappaStart), abs(kappaEnd)
+
+        dKappa = (kappaEnd - kappaStart) / length
+        spiral = Clothoid.StandardParams(startX, startY, azimuth, kappaStart, dKappa, length)
+
+        spiralLinspace = np.linspace(0, length, smoothness)
+        x = [spiral.X(t) for t in spiralLinspace]
+        y = [spiral.Y(t) for t in spiralLinspace]
+
+        return x, y
+   
+
+
+
+        

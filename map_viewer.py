@@ -25,8 +25,8 @@ class MapWidget(QWidget):
         startLat, startLon = alignment[0]
 
         # Bounds
-        lats = [coord[0] for coord in alignment]
-        lons = [coord[1] for coord in alignment]
+        lats = [pt[0] for segment in alignment for pt in segment]
+        lons = [pt[1] for segment in alignment for pt in segment]
         centerLat = (min(lats) + max(lats)) / 2
         centerLon = (min(lons) + max(lons)) / 2
 

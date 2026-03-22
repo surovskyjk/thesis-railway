@@ -29,6 +29,7 @@ DIC = {
         "cleanAll": "Vyčistit &vše",
          "radius": "poloměr oblouku [m]",
          "curvature": "křivost [1/m]",
+         "curvature_new": "nová křivost [1/m]",
          "elevation": "výška [m]",
          "select_sections_for_ttp_title": "Vyberte úsek",
          "select_sections_for_ttp_description": "Vyberte úseky, které chcete zahrnout do TTP.",
@@ -43,7 +44,21 @@ DIC = {
          "view": "&Zobrazit",
          "mapSettings": "Nastavení mapy",
          "currentEPSG": "Souřadnicový systém LandXML na vstupu",
-         "EPSGinfo": "Výstupní EPSG je vždy WGS-84 - EPSG:4326"
+         "EPSGinfo": "Výstupní EPSG je vždy WGS-84 - EPSG:4326",
+         "calculate": "&Vypočítat",
+         "geometry": "Geometrie",
+         "train": "Jízda vlaku",
+         "cant_possible": "možné převýšení [mm]",
+         "cant_def_possible": "možný nedostatek převýšení [mm]",
+         "cant_plus_cant_def_possible": "možné D + I [mm]",
+         "speed_lim_100": "V100 [km/h]",
+         "speed_lim_130": "V130 [km/h]",
+         "speed_lim_150": "V150 [km/h]",
+         "speed_lim_K": "VK (Naklápěcí vlak) [km/h]",
+         "load_all": "Načíst všechny úseky"
+
+
+
 
         },
 
@@ -74,6 +89,7 @@ DIC = {
          "cleanAll": "&Clean all",
          "radius": "radius [m]",
          "curvature": "curvature [1/m]",
+         "curvature_new": "new curvature [1/m]",
          "elevation": "elevation [m]",
          "select_sections_for_ttp_title": "Select Sections for TTP",
          "select_sections_for_ttp_description": "Select the sections you want to include in the TTP.",
@@ -88,7 +104,21 @@ DIC = {
          "view": "&View",
          "mapSettings": "Map Settings",
          "currentEPSG": "Input EPSG coordinate system of LandXML",
-         "EPSGinfo": "Output EPSG is always WGS-84 - EPSG:4326"
+         "EPSGinfo": "Output EPSG is always WGS-84 - EPSG:4326",
+         "calculate": "&Calculate",
+         "geometry": "Geometry",
+         "train": "Train",
+         "cant_possible": "possible cant [mm]",
+         "cant_def_possible": "possible cant deficiency [mm]",
+         "cant_plus_cant_def_possible": "possible D + I [mm]",
+         "speed_lim_100": "V100 [km/h]",
+         "speed_lim_130": "V130 [km/h]",
+         "speed_lim_150": "V150 [km/h]",
+         "speed_lim_K": "VK (Tilting train) [km/h]",
+         "load_all": "Load all sections"
+
+
+        
 
 
          
@@ -121,6 +151,7 @@ DIC = {
          "cleanAll": "Alle Daten &löschen",
          "radius": "Radius [m]",
          "curvature": "Krümmung [1/m]",
+         "curvature_new": "neue Krümmung [1/m]",
          "elevation": "Höhe [m]",
          "select_sections_for_ttp_title": "Abschnitte für TTP auswählen",
          "select_sections_for_ttp_description": "Wählen Sie die Abschnitte aus, die Sie in das TTP aufnehmen möchten.",
@@ -135,12 +166,21 @@ DIC = {
          "view": "&Anzeigen",
          "mapSettings": "Karteinstellungen",
          "currentEPSG": "Eingabe-EPSG-Koordinatensystem von LandXML",
-         "EPSGinfo": "Ausgabe-EPSG ist immer WGS-84 - EPSG:4326"
+         "EPSGinfo": "Ausgabe-EPSG ist immer WGS-84 - EPSG:4326",
+         "calculate": "&Berechnen",
+         "geometry": "Geometrie",
+         "train": "Zugfahrt",
+         "cant_possible": "Mögliche Überhöhung [mm]",
+         "cant_def_possible": "Möglicher Überhöhungsfehlbetrag [mm]",
+         "cant_plus_cant_def_possible": "Mögliche D + I [mm]",
+         "speed_lim_100": "V100 [km/h]",
+         "speed_lim_130": "V130 [km/h]",
+         "speed_lim_150": "V150 [km/h]",
+         "speed_lim_K": "VK (Neigezug) [km/h]",
+         "load_all": "Alle Abschnitte laden"
         
-        
-        
-        
-        
+
+              
 
         }
     }

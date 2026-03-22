@@ -52,6 +52,13 @@ class MainWindow(QMainWindow):
         # Other default settings
         self.epsgInput = "EPSG:5514"
 
+        # Empty dictionaries for data to be loaded and plotted
+
+        self.dataStorage = {}
+        self.plotCantData = {}
+        self.plotCurvatureData = {}
+        self.plotSpeedData = {}
+
         # Layouts - main grid
 
         # layoutH = QHBoxLayout()
@@ -142,12 +149,36 @@ class MainWindow(QMainWindow):
         self.toggleCantAction.setChecked(True)
         self.toggleCantAction.triggered.connect(self.toggleCantVisibility)
         self.viewMenu.addAction(self.toggleCantAction)
+
+        self.toggleCantPossibleAction = QAction(lan["cant_possible"], self)
+        self.toggleCantPossibleAction.setCheckable(True)
+        self.toggleCantPossibleAction.setChecked(True)
+        self.toggleCantPossibleAction.triggered.connect(self.toggleCantPossibleVisibility)
+        self.viewMenu.addAction(self.toggleCantPossibleAction)
+
+        self.toggleCantDefPossibleAction = QAction(lan["cant_def_possible"], self)
+        self.toggleCantDefPossibleAction.setCheckable(True)
+        self.toggleCantDefPossibleAction.setChecked(True)
+        self.toggleCantDefPossibleAction.triggered.connect(self.toggleCantDefPossibleVisibility)
+        self.viewMenu.addAction(self.toggleCantDefPossibleAction)
+
+        self.toggleCantPlusCantDefPossibleAction = QAction(lan["cant_plus_cant_def_possible"], self)
+        self.toggleCantPlusCantDefPossibleAction.setCheckable(True)
+        self.toggleCantPlusCantDefPossibleAction.setChecked(True)
+        self.toggleCantPlusCantDefPossibleAction.triggered.connect(self.toggleCantPlusCantDefPossibleVisibility)
+        self.viewMenu.addAction(self.toggleCantPlusCantDefPossibleAction)
         
         self.toggleCurvatureAction = QAction(lan["curvature"], self)
         self.toggleCurvatureAction.setCheckable(True)
         self.toggleCurvatureAction.setChecked(True)
         self.toggleCurvatureAction.triggered.connect(self.toggleCurvatureVisibility)
         self.viewMenu.addAction(self.toggleCurvatureAction)
+
+        self.toggleCurvatureNewAction = QAction(lan["curvature_new"], self)
+        self.toggleCurvatureNewAction.setCheckable(True)
+        self.toggleCurvatureNewAction.setChecked(True)
+        self.toggleCurvatureNewAction.triggered.connect(self.toggleCurvatureNewVisibility)
+        self.viewMenu.addAction(self.toggleCurvatureNewAction)
 
         self.viewMenu.addSeparator()
 
@@ -157,6 +188,29 @@ class MainWindow(QMainWindow):
         self.toggleSpeedAction.triggered.connect(self.toggleSpeedVisibility)
         self.viewMenu.addAction(self.toggleSpeedAction)
 
+        self.toggleSpeed100Action = QAction(lan["speed_lim_100"], self)
+        self.toggleSpeed100Action.setCheckable(True)
+        self.toggleSpeed100Action.setChecked(True)
+        self.toggleSpeed100Action.triggered.connect(self.toggleSpeed100Visibility)
+        self.viewMenu.addAction(self.toggleSpeed100Action)
+
+        self.toggleSpeed130Action = QAction(lan["speed_lim_130"], self)
+        self.toggleSpeed130Action.setCheckable(True)
+        self.toggleSpeed130Action.setChecked(True)
+        self.toggleSpeed130Action.triggered.connect(self.toggleSpeed130Visibility)
+        self.viewMenu.addAction(self.toggleSpeed130Action)
+
+        self.toggleSpeed150Action = QAction(lan["speed_lim_150"], self)
+        self.toggleSpeed150Action.setCheckable(True)
+        self.toggleSpeed150Action.setChecked(True)
+        self.toggleSpeed150Action.triggered.connect(self.toggleSpeed150Visibility)
+        self.viewMenu.addAction(self.toggleSpeed150Action)
+
+        self.toggleSpeedKAction = QAction(lan["speed_lim_K"], self)
+        self.toggleSpeedKAction.setCheckable(True)
+        self.toggleSpeedKAction.setChecked(True)
+        self.toggleSpeedKAction.triggered.connect(self.toggleSpeedKVisibility)
+        self.viewMenu.addAction(self.toggleSpeedKAction)
 
         # Submenu - Exit
         exitAction = QAction(lan["exit"], self)
@@ -294,8 +348,17 @@ class MainWindow(QMainWindow):
         self.settingsMenu.actions()[2].setText(lan["mapSettings"])
 
         self.viewMenu.actions()[0].setText(lan["cant"])
-        self.viewMenu.actions()[1].setText(lan["curvature"])
-        self.viewMenu.actions()[3].setText(lan["speed_lim"])
+        self.viewMenu.actions()[1].setText(lan["cant_possible"])
+        self.viewMenu.actions()[2].setText(lan["cant_def_possible"])
+        self.viewMenu.actions()[3].setText(lan["cant_plus_cant_def_possible"])
+        self.viewMenu.actions()[4].setText(lan["curvature"])
+        self.viewMenu.actions()[5].setText(lan["curvature_new"])
+        self.viewMenu.actions()[7].setText(lan["speed_lim"])
+        self.viewMenu.actions()[8].setText(lan["speed_lim_100"])
+        self.viewMenu.actions()[9].setText(lan["speed_lim_130"])
+        self.viewMenu.actions()[10].setText(lan["speed_lim_150"])
+        self.viewMenu.actions()[11].setText(lan["speed_lim_K"])
+
 
         # Update labels
         self.labelXMLTTPRaw.setText(lan["raw_data"])
@@ -312,7 +375,6 @@ class MainWindow(QMainWindow):
         self.canvas.ax_cant.set_xlabel(lan["station"])
         self.canvas.ax_cant.set_ylabel(lan["cant"])
         self.canvas.ax_cant.set_title(f'{lan["cant"]} vs {lan["station"]}', loc = 'left')
-
 
         self.canvas.ax_curvature.set_xlabel(lan["station"])
         self.canvas.ax_curvature.set_ylabel(lan["curvature"])
@@ -385,9 +447,13 @@ class MainWindow(QMainWindow):
             self.textboxRawLandXML.setPlainText(file_content)
             LandXMLData = readfile.ReadFile().ParseLandXML(file_content, self.epsgInput)
             self.updateTableLandXML(LandXMLData)
-            self.LandXMLStations = LandXMLData["stationHorizontal"]
-            self.plotCant(LandXMLData["stationCant"], LandXMLData["cant"])
-            self.plotCurvature(LandXMLData["stationHorizontal"], LandXMLData["curvature"])
+            self.dataStorage["stationHorizontal"] = LandXMLData["stationHorizontal"]
+            self.dataStorage["stationCant"] = LandXMLData["stationCant"]
+            self.dataStorage["cant"] = LandXMLData["cant"]
+            self.dataStorage["curvature"] = LandXMLData["curvature"]
+            self.plotCant()
+            self.plotCurvature()
+
             alignment = LandXMLData["alignmentCoordinates"]
             self.mapWidget.drawAlignment(alignment)
 
@@ -407,10 +473,15 @@ class MainWindow(QMainWindow):
 
             lan = lang.DIC[self.current_language]
 
-            stations = XMLTTPData["stationSpeedLimits"]
-            speedLimits = XMLTTPData["speedLimits"]
+            self.dataStorage["stationSpeedLimits"] = XMLTTPData["stationSpeedLimits"]
+            self.dataStorage["speedLimits"] = XMLTTPData["speedLimits"]
 
-            sections = self.TTPSections(stations)
+            validStationSpeedLimits = (self.dataStorage["speedLimits"] != 0) & ~np.isnan(self.dataStorage["speedLimits"])
+            
+            self.dataStorage["stationSpeedLimits"] = self.dataStorage["stationSpeedLimits"][validStationSpeedLimits]
+            self.dataStorage["speedLimits"] = self.dataStorage["speedLimits"][validStationSpeedLimits]
+
+            sections = self.TTPSections(self.dataStorage["stationSpeedLimits"])
 
             if len(sections) > 0:
                 sectionsInfo = []
@@ -420,35 +491,84 @@ class MainWindow(QMainWindow):
                     sectionsInfo.append(f"{lan['station']} {section['stationStart']:.6f} km - {section['stationEnd']:.6f} km")
 
                 # LandXML data availability check for cropping option in TTP sections dialog
-                HasLandXML = hasattr(self, 'LandXMLStations') and len(self.LandXMLStations) > 0
+                HasLandXML = "stationHorizontal" in self.dataStorage and len(self.dataStorage["stationHorizontal"]) > 0
 
                 # Show the section selection dialog
                 dialog = gui_overlay.TTPSelectSectionDialog(sectionsInfo, HasLandXML, lan, self)
                 if dialog.exec():
-                    selectedSectionID, cropToLandXML = dialog.get_selected_section()
+                    selectedSectionIDs, cropToLandXML, loadAll = dialog.get_selected_section()
                 else:
                     return  # User cancelled the dialog, do nothing
             
             else:
-                selectedSectionID = 0
+                selectedSectionIDs = []
+                HasLandXML = False
                 cropToLandXML = False
+                loadAll = True
+
+            # Extract data from central storage
+            stationsRaw = np.array(self.dataStorage["stationSpeedLimits"])
+            speedLimitsRaw = np.array(self.dataStorage["speedLimits"])
 
             # Crop to LandXML data range if option is selected and LandXML data is available
-            CurrentSection = sections[selectedSectionID]
-            startID = CurrentSection["startID"]
-            endID = CurrentSection["endID"]+1
+            if not loadAll:
+                if not selectedSectionIDs:
+                    return
 
-            stations = stations[startID:endID]
-            speedLimits = speedLimits[startID:endID]
+                tempStations = []
+                tempSpeedLimits = []
 
-            if cropToLandXML and hasattr(self, 'LandXMLStations'):
-                LandXMLMin = min(self.LandXMLStations)
-                LandXMLMax = max(self.LandXMLStations)
-                croppedIndices = np.where((stations >= LandXMLMin) & (stations <= LandXMLMax))
+                for sectionID in sorted(selectedSectionIDs):
+                    currentSection = sections[sectionID]
+                    startID = currentSection["startID"]
+                    endID = currentSection["endID"]+1
 
-                if len(croppedIndices[0]) > 0:
-                    stations = stations[croppedIndices]
-                    speedLimits = speedLimits[croppedIndices]
+                    tempStations.append(stationsRaw[startID:endID])
+                    tempSpeedLimits.append(speedLimitsRaw[startID:endID])
+
+                stationsRaw = np.concatenate(tempStations)
+                speedLimitsRaw = np.concatenate(tempSpeedLimits)
+
+            if cropToLandXML and HasLandXML:
+                LandXMLMin = np.nanmin(self.dataStorage["stationHorizontal"])
+                LandXMLMax = np.nanmax(self.dataStorage["stationHorizontal"])
+
+                if np.isnan(LandXMLMin) or np.isnan(LandXMLMax):
+                    stations = stationsRaw
+                    speedLimits = speedLimitsRaw
+                else:
+
+                    beforeMinMask = stationsRaw <= LandXMLMin
+                    if np.any(beforeMinMask):
+                        lastBefore = np.where(beforeMinMask)[0][-1]
+                        speedLimitAtMin = speedLimitsRaw[lastBefore]
+                    else:
+                        speedLimitAtMin = speedLimitsRaw[0] if len(speedLimitsRaw) > 0 else 0
+                    
+                    validMask = (stationsRaw > LandXMLMin) & (stationsRaw < LandXMLMax)
+
+                    stationsInside = stationsRaw[validMask]
+                    speedLimitsInside = speedLimitsRaw[validMask]
+
+                    stationsCropped = [LandXMLMin]
+                    speedLimitsCropped = [speedLimitAtMin]
+                    
+                    stationsCropped.extend(stationsInside.tolist())
+                    speedLimitsCropped.extend(speedLimitsInside.tolist())
+                    
+                    if stationsCropped[-1] < LandXMLMax:
+                        stationsCropped.append(LandXMLMax)
+                        speedLimitsCropped.append(speedLimitsCropped[-1])
+
+                    stations = np.array(stationsCropped, dtype = float)
+                    speedLimits = np.array(speedLimitsCropped, dtype = float)
+            
+            else:
+                stations = stationsRaw
+                speedLimits = speedLimitsRaw
+
+            self.dataStorage["stationSpeedLimits"] = stations
+            self.dataStorage["speedLimits"] = speedLimits
 
             TTPData = {
                 "stationSpeedLimits": stations,
@@ -456,7 +576,7 @@ class MainWindow(QMainWindow):
             }
 
             self.tableTTP.setData(TTPData)
-            self.plotSpeedLimits(stations, speedLimits)
+            self.plotSpeedLimits()
         else:
             lan = lang.DIC[self.current_language]
             err = QMessageBox()
@@ -465,42 +585,86 @@ class MainWindow(QMainWindow):
             err.setIcon(QMessageBox.Icon.Warning)
             err.exec()
 
-    def plotCant(self, stationCant, cant):
+    def plotCant(self):
         lan = lang.DIC[self.current_language]
 
-        # Initial check to avoid plotting empty data which can cause errors in Matplotlib
-        if len(stationCant) == 0 or len(cant) == 0:
-            return  # No data to plot
-
         self.canvas.ax_cant.clear()
-        self.canvas.ax_cant.plot(stationCant, cant, marker='o', linestyle='-', color='tab:blue', label=lan["cant"])
+        self.plotCantData.clear()
+
+        stationCant = self.dataStorage.get("stationCant")
+        stationCantPossible = self.dataStorage.get("stationCantPossible")
+
+        if (stationCant is None or len(stationCant) == 0) and (stationCantPossible is None or len(stationCantPossible) == 0):
+            self.canvas.draw()
+            return
+
+        cant = self.dataStorage.get("cant")
+        if (cant is not None and len(cant)>0) and (stationCant is not None and len(stationCant)>0):
+            line, = self.canvas.ax_cant.plot(stationCant, cant, marker='o', linestyle='-', color='tab:blue', label=lan["cant"])
+            self.plotCantData["cant"] = line
+            line.set_visible(self.toggleCantAction.isChecked())
+
+        cantPossible = self.dataStorage.get("cantPossible")
+        if (cantPossible is not None and len(cantPossible)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
+            line, = self.canvas.ax_cant.plot(stationCantPossible, cantPossible, marker='o', linestyle='-', color='tab:orange', label=lan["cant_possible"])
+            self.plotCantData["cantPossible"] = line
+            line.set_visible(self.toggleCantPossibleAction.isChecked())
+
+        cantDefPossible = self.dataStorage.get("cantDefPossible")
+        if (cantDefPossible is not None and len(cantDefPossible)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
+            line, = self.canvas.ax_cant.plot(stationCantPossible, cantDefPossible, marker='o', linestyle='-', color='tab:green', label=lan["cant_def_possible"])
+            self.plotCantData["cantDefPossible"] = line
+            line.set_visible(self.toggleCantDefPossibleAction.isChecked())
+
+        cantPlusCantDefPossible = self.dataStorage.get("cantPlusCantDefPossible")
+        if (cantPlusCantDefPossible is not None and len(cantPlusCantDefPossible)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
+            line, = self.canvas.ax_cant.plot(stationCantPossible, cantPlusCantDefPossible, marker='o', linestyle='-', color='tab:red', label=lan["cant_plus_cant_def_possible"])
+            self.plotCantData["cantPlusCantDefPossible"] = line
+            line.set_visible(self.toggleCantPlusCantDefPossibleAction.isChecked())
+
         self.canvas.ax_cant.grid(True)
         self.canvas.ax_cant.autoscale(enable=True, axis='x', tight=True)
         self.canvas.ax_cant.set_xlabel(lan["station"])
         self.canvas.ax_cant.set_ylabel(lan["cant"])
         self.canvas.ax_cant.set_title(f'{lan["cant"]} vs {lan["station"]}', loc = 'left')
         self.canvas.ax_cant.tick_params(axis='y', labelcolor='tab:blue')
-        self.canvas.ax_cant.legend(loc = 'upper left')
-        self.canvas.ax_cant.lines[0].set_visible(self.toggleCantAction.isChecked())
+        if self.canvas.ax_cant.lines:
+            self.canvas.ax_cant.legend(loc = 'upper left')
         self.canvas.draw()
 
-    def plotCurvature(self, stationHorizontal, curvature):
+    def plotCurvature(self):
         lan = lang.DIC[self.current_language]
 
-        # Initial check to avoid plotting empty data which can cause errors in Matplotlib
-        if len(stationHorizontal) == 0 or len(curvature) == 0:
+        self.canvas.ax_curvature.clear()
+        self.plotCurvatureData.clear()
+
+        # Initial check to avoid plotting data without station available
+        stationHorizontal = self.dataStorage.get("stationHorizontal")
+        stationHorizontalNew = self.dataStorage.get("stationHorizontalNew")
+        if (stationHorizontal is None or len(stationHorizontal) == 0) and (stationHorizontalNew is None or len(stationHorizontalNew) == 0):
+            self.canvas.draw()
             return  # No data to plot
         
-        def fractionFormatter(x, pos):
+        def fractionFormatter(x, pos = None):
             if np.isclose(x, 0, atol=1e-6):
                 return "0"
             else:
                 return f"1/{int(round(1/x))}"
 
-        self.canvas.ax_curvature.clear()
+        curvature = self.dataStorage.get("curvature")
+        if (curvature is not None and len(curvature) > 0) and (stationHorizontal is not None and len(stationHorizontal) > 0):
+            line, = self.canvas.ax_curvature.plot(stationHorizontal, curvature, marker='o', linestyle='-', color='tab:orange', label=lan["curvature"])
+            self.plotCurvatureData["curvature"] = line
+            line.set_visible(self.toggleCurvatureAction.isChecked())
+
+        curvatureNew = self.dataStorage.get("curvatureNew")
+        if (curvatureNew is not None and len(curvatureNew) > 0) and (stationHorizontalNew is not None and len(stationHorizontalNew) > 0):
+            line, = self.canvas.ax_curvature.plot(stationHorizontalNew, curvatureNew, marker='o', linestyle='-', color='tab:green', label=lan["curvature"])
+            self.plotCurvatureData["curvatureNew"] = line
+            line.set_visible(self.toggleCurvatureNewAction.isChecked())
+        
         self.canvas.ax_curvature.yaxis.set_label_position("right")
         self.canvas.ax_curvature.yaxis.tick_right()
-        self.canvas.ax_curvature.plot(stationHorizontal, curvature, marker='o', linestyle='-', color='tab:orange', label=lan["curvature"])
         self.canvas.ax_curvature.grid(True)
         self.canvas.ax_curvature.autoscale(enable=True, axis='x', tight=True)
         self.canvas.ax_curvature.set_xlabel(lan["station"])
@@ -509,26 +673,62 @@ class MainWindow(QMainWindow):
         self.canvas.ax_curvature.tick_params(axis='y', labelcolor='tab:orange')
         self.canvas.ax_curvature.yaxis.set_major_formatter(FuncFormatter(fractionFormatter))
         self.canvas.ax_curvature.legend(loc = 'upper right')
-        self.canvas.ax_curvature.lines[0].set_visible(self.toggleCurvatureAction.isChecked())
         self.canvas.draw()
 
-    def plotSpeedLimits(self, stationSpeedLimits, speedLimits):
+    def plotSpeedLimits(self):
         lan = lang.DIC[self.current_language]
 
-        # Initial check to avoid plotting empty data which can cause errors in Matplotlib
-        if len(stationSpeedLimits) == 0 or len(speedLimits) == 0:
-            return  # No data to plot
-
         self.canvas.ax_speed.clear()
-        self.canvas.ax_speed.step(stationSpeedLimits, speedLimits, where="post", marker='s', linestyle='-', label=lan["speed_lim"])
+
+
+        stationSpeedLimits = self.dataStorage.get("stationSpeedLimits")
+        stationSpeed100 = self.dataStorage.get("stationSpeed100")
+        stationSpeed130 = self.dataStorage.get("stationSpeed130")
+        stationSpeed150 = self.dataStorage.get("stationSpeed150")
+        stationSpeedK = self.dataStorage.get("stationSpeedK")
+
+        if (stationSpeedLimits is None or len(stationSpeedLimits) == 0) and (stationSpeed100 is None or len(stationSpeed100) == 0) and (stationSpeed130 is None or len(stationSpeed130) == 0) and (stationSpeed150 is None or len(stationSpeed150) == 0) and (stationSpeedK is None or len(stationSpeedK) == 0):
+            self.canvas.draw()
+            return  # No data to plot
+        
+        speedLimits = self.dataStorage.get("speedLimits")
+        if (speedLimits is not None and len(speedLimits) > 0) and (stationSpeedLimits is not None and len(stationSpeedLimits) > 0):
+            line, = self.canvas.ax_speed.step(stationSpeedLimits, speedLimits, where="post", marker='s', linestyle='-', label=lan["speed_lim"])
+            self.plotSpeedData["speedLimits"] = line
+            line.set_visible(self.toggleSpeedAction.isChecked())
+
+        speedLimits100 = self.dataStorage.get("speedLimits100")
+        if (speedLimits100 is not None and len(speedLimits100) > 0) and (stationSpeed100 is not None and len(stationSpeed100) > 0):
+            line, = self.canvas.ax_speed.step(stationSpeed100, speedLimits100, where="post", marker='s', linestyle='-', label=lan["speed_lim_100"])
+            self.plotSpeedData["speedLimits100"] = line
+            line.set_visible(self.toggleSpeed100Action.isChecked())
+
+        speedLimits130 = self.dataStorage.get("speedLimits130")
+        if (speedLimits130 is not None and len(speedLimits130) > 0) and (stationSpeed130 is not None and len(stationSpeed130) > 0):
+            line, = self.canvas.ax_speed.step(stationSpeed130, speedLimits130, where="post", marker='s', linestyle='-', label=lan["speed_lim_130"])
+            self.plotSpeedData["speedLimits130"] = line
+            line.set_visible(self.toggleSpeed130Action.isChecked())
+
+        speedLimits150 = self.dataStorage.get("speedLimits150")
+        if (speedLimits150 is not None and len(speedLimits150) > 0) and (stationSpeed150 is not None and len(stationSpeed150) > 0):
+            line, = self.canvas.ax_speed.step(stationSpeed150, speedLimits150, where="post", marker='s', linestyle='-', label=lan["speed_lim_150"])
+            self.plotSpeedData["speedLimits150"] = line
+            line.set_visible(self.toggleSpeed150Action.isChecked())
+
+        speedLimitsK = self.dataStorage.get("speedLimitsK")
+        if (speedLimitsK is not None and len(speedLimitsK) > 0) and (stationSpeedK is not None and len(stationSpeedK) > 0):
+            line, = self.canvas.ax_speed.step(stationSpeedK, speedLimitsK, where="post", marker='s', linestyle='-', label=lan["speed_lim_K"])
+            self.plotSpeedData["speedLimitsK"] = line
+            line.set_visible(self.toggleSpeedKAction.isChecked())
+
         self.canvas.ax_speed.grid(True)
         self.canvas.ax_speed.autoscale(enable=True, axis='x', tight=True)
         self.canvas.ax_speed.set_xlabel(lan["station"])
         self.canvas.ax_speed.set_ylabel(lan["speed_lim"])
         self.canvas.ax_speed.set_title(f'{lan["speed_lim"]} vs {lan["station"]}')
         self.canvas.ax_speed.legend()
-        self.canvas.ax_speed.lines[0].set_visible(self.toggleSpeedAction.isChecked())
         self.canvas.draw()
+
 
     def cleanData(self):
         self.textboxRawLandXML.setPlainText("")
@@ -538,38 +738,88 @@ class MainWindow(QMainWindow):
         self.canvas.ax_cant.clear()
         self.canvas.ax_speed.clear()
         self.canvas.ax_curvature.clear()
+        self.dataStorage.clear()
+        self.plotCantData.clear()
+        self.plotSpeedData.clear()
+        self.plotCurvatureData.clear()
         self.canvas.draw()
+
 
     def cleanTTPData(self):
         self.textboxRawTTP.setPlainText("")
         self.tableTTP.setData({})
         while self.canvas.ax_speed.lines:
             self.canvas.ax_speed.lines[0].remove()
+        self.dataStorage["stationSpeedLimits"] = []
+        self.dataStorage["speedLimits"] = []
+        self.plotSpeedData.clear()
         self.canvas.draw()
+
 
     def cleanLandXMLData(self):
         self.textboxRawLandXML.setPlainText("")
         self.tableLandXML.setData({})
-        while self.canvas.ax_cant.lines:
-            self.canvas.ax_cant.lines[0].remove()
-        while self.canvas.ax_curvature.lines:
-            self.canvas.ax_curvature.lines[0].remove()
+        self.dataStorage["stationHorizontal"] = []
+        self.dataStorage["stationCant"] = []
+        self.dataStorage["cant"] = []
+        self.dataStorage["curvature"] = []
+        self.plotCantData.clear()
         self.canvas.draw()
 
     # Set visibility
     def toggleCantVisibility(self, isChecked):
-        if self.canvas.ax_cant.lines:
-            self.canvas.ax_cant.lines[0].set_visible(isChecked)
+        if 'cant' in self.plotCantData:
+            self.plotCantData["cant"].set_visible(isChecked)
+            self.canvas.draw()
+
+    def toggleCantDefPossibleVisibility(self, isChecked):
+        if 'cantDefPossible' in self.plotCantData:
+            self.plotCantData["cantDefPossible"].set_visible(isChecked)
+            self.canvas.draw()
+
+    def toggleCantPossibleVisibility(self, isChecked):
+        if 'cantPossible' in self.plotCantData:
+            self.plotCantData["cantPossible"].set_visible(isChecked)
+            self.canvas.draw()
+
+    def toggleCantPlusCantDefPossibleVisibility(self, isChecked):
+        if 'cantPlusCantDefPossible' in self.plotCantData:
+            self.plotCantData["cantPlusCantDefPossible"].set_visible(isChecked)
             self.canvas.draw()
 
     def toggleCurvatureVisibility(self, isChecked):
-        if self.canvas.ax_curvature.lines:
-            self.canvas.ax_curvature.lines[0].set_visible(isChecked)
+        if 'curvature' in self.plotCurvatureData:
+            self.plotCurvatureData["curvature"].set_visible(isChecked)
+            self.canvas.draw()
+
+    def toggleCurvatureNewVisibility(self, isChecked):
+        if 'curvatureNew' in self.plotCurvatureData:
+            self.plotCurvatureData["curvatureNew"].set_visible(isChecked)
             self.canvas.draw()
 
     def toggleSpeedVisibility(self, isChecked):
-        if self.canvas.ax_speed.lines:
-            self.canvas.ax_speed.lines[0].set_visible(isChecked)
+        if 'speedLimits' in self.plotSpeedData:
+            self.plotSpeedData["speedLimits"].set_visible(isChecked)
+            self.canvas.draw()
+
+    def toggleSpeed100Visibility(self, isChecked):
+        if 'speedLimits100' in self.plotSpeedData:
+            self.plotSpeedData["speedLimits100"].set_visible(isChecked)
+            self.canvas.draw()
+
+    def toggleSpeed130Visibility(self, isChecked):
+        if 'speedLimits130' in self.plotSpeedData:
+            self.plotSpeedData["speedLimits130"].set_visible(isChecked)
+            self.canvas.draw()
+
+    def toggleSpeed150Visibility(self, isChecked):
+        if 'speedLimits150' in self.plotSpeedData:
+            self.plotSpeedData["speedLimits150"].set_visible(isChecked)
+            self.canvas.draw()
+    
+    def toggleSpeedKVisibility(self, isChecked):
+        if 'speedLimitsK' in self.plotSpeedData:
+            self.plotSpeedData["speedLimitsK"].set_visible(isChecked)
             self.canvas.draw()
 
     # Map settings
@@ -611,7 +861,7 @@ class MainWindow(QMainWindow):
             diff = stations[i] - stations[i-1]
 
             # Defining possible sections for further selection by the user
-            if abs(diff) > 50 or (i > 1 and np.sign(stations[i-1] - stations[i-2]) != np.sign(diff) and diff != 0 and (stations[i-1] - stations[i-2]) != 0):
+            if abs(diff) > 20 or (i > 1 and np.sign(stations[i-1] - stations[i-2]) != np.sign(diff) and diff != 0 and (stations[i-1] - stations[i-2]) != 0):
                 sections.append({
                     "startID": startID,
                     "endID": i-1,
