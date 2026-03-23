@@ -182,7 +182,6 @@ class ReadFile:
                             curveCenterY.append(coordinatesTemp[1])
                 
         # Parse spiral attributes
-
         spiralStationStart = []
         spiralLength = []
         spiralRadiusStart = []
@@ -208,9 +207,7 @@ class ReadFile:
 
                 spiralConst.append(spiral.get('consant'))
 
-
         # Parse curve attributes
-
         curveStationStart = []
         curveRot = []
         curveType = []
@@ -228,7 +225,6 @@ class ReadFile:
                 curveRadius.append(curve.get('radius'))
         
         # Convert to numpy arrays (float only)
-
         stationCant = np.array(stationCant, dtype=float)/1000  # Convert from m to km
         cant = np.array(cant, dtype=float)
         stationHorizontal = np.array(stationHorizontal, dtype=float)/1000  # Convert from m to km
@@ -261,7 +257,6 @@ class ReadFile:
         curveRadius = np.array(curveRadius, dtype=float)
 
         # Combine extracted data into a structured dictionary
-
         parsedXML = {
             "stationCant": stationCant,
             "cant": cant,

@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout,
                                QListWidget, QListWidgetItem, QFormLayout, 
                                QLineEdit, QTableWidget, QTableWidgetItem, 
                                QHeaderView, QFileDialog, QMessageBox, 
-                               QDialogButtonBox, QPushButton)
+                               QDialogButtonBox, QPushButton, QComboBox)
 from PySide6.QtCore import Qt
 
 import csv
@@ -436,4 +436,25 @@ class DesignApproachDialog(QDialog):
         super().__init__(parent)
         self.lan = lan
         
-    #def getDesignApproach
+        self.setWindowTitle(lan["designApproach"])
+
+        layout = QVBoxLayout(self)
+        labelLimit = QLabel(lan["designApproachLimitDescription"])
+        layout.addWidget(labelLimit)
+
+        # Combo box with design approach possibilities
+        self.approachCombobox = QComboBox(self)
+        self.approachCombobox.addItems([lan["standard"],lan["limit"],lan["minmax"]])
+        layout.addWidget(self.approachCombobox)
+
+        # Buttons for the whole dialog
+        self.buttonBox = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        
+        self.buttonBox.accepted.connect(self.accept)
+        self.buttonBox.rejected.connect(self.reject)
+        layout.addWidget(self.buttonBox)
+
+    def getDesignApproach(self):
+        selected = self.approachCombobox.currentText()
+        
+        return selected

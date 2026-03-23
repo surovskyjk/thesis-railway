@@ -46,8 +46,7 @@ DIC = {
          "currentEPSG": "Souřadnicový systém LandXML na vstupu",
          "EPSGinfo": "Výstupní EPSG je vždy WGS-84 - EPSG:4326",
          "calculate": "&Vypočítat",
-         "calculate_geometry": "Vypočítat D a I"
-         "calculate_speed_geometry": "Vypočítat rychlost dle D a I",
+         "calculate_geometry": "Vypočítat D, I a odpovídající rychlosti",
          "geometry": "Geometrie",
          "train": "Jízda vlaku",
          "cant_possible": "možné převýšení [mm]",
@@ -94,6 +93,11 @@ DIC = {
          "nI_n": "nI_n / V [-]",
          "nI_lim": "nI_lim / V [-]",
          "nI_min": "nI_min / V [-]",
+         "designApproach": "Návrhový přístup",
+         "designApproachLimitDescription": "Zvolte návrhový přístup (standardní, limitní, minimální/maximální hodnota)",
+         "standard": "Standardní",
+         "limit": "Limitní",
+         "minmax": "Minimální/maximální",
         },
 
      "en": {
@@ -140,8 +144,7 @@ DIC = {
          "currentEPSG": "Input EPSG coordinate system of LandXML",
          "EPSGinfo": "Output EPSG is always WGS-84 - EPSG:4326",
          "calculate": "&Calculate",
-         "calculate_geometry": "Calculate D a I",
-         "calculate_speed_geometry": "Calculate speed from D and I",
+         "calculate_geometry": "Calculate D, I and respective speeds",
          "geometry": "Geometry",
          "train": "Train",
          "cant_possible": "possible cant [mm]",
@@ -188,6 +191,11 @@ DIC = {
          "nI_n": "nI_n / V [-]",
          "nI_lim": "nI_lim / V [-]",
          "nI_min": "nI_min / V [-]",
+         "designApproach": "Design Approach",
+         "designApproachLimitDescription": "Select design approach (standard, limit, minimum/maximum value)",
+         "standard": "Standard",
+         "limit": "Limit",
+         "minmax": "Min/Max",
         },  
 
      "de": {
@@ -234,8 +242,7 @@ DIC = {
          "currentEPSG": "Eingabe-EPSG-Koordinatensystem von LandXML",
          "EPSGinfo": "Ausgabe-EPSG ist immer WGS-84 - EPSG:4326",
          "calculate": "&Berechnen",
-         "calculate_geometry": "Berechnen u und u_f",
-         "calculate_speed_geometry": "Berechnen Geschwindigkeit aus u und u_f",
+         "calculate_geometry": "Berechnen u, u_f und Geschwindigkeiten",
          "geometry": "Geometrie",
          "train": "Zugfahrt",
          "cant_possible": "Mögliche Überhöhung [mm]",
@@ -282,6 +289,10 @@ DIC = {
          "nI_n": "nI_n / V [-]",
          "nI_lim": "nI_lim / V [-]",
          "nI_min": "nI_min / V [-]",
-      
+         "designApproach": "Entwurfsmöglichkeit",
+         "designApproachLimitDescription": "Wählen Sie Entwurfsmöglichkeit aus (Standardwert, Limitwert, Maximal-/Minimalwert).",
+         "standard": "Standard",
+         "limit": "Limit",
+         "minmax": "Min/Max",
         }
     }

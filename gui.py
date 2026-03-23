@@ -23,6 +23,7 @@ import readfile
 import gui_overlay
 from map_viewer import MapWidget
 import default_values
+import geometry_engine
 
 class MplCanvas(FigureCanvas):
     # Canvas widget for Matplotlib plots
@@ -59,10 +60,11 @@ class MainWindow(QMainWindow):
 
         # Import default values to dataStorage
         self.dataStorage["settingsData"] = {}
-        self.dataStorage["settingsData"]["dI"] = default_values.defVal["dI"]
-        self.dataStorage["settingsData"]["I"] = default_values.defVal["I"]
-        self.dataStorage["settingsData"]["nLin"] = default_values.defVal["nLin"]
-        self.dataStorage["settingsData"]["nILin"] = default_values.defVal["nILin"]      
+        self.dataStorage["settingsData"] = default_values.defVal
+        # self.dataStorage["settingsData"]["dI"] = default_values.defVal["dI"]
+        # self.dataStorage["settingsData"]["I"] = default_values.defVal["I"]
+        # self.dataStorage["settingsData"]["nLin"] = default_values.defVal["nLin"]
+        # self.dataStorage["settingsData"]["nILin"] = default_values.defVal["nILin"]     
 
         # Layouts - main grid
         layoutTabsXML = QTabWidget()
@@ -112,10 +114,6 @@ class MainWindow(QMainWindow):
         calculateGeometryAction = QAction(lan["calculate_geometry"], self)
         self.calculateMenu.addAction(calculateGeometryAction)
         calculateGeometryAction.triggered.connect(self.calculateGeometry)
-
-        calculateSpeedGeometryAction = QAction(lan["calculate_speed_geometry"], self)
-        self.calculateMenu.addAction(calculateSpeedGeometryAction)
-        calculateSpeedGeometryAction.triggered.connect(self.calculateSpeedGeometry)
 
         # Submenu - Clean
         cleanTTPDataAction = QAction(lan["cleanTTP"], self)
@@ -430,7 +428,6 @@ class MainWindow(QMainWindow):
 
         self.helpMenu.actions()[0].setText(lan["help"])
 
-
         # Update labels
         self.labelXMLTTPRaw.setText(lan["raw_data"])
         self.labelXMLTTPParsed.setText(lan["parsed_data"])
@@ -438,7 +435,6 @@ class MainWindow(QMainWindow):
         self.labelLandXMLParsed.setText(lan["parsed_data"])
 
         # Update matplotlib canvas
-
         self.canvas.ax_speed.set_xlabel(lan["station"])
         self.canvas.ax_speed.set_ylabel(lan["speed_lim"])
         self.canvas.ax_speed.set_title(f'{lan["speed_lim"]} vs {lan["station"]}')
@@ -450,7 +446,6 @@ class MainWindow(QMainWindow):
         self.canvas.ax_curvature.set_xlabel(lan["station"])
         self.canvas.ax_curvature.set_ylabel(lan["curvature"])
         self.canvas.ax_curvature.set_title(f'{lan["curvature"]} vs {lan["station"]}', loc ='right')
-
 
         # Update legends
         if self.canvas.ax_speed.lines:
@@ -467,17 +462,14 @@ class MainWindow(QMainWindow):
 
         self.canvas.draw()
 
-
     def getFileContent(self):
         filepath, _ = QFileDialog.getOpenFileName(self, "Open File", "", "All Files (*);;Text Files (*.txt);;XML Files (*.xml)")
         
-        # If cancelled, do nothing
-        
+        # If cancelled, do nothing    
         if not filepath:
             return
         
         # Read file content
-
         file_content = readfile.ReadFile().Read(filepath)
         return file_content
     
@@ -513,20 +505,19 @@ class MainWindow(QMainWindow):
         self.parseXMLTTP(file_content)
 
     def parseLandXML(self, file_content):
-        #file_content = self.getFileContent()
         if file_content is not None:
             self.textboxRawLandXML.setPlainText(file_content)
             LandXMLData = readfile.ReadFile().ParseLandXML(file_content, self.epsgInput)
             self.updateTableLandXML(LandXMLData)
-            self.dataStorage["stationHorizontal"] = LandXMLData["stationHorizontal"]
-            self.dataStorage["stationCant"] = LandXMLData["stationCant"]
-            self.dataStorage["cant"] = LandXMLData["cant"]
-            self.dataStorage["curvature"] = LandXMLData["curvature"]
+
+            # Save data to central data storage
+            self.dataStorage["LandXML"] = LandXMLData
+
+            # Plot and draw data
+            lxml = self.dataStorage.get("LandXML",{})
             self.plotCant()
             self.plotCurvature()
-
-            alignment = LandXMLData["alignmentCoordinates"]
-            self.mapWidget.drawAlignment(alignment)
+            self.mapWidget.drawAlignment(lxml.get("alignmentCoordinates",{}))
 
         else:
             lan = lang.DIC[self.current_language]
@@ -537,7 +528,6 @@ class MainWindow(QMainWindow):
             err.exec()
 
     def parseXMLTTP(self, file_content):
-        #file_content = self.getFileContent()
         if file_content is not None:
             self.textboxRawTTP.setPlainText(file_content)
             XMLTTPData = readfile.ReadFile().ParseXMLTTP(file_content)
@@ -658,72 +648,73 @@ class MainWindow(QMainWindow):
 
     def plotCant(self):
         lan = lang.DIC[self.current_language]
+        lxml = self.dataStorage.get("LandXML",{})
 
         self.canvas.ax_cant.clear()
         self.plotCantData.clear()
 
-        stationCant = self.dataStorage.get("stationCant")
-        stationCantPossible = self.dataStorage.get("stationCantPossible")
+        stationCant = lxml.get("stationCant")
+        stationCantPossible = lxml.get("stationCantPossible")
 
         if (stationCant is None or len(stationCant) == 0) and (stationCantPossible is None or len(stationCantPossible) == 0):
             self.canvas.draw()
             return
 
-        cant = self.dataStorage.get("cant")
+        cant = lxml.get("cant")
         if (cant is not None and len(cant)>0) and (stationCant is not None and len(stationCant)>0):
             line, = self.canvas.ax_cant.plot(stationCant, cant, marker='o', linestyle='-', color='tab:blue', label=lan["cant"])
             self.plotCantData["cant"] = line
             line.set_visible(self.toggleCantAction.isChecked())
 
-        cantPossible = self.dataStorage.get("cantPossible")
+        cantPossible = lxml.get("cantPossible")
         if (cantPossible is not None and len(cantPossible)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
             line, = self.canvas.ax_cant.plot(stationCantPossible, cantPossible, marker='o', linestyle='-', color='tab:orange', label=lan["cant_possible"])
             self.plotCantData["cantPossible"] = line
             line.set_visible(self.toggleCantPossibleAction.isChecked())
 
-        cDef100 = self.dataStorage.get("cDef100")
+        cDef100 = lxml.get("cDef100")
         if (cDef100 is not None and len(cDef100)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
             line, = self.canvas.ax_cant.plot(stationCantPossible, cDef100, marker='o', linestyle='-', color='tab:green', label=lan["cdef_100"])
             self.plotCantData["cDef100"] = line
             line.set_visible(self.toggleCDef100Action.isChecked())
 
-        cDef130 = self.dataStorage.get("cDef130")
+        cDef130 = lxml.get("cDef130")
         if (cDef130 is not None and len(cDef130)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
             line, = self.canvas.ax_cant.plot(stationCantPossible, cDef130, marker='o', linestyle='-', color='tab:green', label=lan["cdef_130"])
             self.plotCantData["cDef130"] = line
             line.set_visible(self.toggleCDef130Action.isChecked())
 
-        cDef150 = self.dataStorage.get("cDef150")
+        cDef150 = lxml.get("cDef150")
         if (cDef150 is not None and len(cDef150)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
             line, = self.canvas.ax_cant.plot(stationCantPossible, cDef150, marker='o', linestyle='-', color='tab:green', label=lan["cdef_150"])
             self.plotCantData["cDef150"] = line
             line.set_visible(self.toggleCDef150Action.isChecked())
 
-        cDefK = self.dataStorage.get("cDefK")
+        cDefK = lxml.get("cDefK")
         if (cDefK is not None and len(cDefK)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
             line, = self.canvas.ax_cant.plot(stationCantPossible, cDefK, marker='o', linestyle='-', color='tab:green', label=lan["cdef_K"])
             self.plotCantData["cDefK"] = line
             line.set_visible(self.toggleCDefKAction.isChecked())
 
-        cantDef100 = self.dataStorage.get("cantDef100")
+        cantDef100 = lxml.get("cantDef100")
         if (cantDef100 is not None and len(cantDef100)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
             line, = self.canvas.ax_cant.plot(stationCantPossible, cantDef100, marker='o', linestyle='-', color='tab:red', label=lan["cant_def_100"])
             self.plotCantData["cantDef100"] = line
             line.set_visible(self.toggleCantDef100Action.isChecked())
 
-        cantDef130 = self.dataStorage.get("cantDef130")
+        cantDef130 = lxml.get("cantDef130")
         if (cantDef130 is not None and len(cantDef130)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
             line, = self.canvas.ax_cant.plot(stationCantPossible, cantDef130, marker='o', linestyle='-', color='tab:red', label=lan["cant_def_130"])
             self.plotCantData["cantDef130"] = line
             line.set_visible(self.toggleCantDef130Action.isChecked())
 
-        cantDef150 = self.dataStorage.get("cantDef150")
+        cantDef150 = lxml.get("cantDef150")
         if (cantDef150 is not None and len(cantDef150)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
             line, = self.canvas.ax_cant.plot(stationCantPossible, cantDef150, marker='o', linestyle='-', color='tab:red', label=lan["cant_def_150"])
             self.plotCantData["cantDef150"] = line
             line.set_visible(self.toggleCantDef150Action.isChecked())
 
-        cantDefK = self.dataStorage.get("cantDefK")
+        cantDefK = lxml.get("cantDefK")
         if (cantDefK is not None and len(cantDefK)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
             line, = self.canvas.ax_cant.plot(stationCantPossible, cantDefK, marker='o', linestyle='-', color='tab:red', label=lan["cant_def_K"])
             self.plotCantData["cantDefK"] = line
@@ -741,13 +732,14 @@ class MainWindow(QMainWindow):
 
     def plotCurvature(self):
         lan = lang.DIC[self.current_language]
+        lxml = self.dataStorage.get("LandXML",{})
 
         self.canvas.ax_curvature.clear()
         self.plotCurvatureData.clear()
 
         # Initial check to avoid plotting data without station available
-        stationHorizontal = self.dataStorage.get("stationHorizontal")
-        stationHorizontalNew = self.dataStorage.get("stationHorizontalNew")
+        stationHorizontal = lxml.get("stationHorizontal")
+        stationHorizontalNew = lxml.get("stationHorizontalNew")
         if (stationHorizontal is None or len(stationHorizontal) == 0) and (stationHorizontalNew is None or len(stationHorizontalNew) == 0):
             self.canvas.draw()
             return  # No data to plot
@@ -758,13 +750,13 @@ class MainWindow(QMainWindow):
             else:
                 return f"1/{int(round(1/x))}"
 
-        curvature = self.dataStorage.get("curvature")
+        curvature = lxml.get("curvature")
         if (curvature is not None and len(curvature) > 0) and (stationHorizontal is not None and len(stationHorizontal) > 0):
             line, = self.canvas.ax_curvature.plot(stationHorizontal, curvature, marker='o', linestyle='-', color='tab:orange', label=lan["curvature"])
             self.plotCurvatureData["curvature"] = line
             line.set_visible(self.toggleCurvatureAction.isChecked())
 
-        curvatureNew = self.dataStorage.get("curvatureNew")
+        curvatureNew = lxml.get("curvatureNew")
         if (curvatureNew is not None and len(curvatureNew) > 0) and (stationHorizontalNew is not None and len(stationHorizontalNew) > 0):
             line, = self.canvas.ax_curvature.plot(stationHorizontalNew, curvatureNew, marker='o', linestyle='-', color='tab:green', label=lan["curvature"])
             self.plotCurvatureData["curvatureNew"] = line
@@ -786,7 +778,6 @@ class MainWindow(QMainWindow):
         lan = lang.DIC[self.current_language]
 
         self.canvas.ax_speed.clear()
-
 
         stationSpeedLimits = self.dataStorage.get("stationSpeedLimits")
         stationSpeed100 = self.dataStorage.get("stationSpeed100")
@@ -972,7 +963,7 @@ class MainWindow(QMainWindow):
             self.dataStorage["settingsData"] = dialog.getSettings()
 
     # Design approach settings
-    def designApproachSettings(self):
+    def openDesignApproach(self):
         lan = lang.DIC[self.current_language]
 
         dialog = gui_overlay.DesignApproachDialog(lan, self)
@@ -1037,3 +1028,14 @@ class MainWindow(QMainWindow):
         })
 
         return sections
+    
+    def calculateGeometry(self):
+
+        if "alignmentCoordinates" not in self.dataStorage:
+            return
+        
+        calculate = geometry_engine.GeometryCalculator(self.dataStorage)
+        calculate.runCalculationLoop()
+        self.plotCant()
+        self.plotSpeedLimits()
+    
