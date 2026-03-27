@@ -25,6 +25,10 @@ defVal = {
             [0,160,10,4,4],
             [160,200,10,8,6],
             [200,360,10,9,6]
-            ]
+            ],
+"vInit":    [120],
+"profileDefault": ["I150"],
+"maxD":     [150],
+"designApproach": "standard"
         
 }

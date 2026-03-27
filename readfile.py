@@ -4,7 +4,6 @@ import re
 from pyproj import Transformer
 from pyclothoids import Clothoid
 
-
 # Open file dialog
 
 class ReadFile:
@@ -49,45 +48,29 @@ class ReadFile:
         # Use the provided XML data string instead of opening a file            
         root = ET.fromstring(xml_data)
 
+        # Alignment length
+        length = []
+        for alig in root.iter():
+            if alig.tag.endswith('Alignment'):
+                length.append(alig.get('length'))
+                length.append(alig.get('staStart'))
+        length = np.array(length, dtype=float)
+
         # Extract stations where cant is defined
         stationCant = []
         for km in root.iter():
             if km.tag.endswith('CantStation'):
-                stationCant.append(km.get('station')) 
+                stationCant.append(km.get('station'))
+        stationCant.append(length[0]+length[1])
 
         # Extract cant values
         cant = []
         for mm in root.iter():
             if mm.tag.endswith('CantStation'):
                 cant.append(mm.get('appliedCant'))
-            
-
-        # Extract station, where horizontal alignment is being changed
-        stationHorizontal = []
-        for km in root.iter():
-            if km.tag.endswith('Line') or km.tag.endswith('Spiral') or km.tag.endswith('Curve'):
-                stationHorizontal.append(km.get('staStart'))
-
-        # Extract radius values
-        radius = []
-        for r in root.iter():
-            if r.tag.endswith('Line'):
-                radius.append('INF')  # Infinite radius for straight lines"
-            elif r.tag.endswith('Spiral'):
-                radius.append(r.get('radiusStart'))
-            elif r.tag.endswith('Curve'):
-                radius.append(r.get('radius'))
-
-        # Convert radius to curvature
-        curvature = []
-        for r in radius:
-            try:
-                curvature.append(1/float(r))
-            except:
-                curvature.append(0)
+        cant.append(cant[-1])
 
         # Vertical alignment data
-        
         stationVertical = []
         elevation = []
 
@@ -109,7 +92,6 @@ class ReadFile:
                             continue
 
         # Extract start and end of elements coordinates
-
         lineStartX = []
         lineStartY = []
         lineEndX = []
@@ -180,7 +162,86 @@ class ReadFile:
                         if len(coordinatesTemp) >= 2:
                             curveCenterX.append(coordinatesTemp[0])
                             curveCenterY.append(coordinatesTemp[1])
-                
+
+        # Extract station, where horizontal alignment is being changed
+        stationHorizontal = []
+        elements = []
+        for el in root.iter():
+            if el.tag.endswith('Line') or el.tag.endswith('Spiral') or el.tag.endswith('Curve'):
+                if el.get('staStart') is not None:
+                    elements.append(el)
+
+        for i, km in enumerate(elements):
+            staStart = float(km.get('staStart',"0"))
+            
+            if i+1 < len(elements):
+                staEnd = float(elements[i+1].get('staStart',"0"))
+            else:
+                staEnd = length[0]+length[1]
+            
+            stationHorizontal.append(staStart)
+            stationHorizontal.append(staEnd)
+
+        # Extract radius values
+        radius = []
+        curvature = []
+        curvatureSign = []
+        geometryType = []
+        
+        for r in elements:
+            sign = 1.0
+            if r.tag.endswith('Curve') or r.tag.endswith('Spiral'):
+                if r.get('rot') == "ccw":
+                    sign = -1.0
+
+            if r.tag.endswith('Line'):
+                radius.append('INF')    # Infinite radius for straight lines
+                radius.append('INF')    # Once again for station end
+                geometryType.append('Line')
+                geometryType.append('Line')
+                curvature.append(0)
+                curvature.append(0)
+                curvatureSign.append(sign)
+                curvatureSign.append(sign)
+
+            elif r.tag.endswith('Spiral'):
+                radius.append(r.get('radiusStart'))
+                radius.append(r.get('radiusEnd'))
+                geometryType.append('Spiral')
+                geometryType.append('Spiral')
+                try:
+                    curvature.append(1/float(r.get('radiusStart')))
+                except:
+                    curvature.append(0)
+                try:
+                    curvature.append(1/float(r.get('radiusEnd')))
+                except:
+                    curvature.append(0)
+                curvatureSign.append(sign)
+                curvatureSign.append(sign)
+
+            elif r.tag.endswith('Curve'):
+                radius.append(r.get('radius'))
+                radius.append(r.get('radius'))
+                geometryType.append('Curve')
+                geometryType.append('Curve')
+                try:
+                    curvature.append(1/float(r.get('radius')))
+                except:
+                    curvature.append(0)
+                try:
+                    curvature.append(1/float(r.get('radius')))
+                except:
+                    curvature.append(0)
+                curvatureSign.append(sign)
+                curvatureSign.append(sign)
+
+        # Parse line station
+        lineStationStart = []
+        for km in root.iter():
+            if km.tag.endswith('Line'):
+                lineStationStart.append(km.get('staStart'))
+
         # Parse spiral attributes
         spiralStationStart = []
         spiralLength = []
@@ -191,7 +252,7 @@ class ReadFile:
         spiralConst = []
 
         for spiral in root.iter():
-            if spiral.tag.endswith('Spiral'):
+            if spiral.tag.endswith('Spiral') and spiral.get('staStart') is not None:
                 
                 spiralStationStart.append(spiral.get('staStart'))
                 
@@ -214,7 +275,7 @@ class ReadFile:
         curveRadius = []
 
         for curve in root.iter():
-            if curve.tag.endswith('Curve'):
+            if curve.tag.endswith('Curve') and curve.get('staStart') is not None:
                 
                 curveStationStart.append(curve.get('staStart'))
 
@@ -228,8 +289,10 @@ class ReadFile:
         stationCant = np.array(stationCant, dtype=float)/1000  # Convert from m to km
         cant = np.array(cant, dtype=float)
         stationHorizontal = np.array(stationHorizontal, dtype=float)/1000  # Convert from m to km
+        geometryType = np.array(geometryType)
         radius = np.array(radius, dtype=float)
         curvature = np.array(curvature, dtype=float)
+        curvatureSign = np.array(curvatureSign, dtype=float)
         stationVertical = np.array(stationVertical, dtype=float)/1000  # Convert from m to km
         elevation = np.array(elevation, dtype=float)
         lineStartX = np.array(lineStartX, dtype=float)
@@ -248,21 +311,28 @@ class ReadFile:
         curveEndY = np.array(curveEndY, dtype=float)
         curveCenterX = np.array(curveCenterX, dtype=float)
         curveCenterY = np.array(curveCenterY, dtype=float)
+        lineStationStart = np.array(lineStationStart, dtype=float)/1000  # Convert from m to km
         spiralStationStart = np.array(spiralStationStart, dtype=float)/1000  # Convert from m to km
         spiralLength = np.array(spiralLength, dtype=float)
         spiralRadiusStart = np.array(spiralRadiusStart, dtype=float)
         spiralRadiusEnd = np.array(spiralRadiusEnd, dtype=float)
         spiralConst = np.array(spiralConst, dtype=float)
+        spiralRot = np.array(spiralRot)
+        spiralType = np.array(spiralType)
         curveStationStart = np.array(curveStationStart, dtype=float)/1000  # Convert from m to km
         curveRadius = np.array(curveRadius, dtype=float)
+        curveRot = np.array(curveRot)
+        curveType = np.array(curveType)
 
         # Combine extracted data into a structured dictionary
         parsedXML = {
             "stationCant": stationCant,
             "cant": cant,
             "stationHorizontal": stationHorizontal,
+            "geometryType": geometryType,
             "radius": radius,
             "curvature": curvature,
+            "curvatureSign": curvatureSign,
             "stationVertical": stationVertical,
             "elevation": elevation,
             "lineStartX": lineStartX,
@@ -281,6 +351,7 @@ class ReadFile:
             "curveEndY": curveEndY,
             "curveCenterX": curveCenterX,
             "curveCenterY": curveCenterY,
+            "lineStationStart": lineStationStart,
             "spiralStationStart": spiralStationStart,
             "spiralLength": spiralLength,
             "spiralRadiusStart": spiralRadiusStart,

@@ -456,5 +456,11 @@ class DesignApproachDialog(QDialog):
 
     def getDesignApproach(self):
         selected = self.approachCombobox.currentText()
-        
-        return selected
+        if selected == self.lan["standard"]:
+            return "standard"
+        elif selected == self.lan["limit"]:
+            return "limit"
+        elif selected == self.lan["minmax"]:
+            return "minmax"
+        else:
+            return "standard"

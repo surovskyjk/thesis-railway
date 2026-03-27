@@ -52,7 +52,6 @@ class MainWindow(QMainWindow):
         self.epsgInput = "EPSG:5514"
 
         # Empty dictionaries for data to be loaded and plotted
-
         self.dataStorage = {}
         self.plotCantData = {}
         self.plotCurvatureData = {}
@@ -60,11 +59,7 @@ class MainWindow(QMainWindow):
 
         # Import default values to dataStorage
         self.dataStorage["settingsData"] = {}
-        self.dataStorage["settingsData"] = default_values.defVal
-        # self.dataStorage["settingsData"]["dI"] = default_values.defVal["dI"]
-        # self.dataStorage["settingsData"]["I"] = default_values.defVal["I"]
-        # self.dataStorage["settingsData"]["nLin"] = default_values.defVal["nLin"]
-        # self.dataStorage["settingsData"]["nILin"] = default_values.defVal["nILin"]     
+        self.dataStorage["settingsData"] = default_values.defVal  
 
         # Layouts - main grid
         layoutTabsXML = QTabWidget()
@@ -127,6 +122,14 @@ class MainWindow(QMainWindow):
         cleanDataAction = QAction(lan["cleanAll"], self)
         self.cleanMenu.addAction(cleanDataAction)
         cleanDataAction.triggered.connect(self.cleanData)
+
+        cleanCalculatedCantsAction = QAction(lan["cleanCants"], self)
+        self.cleanMenu.addAction(cleanCalculatedCantsAction)
+        cleanCalculatedCantsAction.triggered.connect(self.cleanCalculatedCants)
+
+        cleanCalculatedSpeedsAction = QAction(lan["cleanSpeeds"], self)
+        self.cleanMenu.addAction(cleanCalculatedSpeedsAction)
+        cleanCalculatedSpeedsAction.triggered.connect(self.cleanCalculatedSpeeds)
 
         # Submenu - Settings
         self.languageMenu = self.settingsMenu.addMenu(lan["language"])
@@ -423,6 +426,9 @@ class MainWindow(QMainWindow):
         self.cleanMenu.actions()[0].setText(lan["cleanTTP"])
         self.cleanMenu.actions()[1].setText(lan["cleanLandXML"])
         self.cleanMenu.actions()[2].setText(lan["cleanAll"])
+        self.cleanMenu.actions()[3].setText(lan["cleanCants"])
+        self.cleanMenu.actions()[4].setText(lan["cleanSpeeds"])
+
 
         self.exitMenu.actions()[0].setText(lan["exit"])
 
@@ -552,7 +558,7 @@ class MainWindow(QMainWindow):
                     sectionsInfo.append(f"{lan['station']} {section['stationStart']:.6f} km - {section['stationEnd']:.6f} km")
 
                 # LandXML data availability check for cropping option in TTP sections dialog
-                HasLandXML = "stationHorizontal" in self.dataStorage and len(self.dataStorage["stationHorizontal"]) > 0
+                HasLandXML = "stationHorizontal" in self.dataStorage.get("LandXML",{}) and len(self.dataStorage.get("LandXML",{}).get("stationHorizontal")) > 0
 
                 # Show the section selection dialog
                 dialog = gui_overlay.TTPSelectSectionDialog(sectionsInfo, HasLandXML, lan, self)
@@ -591,8 +597,8 @@ class MainWindow(QMainWindow):
                 speedLimitsRaw = np.concatenate(tempSpeedLimits)
 
             if cropToLandXML and HasLandXML:
-                LandXMLMin = np.nanmin(self.dataStorage["stationHorizontal"])
-                LandXMLMax = np.nanmax(self.dataStorage["stationHorizontal"])
+                LandXMLMin = np.nanmin(self.dataStorage.get("LandXML",{}).get("stationHorizontal"))
+                LandXMLMax = np.nanmax(self.dataStorage.get("LandXML",{}).get("stationHorizontal"))
 
                 if np.isnan(LandXMLMin) or np.isnan(LandXMLMax):
                     stations = stationsRaw
@@ -752,13 +758,13 @@ class MainWindow(QMainWindow):
 
         curvature = lxml.get("curvature")
         if (curvature is not None and len(curvature) > 0) and (stationHorizontal is not None and len(stationHorizontal) > 0):
-            line, = self.canvas.ax_curvature.plot(stationHorizontal, curvature, marker='o', linestyle='-', color='tab:orange', label=lan["curvature"])
+            line, = self.canvas.ax_curvature.plot(stationHorizontal, curvature, marker='o', linestyle='-', color='tab:gray', label=lan["curvature"])
             self.plotCurvatureData["curvature"] = line
             line.set_visible(self.toggleCurvatureAction.isChecked())
 
         curvatureNew = lxml.get("curvatureNew")
         if (curvatureNew is not None and len(curvatureNew) > 0) and (stationHorizontalNew is not None and len(stationHorizontalNew) > 0):
-            line, = self.canvas.ax_curvature.plot(stationHorizontalNew, curvatureNew, marker='o', linestyle='-', color='tab:green', label=lan["curvature"])
+            line, = self.canvas.ax_curvature.plot(stationHorizontalNew, curvatureNew, marker='o', linestyle='-', color='tab:gray', label=lan["curvature"])
             self.plotCurvatureData["curvatureNew"] = line
             line.set_visible(self.toggleCurvatureNewAction.isChecked())
         
@@ -828,18 +834,22 @@ class MainWindow(QMainWindow):
         self.canvas.draw()
 
     def cleanData(self):
-        self.textboxRawLandXML.setPlainText("")
-        self.textboxRawTTP.setPlainText("")
-        self.tableLandXML.setData({})
-        self.tableTTP.setData({})
+        self.cleanLandXMLData()
+        self.cleanTTPData()
+        self.cleanCalculatedCants()
+        self.cleanCalculatedSpeeds()
+
         self.canvas.ax_cant.clear()
         self.canvas.ax_speed.clear()
         self.canvas.ax_curvature.clear()
-        self.dataStorage.clear()
-        self.plotCantData.clear()
-        self.plotSpeedData.clear()
-        self.plotCurvatureData.clear()
+
         self.canvas.draw()
+
+        keep = ["settingsData",]
+
+        for key in list(self.dataStorage.keys()):
+            if key not in keep:
+                del self.dataStorage[key]
 
     def cleanTTPData(self):
         self.textboxRawTTP.setPlainText("")
@@ -854,11 +864,36 @@ class MainWindow(QMainWindow):
     def cleanLandXMLData(self):
         self.textboxRawLandXML.setPlainText("")
         self.tableLandXML.setData({})
-        self.dataStorage["stationHorizontal"] = []
-        self.dataStorage["stationCant"] = []
-        self.dataStorage["cant"] = []
-        self.dataStorage["curvature"] = []
+        self.dataStorage["LandXML"] = {}
         self.plotCantData.clear()
+        self.plotCurvatureData.clear()
+        self.canvas.draw()
+
+    def cleanCalculatedCants(self):
+        lxml = self.dataStorage.setdefault("LandXML",{})
+        lxml["stationCantPossible"] = []
+        lxml["cDef100"] = []
+        lxml["cDef130"] = []
+        lxml["cDef150"] = []
+        lxml["cDefK"] = []
+        lxml["cantPossible"] = []
+        lxml["cantDef100"] = []
+        lxml["cantDef130"] = []
+        lxml["cantDef150"] = []
+        lxml["cantDefK"] = []
+        self.plotCantData.clear()
+        self.canvas.draw()
+
+    def cleanCalculatedSpeeds(self):
+        self.dataStorage["stationSpeed100"] = []
+        self.dataStorage["stationSpeed130"] = []
+        self.dataStorage["stationSpeed150"] = []
+        self.dataStorage["stationSpeedK"] = []
+        self.dataStorage["speedLimits100"] = []
+        self.dataStorage["speedLimits130"] = []
+        self.dataStorage["speedLimits150"] = []
+        self.dataStorage["speedLimitsK"] = []
+        self.plotSpeedData.clear()
         self.canvas.draw()
 
     # Set visibility
@@ -968,7 +1003,7 @@ class MainWindow(QMainWindow):
 
         dialog = gui_overlay.DesignApproachDialog(lan, self)
         if dialog.exec():
-            self.dataStorage["designApproach"] = dialog.getDesignApproach()
+            self.dataStorage["settingsData"]["designApproach"] = dialog.getDesignApproach()
 
     # Help
     def openHelp(self):
@@ -1031,11 +1066,23 @@ class MainWindow(QMainWindow):
     
     def calculateGeometry(self):
 
-        if "alignmentCoordinates" not in self.dataStorage:
+        if "alignmentCoordinates" not in self.dataStorage.get("LandXML",{}):
             return
         
         calculate = geometry_engine.GeometryCalculator(self.dataStorage)
         calculate.runCalculationLoop()
+
+        self.plotCant()
+        self.plotSpeedLimits()
+
+    def calculateGeometryI(self):
+
+        if "alignmentCoordinates" not in self.dataStorage.get("LandXML",{}):
+            return
+        
+        calculate = geometry_engine.GeometryCalculator(self.dataStorage)
+        calculate.runCalculationLoopI()
+
         self.plotCant()
         self.plotSpeedLimits()
     
