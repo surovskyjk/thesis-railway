@@ -22,9 +22,10 @@ class GeometryCalculator:
         self.curveMask = np.where(self.geometryType == "Curve")[0]
         self.lineMask = np.where(self.geometryType == "Line")[0]
 
-        self.kappa = lxml.get("curvature",[]) * lxml.get("curvatureSign",[])
-
         lenStationPos = len(lxml["stationCantPossible"])
+
+        self.kappa = lxml.get("curvature",np.zeros(lenStationPos)) * lxml.get("curvatureSign",np.zeros(lenStationPos))
+        self.curvSign = lxml.get("curvatureSign",np.zeros(lenStationPos))
 
         # Cant arrays
         lxml["cantPossible"] = np.zeros(lenStationPos)
@@ -99,97 +100,170 @@ class GeometryCalculator:
             convergenceReached = True
             iterationN += 1
 
-            # Calculate Deq for each segment, set maximum D and rest put into I
+            # Stage 1 - based on Vinit in each element, calculate D
+            cantTarget = np.zeros_like(self.cantNew)
+
             for i in range(0, len(self.cantNew)):
                 Deq = self.calculateCant(self.vInit[i], 0, self.kappa[i])
                 signKappa = np.sign(self.kappa[i]) if self.kappa[i] != 0 else 1
-                self.cantNew[i] = signKappa*min(np.abs(Deq), self.maxD, self.geometryMaxD(self.kappa[i]))
-                
-                I = self.calculateCantDef(self.vInit[i], self.cantNew[i], self.kappa[i])
-                self.cantDef[i] = signKappa*min(abs(I), self.getNormLimit("I", self.vInit[i], approach)[0])
+                cantTarget[i] = signKappa*min(np.abs(Deq), self.maxD, self.geometryMaxD(self.kappa[i]))
 
-            # Force D and I in line elements zero
-            self.cantNew[self.lineMask] = 0
-            self.cantDef[self.lineMask] = 0
+            cantTarget[self.lineMask] = 0
 
-            # Go element-wise and assign max possible change of D and I - forward
+            cantFWD = np.copy(cantTarget)
             for i in range(1, len(self.stations)):
                 length = (self.stations[i] - self.stations[i-1])*1000
+                dD = 0
+                if length > 0 and self.geometryType[i] == "Spiral":
+                    dD = self.calculateCantN(self.vInit[i],self.getNormLimit("nLin", self.vInit[i], approach), length)
+                if self.geometryType[i] == "Line":
+                    cantFWD[i] = 0
+                else:
+                    cantFWD[i] = np.clip(
+                        cantFWD[i],
+                        cantFWD[i-1] - dD,
+                        cantFWD[i-1] + dD
+                    )
+
+                    if self.curvSign[i] > 0:
+                        cantFWD[i] = max(0, cantFWD[i])
+                    elif self.curvSign[i] < 0:
+                        cantFWD[i] = min(0, cantFWD[i])
+
+
+            cantBWD = np.copy(cantTarget)
+            for i in range(len(self.stations)-2, -1, -1):
+                length = (self.stations[i+1] - self.stations[i])*1000
+                dD = 0
+                if length > 0 and self.geometryType[i+1] == "Spiral":
+                    dD = self.calculateCantN(self.vInit[i],self.getNormLimit("nLin", self.vInit[i], approach), length)
+                if self.geometryType[i] == "Line":
+                    cantBWD[i] = 0
+                else:
+                    cantBWD[i] = np.clip(
+                        cantBWD[i],
+                        cantBWD[i+1] - dD,
+                        cantBWD[i+1] + dD
+                    )
+
+                    if self.curvSign[i] > 0:
+                        cantBWD[i] = max(0, cantFWD[i])
+                    elif self.curvSign[i] < 0:
+                        cantBWD[i] = min(0, cantFWD[i])
+
+
+            self.cantNew[:] = np.where(np.abs(cantFWD) < np.abs(cantBWD), cantFWD, cantBWD)
+
+            # Stage 2 - based on Vinit and D in each element, calculate I
+            cantDefTarget = np.zeros_like(self.cantDef)
+
+            for i in range(0, len(self.cantDef)):
+                if self.geometryType[i] == "Line":
+                    cantDefTarget[i] = 0
+                else:
+                    signKappa = np.sign(self.kappa[i]) if self.kappa[i] != 0 else 1
+                    maxI = self.getNormLimit("I", self.vInit[i], approach)[0]
+                    cantDefTarget[i] = signKappa*maxI
+
+            cantDefTarget[self.lineMask] = 0
+            
+            cantDefFWD = np.copy(cantDefTarget)
+            for i in range(1, len(self.stations)):
+                length = (self.stations[i] - self.stations[i-1])*1000
+                dI = 0
                 if length <= 0:
                     if self.geometryType[i] != "Spiral" and self.geometryType[i-1] != "Spiral" and self.kappa[i] != self.kappa[i-1]:
-                        dD = 0
                         dI = self.getNormLimit("dI", self.vInit[i], approach)[0]
-                        
-                if self.geometryType[i] == "Spiral":
-                    dD = self.calculateCantN(self.vMax[i],self.getNormLimit("nLin", self.vMax[i], approach), length)
-                    dI = self.calculateCantDefNi(self.vMax[i], self.getNormLimit("nILin", self.vMax[i], approach), length)
+                elif self.geometryType[i] == "Spiral":
+                    dI = self.calculateCantDefNi(self.vInit[i], self.getNormLimit("nILin", self.vInit[i], approach), length)
+                if self.geometryType[i] == "Line":
+                    cantDefFWD[i] = 0
                 else:
-                    dD = 0
-                    dI = 0
+                    cantDefFWD[i] = np.clip(
+                        cantDefFWD[i],
+                        cantDefFWD[i-1] - dI,
+                        cantDefFWD[i-1] + dI
+                    )
 
-                self.cantNew[i] = np.clip(
-                    self.cantNew[i],
-                    self.cantNew[i-1] - dD,
-                    self.cantNew[i-1] + dD
-                )
+                    if self.curvSign[i] > 0:
+                        cantDefFWD[i] = max(0, cantDefFWD[i])
+                    elif self.curvSign[i] < 0:
+                        cantDefFWD[i] = min(0, cantDefFWD[i])
 
-                self.cantDef[i] = np.clip(
-                    self.cantDef[i],
-                    self.cantDef[i-1] - dI,
-                    self.cantDef[i-1] + dI
-                )
 
-            # Go element-wise and assign max possible change of D and I - backward
-            # for i in range(len(self.stations)-2, -1, -1):
-            #     length = (self.stations[i+1] - self.stations[i])*1000
-            #     if length <= 0:
-            #         if self.geometryType[i] != "Spiral" and self.geometryType[i+1] != "Spiral" and self.kappa[i] != self.kappa[i+1]:
-            #             dD = 0
-            #             dI = self.getNormLimit("dI", self.vInit[i], approach)[0]
-            #     if self.geometryType[i] == "Spiral":
-            #         dD = self.calculateCantN(self.vMax[i],self.getNormLimit("nLin", self.vMax[i], approach), length)
-            #         dI = self.calculateCantDefNi(self.vMax[i], self.getNormLimit("nILin", self.vMax[i], approach), length)
-            #     else:
-            #         dD = 0
-            #         dI = 0
+            cantDefBWD = np.copy(cantDefTarget)
+            for i in range(len(self.stations)-2, -1, -1):
+                length = (self.stations[i+1] - self.stations[i])*1000
+                dI = 0
+                if length <= 0:
+                    if self.geometryType[i] != "Spiral" and self.geometryType[i+1] != "Spiral" and self.kappa[i] != self.kappa[i+1]:
+                        dI = self.getNormLimit("dI", self.vInit[i], approach)[0]
+                elif self.geometryType[i+1] == "Spiral":
+                    dI = self.calculateCantDefNi(self.vInit[i], self.getNormLimit("nILin", self.vInit[i], approach), length)
+                if self.geometryType[i] == "Line":
+                    cantDefBWD[i] = 0
+                else:
+                    cantDefBWD[i] = np.clip(
+                        cantDefBWD[i],
+                        cantDefFWD[i+1] - dI,
+                        cantDefFWD[i+1] + dI
+                    )
 
-            #     self.cantNew[i] = np.clip(
-            #         self.cantNew[i],
-            #         self.cantNew[i+1] - dD,
-            #         self.cantNew[i+1] + dD
-            #     )
+                    if self.curvSign[i] > 0:
+                        cantDefBWD[i] = max(0, cantDefBWD[i])
+                    elif self.curvSign[i] < 0:
+                        cantDefBWD[i] = min(0, cantDefBWD[i])
 
-            #     self.cantDef[i] = np.clip(
-            #         self.cantDef[i],
-            #         self.cantDef[i+1] - dI,
-            #         self.cantDef[i+1] + dI
-            #     )
 
-            # Assign max I and D values, assign speed
-            for i in range(0, len(self.cantNew)):
-                self.cantNew[i] = np.abs(self.cantNew[i])
-                self.cantDef[i] = np.abs(self.cantDef[i])
+            self.cantDef[:] = np.where(np.abs(cantDefFWD) < np.abs(cantDefBWD), cantDefFWD, cantDefBWD)
 
-                self.vMax[i] = self.calculateSpeed(self.cantNew[i], self.cantDef[i], np.abs(self.kappa[i]), 5, self.vInit[i])
+            # Stage 3 - Ensure continuous D and I (exception of delta I for connecting lines and curves but not spirals)
+            for i in range(1, len(self.stations)):
+                if self.stations[i] == self.stations[i-1]:
+                    minD = min(np.abs(self.cantNew[i-1]), np.abs(self.cantNew[i]))
+                    signD = np.sign(self.cantNew[i]) if self.cantNew[i] != 0 else np.sign(self.cantNew[i-1])
+                    self.cantNew[i] = signD * minD
+                    self.cantNew[i-1] = signD * minD
+             
+                    if self.geometryType[i] == "Spiral" or self.geometryType[i-1] == "Spiral":
+                        minI = min(np.abs(self.cantDef[i-1]), np.abs(self.cantDef[i]))
+                        signI = np.sign(self.cantDef[i]) if self.cantDef[i] != 0 else np.sign(self.cantDef[i-1])
+                        self.cantDef[i] = signI * minI
+                        self.cantDef[i-1] = signI * minI
 
-                if self.vMax[i] < self.vInit[i]:
+            # Stage 4 - Calculate speed in respective section
+            for i in range(0, len(self.cantNew), 2):
+                v1 = self.calculateSpeed(np.abs(self.cantNew[i]), np.abs(self.cantDef[i]), np.abs(self.kappa[i]), 5, self.vInit[i])
+                v2 = self.calculateSpeed(np.abs(self.cantNew[i+1]), np.abs(self.cantDef[i+1]), np.abs(self.kappa[i+1]), 5, self.vInit[i+1])
+
+                minVmax = min(v1, v2)
+
+                self.vMax[i] = min(self.vInit[i], minVmax)
+                self.vMax[i+1] = min(self.vInit[i+1], minVmax)
+
+                if self.vMax[i] < self.vInit[i] or self.vMax[i+1] < self.vInit[i+1]:
                     if self.vInit[i] > 20:
                         self.vInit[i] -= 5
+                        self.vInit[i+1] -= 5
                         convergenceReached = False
 
                 self.vMax[i] = min(self.vMax[i], self.vInit[i])
+
+        # Debugging print
+        for i in range(0,len(self.cantNew)):
+            print(self.stations[i], self.cantNew[i], self.cantDef[i], self.vMax[i], self.vInit[i], self.geometryType[i], self.kappa[i])
+        print(self.getNormLimit("nLin", 120, approach))
+        print(f"Convergation reached after {iterationN} iterations.")
+
+        for i in range(0, len(self.cantNew)):        
+            self.cantNew[i] = np.floor(np.abs(self.cantNew[i]))
+            self.cantDef[i] = np.ceil(np.abs(self.cantDef[i]))
 
         for i in range(0, len(self.vMax)):
             self.speed100[i] = self.vMax[i]
             self.speed130[i] = self.vMax[i]
             self.speed150[i] = self.vMax[i]
             self.speedK[i] = self.vMax[i]
-
-        # Debugging print
-        for i in range(0,len(self.cantNew)):
-            print(self.stations[i], self.cantNew[i], self.cantDef[i], self.vMax[i])
-        print(self.getNormLimit("nLin", 120, approach))
-        print(f"Convergation reached after {iterationN} iterations.")
 
     def runCalculationLoopI(self):
 
@@ -199,12 +273,12 @@ class GeometryCalculator:
         if n[0] == 0 or v == 0:
             return 0
         gradient = max(n[0]*v, n[1])
-        return np.floor(length*1000/(gradient))
+        return length*1000/(gradient)
 
     def calculateCantDefNi(self, v, nI, length):
         if nI == 0 or v == 0:
             return 0
-        return np.ceil(length*1000/(nI[0]*v))
+        return length*1000/(nI[0]*v)
 
     def calculateN(self, v, length, D):
         if D == 0:
@@ -221,10 +295,10 @@ class GeometryCalculator:
         return length*1000/(I*v)
 
     def calculateCant(self, v, I, kappa):
-        return np.floor((11.8 * (v**2) * kappa) - I)
+        return (11.8 * (v**2) * kappa) - I
 
     def calculateCantDef(self, v, D, kappa):
-        return np.ceil((11.8 * (v**2) * kappa) - D)
+        return (11.8 * (v**2) * kappa) - D
 
     def calculateSpeed(self, D, I, kappa, round, vInit):
         if kappa == 0:
