@@ -110,6 +110,10 @@ class MainWindow(QMainWindow):
         self.calculateMenu.addAction(calculateGeometryAction)
         calculateGeometryAction.triggered.connect(self.calculateGeometry)
 
+        calculateGeometryIAction = QAction(lan["calculate_geometry_I"], self)
+        self.calculateMenu.addAction(calculateGeometryIAction)
+        calculateGeometryIAction.triggered.connect(self.calculateGeometryI)
+
         # Submenu - Clean
         cleanTTPDataAction = QAction(lan["cleanTTP"], self)
         self.cleanMenu.addAction(cleanTTPDataAction)

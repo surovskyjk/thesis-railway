@@ -49,6 +49,7 @@ DIC = {
          "EPSGinfo": "Výstupní EPSG je vždy WGS-84 - EPSG:4326",
          "calculate": "&Vypočítat",
          "calculate_geometry": "Vypočítat D, I a odpovídající rychlosti",
+         "calculate_geometry_I":"Vypočítat I a odpovídající rychlosti, D se nemění",
          "geometry": "Geometrie",
          "train": "Jízda vlaku",
          "cant_possible": "možné převýšení [mm]",
@@ -100,6 +101,7 @@ DIC = {
          "standard": "Standardní",
          "limit": "Limitní",
          "minmax": "Minimální/maximální",
+         "cantNotFound": "Nebyla nalezena data o stávajícím převýšení.",
         },
 
      "en": {
@@ -149,6 +151,7 @@ DIC = {
          "EPSGinfo": "Output EPSG is always WGS-84 - EPSG:4326",
          "calculate": "&Calculate",
          "calculate_geometry": "Calculate D, I and respective speeds",
+         "calculate_geometry_I":"Calculate I and respective speeds, D stays the same",
          "geometry": "Geometry",
          "train": "Train",
          "cant_possible": "possible cant [mm]",
@@ -200,6 +203,7 @@ DIC = {
          "standard": "Standard",
          "limit": "Limit",
          "minmax": "Min/Max",
+         "cantNotFound": "Cant deficiency data not found.",
         },  
 
      "de": {
@@ -249,6 +253,7 @@ DIC = {
          "EPSGinfo": "Ausgabe-EPSG ist immer WGS-84 - EPSG:4326",
          "calculate": "&Berechnen",
          "calculate_geometry": "Berechnen u, u_f und Geschwindigkeiten",
+         "calculate_geometry_I":"Berechnen u_f und Geschwindigkeiten, u ist nicht geändert",
          "geometry": "Geometrie",
          "train": "Zugfahrt",
          "cant_possible": "Mögliche Überhöhung [mm]",
@@ -300,5 +305,6 @@ DIC = {
          "standard": "Standard",
          "limit": "Limit",
          "minmax": "Min/Max",
+         "cantNotFound": "Überhöhungsg Daten nicht gefunden.",
         }
     }
