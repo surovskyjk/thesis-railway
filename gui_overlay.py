@@ -11,7 +11,6 @@ import readfile
 import io
 import default_values
 
-
 class TTPSelectSectionDialog(QDialog):
     def __init__(self, sections, HasLandXML, lan, parent=None):
         super().__init__(parent)
@@ -62,7 +61,6 @@ class TTPSelectSectionDialog(QDialog):
         selectedIds = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
         
         return selectedIds, self.LandXMLCheckBox.isChecked(), self.loadAllCheckBox.isChecked()
-
 
 class MapSettingsDialog(QDialog):
     def __init__(self, currentEPSG, lan, parent=None):
@@ -373,13 +371,13 @@ class GeometrySettingsDialog(QDialog):
         # Table I
         for row in range(self.tableI.rowCount()):
             try:
-                settingsData["I"].append({
-                    "Vbottom": float(self.tableI.item(row, 0).text()),
-                    "Vtop": float(self.tableI.item(row, 1).text()),
-                    "I_std": float(self.tableI.item(row, 2).text()),
-                    "I_lim": float(self.tableI.item(row, 3).text()),
-                    "I_max": float(self.tableI.item(row, 4).text())
-                })
+                settingsData["I"].append([
+                    float(self.tableI.item(row, 0).text()),
+                    float(self.tableI.item(row, 1).text()),
+                    float(self.tableI.item(row, 2).text()),
+                    float(self.tableI.item(row, 3).text()),
+                    float(self.tableI.item(row, 4).text())
+                ])
 
             except(ValueError, AttributeError):
                 continue
@@ -387,13 +385,13 @@ class GeometrySettingsDialog(QDialog):
         # Table dI
         for row in range(self.tableDI.rowCount()):
             try:
-                settingsData["dI"].append({
-                    "Vbottom": float(self.tableDI.item(row, 0).text()),
-                    "Vtop": float(self.tableDI.item(row, 1).text()),
-                    "dI_std": float(self.tableDI.item(row, 2).text()),
-                    "dI_lim": float(self.tableDI.item(row, 3).text()),
-                    "dI_max": float(self.tableDI.item(row, 4).text())
-                })
+                settingsData["dI"].append([
+                    float(self.tableDI.item(row, 0).text()),
+                    float(self.tableDI.item(row, 1).text()),
+                    float(self.tableDI.item(row, 2).text()),
+                    float(self.tableDI.item(row, 3).text()),
+                    float(self.tableDI.item(row, 4).text())
+                ])
 
             except(ValueError, AttributeError):
                 continue
@@ -401,16 +399,16 @@ class GeometrySettingsDialog(QDialog):
         # Table nLin
         for row in range(self.tableNlin.rowCount()):
             try:
-                settingsData["dI"].append({
-                    "Vbottom": float(self.tableNlin.item(row, 0).text()),
-                    "Vtop": float(self.tableNlin.item(row, 1).text()),
-                    "n_n": float(self.tableNlin.item(row, 2).text()),
-                    "n_n_abs": float(self.tableNlin.item(row, 3).text()),
-                    "n_lim": float(self.tableNlin.item(row, 4).text()),
-                    "n_lim_abs": float(self.tableNlin.item(row, 5).text()),
-                    "n_min": float(self.tableNlin.item(row, 6).text()),
-                    "n_min_abs": float(self.tableNlin.item(row, 7).text())
-                })
+                settingsData["nLin"].append([
+                    float(self.tableNlin.item(row, 0).text()),
+                    float(self.tableNlin.item(row, 1).text()),
+                    float(self.tableNlin.item(row, 2).text()),
+                    float(self.tableNlin.item(row, 3).text()),
+                    float(self.tableNlin.item(row, 4).text()),
+                    float(self.tableNlin.item(row, 5).text()),
+                    float(self.tableNlin.item(row, 6).text()),
+                    float(self.tableNlin.item(row, 7).text())
+                ])
 
             except(ValueError, AttributeError):
                 continue
@@ -418,13 +416,13 @@ class GeometrySettingsDialog(QDialog):
         # Table nILin
         for row in range(self.tableNIlin.rowCount()):
             try:
-                settingsData["dI"].append({
-                    "Vbottom": float(self.tableNIlin.item(row, 0).text()),
-                    "Vtop": float(self.tableNIlin.item(row, 1).text()),
-                    "nI_n": float(self.tableNIlin.item(row, 2).text()),
-                    "nI_lim": float(self.tableNIlin.item(row, 3).text()),
-                    "nI_min": float(self.tableNIlin.item(row, 4).text()),
-                })
+                settingsData["nILin"].append([
+                    float(self.tableNIlin.item(row, 0).text()),
+                    float(self.tableNIlin.item(row, 1).text()),
+                    float(self.tableNIlin.item(row, 2).text()),
+                    float(self.tableNIlin.item(row, 3).text()),
+                    float(self.tableNIlin.item(row, 4).text()),
+                ])
 
             except(ValueError, AttributeError):
                 continue
@@ -464,3 +462,202 @@ class DesignApproachDialog(QDialog):
             return "minmax"
         else:
             return "standard"
+
+class VehicleSettingsDialog(QDialog):
+    def __init__(self, lan, parent = None):
+        super().__init__(parent)
+
+        super().__init__(parent)
+        self.lan = lan
+        
+        self.setWindowTitle(lan["vehicleSettings"])
+        self.setMinimumSize(600,400)
+
+        layout = QVBoxLayout(self)
+        labelRes = QLabel(lan["vehicleResistance"])
+        layout.addWidget(labelRes)
+        
+        # Table for editing train resistance coefficients
+        self.tableRes = QTableWidget(0, 4)
+        self.tableRes.setHorizontalHeaderLabels([
+            lan["vehicle"],
+            lan["coefA"],
+            lan["coefB"],
+            lan["coefC"]
+        ])
+
+        headerRes = self.tableRes.horizontalHeader()
+        headerRes.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.tableRes)
+
+        # Default values for train resistance coefficients
+        defaultRes = default_values.defVal["trainRes"]
+
+        self.populateTable(self.tableRes, defaultRes)
+
+        toolbarLayoutRes = QHBoxLayout()
+
+        self.btnImportRes = QPushButton(lan["importCSV"])
+        self.btnImportRes.clicked.connect(lambda: self.importCSV("tableRes"))
+        toolbarLayoutRes.addWidget(self.btnImportRes)
+
+        self.btnExportRes = QPushButton(lan["exportCSV"])
+        self.btnExportRes.clicked.connect(lambda: self.exportCSV("tableRes"))
+        toolbarLayoutRes.addWidget(self.btnExportRes)
+
+        layout.addLayout(toolbarLayoutRes)
+
+        labelTrac = QLabel(lan["vehicleTraction"])
+        layout.addWidget(labelTrac)
+
+        # Table for editing train traction coefficients
+        self.tableTrac = QTableWidget(0, 6)
+        self.tableTrac.setHorizontalHeaderLabels([
+            lan["vehicle"],
+            lan["Vbottom"],
+            lan["Vtop"],
+            lan["coef_b0"],
+            lan["coef_b1"],
+            lan["coef_b2"]
+        ])
+
+        headerTrac = self.tableTrac.horizontalHeader()
+        headerTrac.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.tableTrac)
+
+        # Default values for vehicle resistance
+        defaultTrac = default_values.defVal["trainTrac"]
+
+        self.populateTable(self.tableTrac, defaultTrac)
+
+        toolbarLayoutTrac = QHBoxLayout()
+
+        self.btnImportTrac = QPushButton(lan["importCSV"])
+        self.btnImportTrac.clicked.connect(lambda: self.importCSV("tableTrac"))
+        toolbarLayoutTrac.addWidget(self.btnImportTrac)
+
+        self.btnExportTrac = QPushButton(lan["exportCSV"])
+        self.btnExportTrac.clicked.connect(lambda: self.exportCSV("tableTrac"))
+        toolbarLayoutTrac.addWidget(self.btnExportTrac)
+
+        layout.addLayout(toolbarLayoutTrac)
+
+        labelParam = QLabel(lan["vehicleParam"])
+        layout.addWidget(labelParam)
+
+        # Table for editing train parameters coefficients
+        self.tableParam = QTableWidget(0, 3)
+        self.tableParam.setHorizontalHeaderLabels([
+            lan["vehicle"],
+            lan["rotMass"],
+            lan["weight"]
+        ])
+
+        headerParam = self.tableParam.horizontalHeader()
+        headerParam.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.tableParam)
+
+        # Default values for train parameters
+        defaultParam = default_values.defVal["trainParam"]
+
+        self.populateTable(self.tableParam, defaultParam)
+
+        toolbarLayoutParam = QHBoxLayout()
+
+        self.btnImportParam = QPushButton(lan["importCSV"])
+        self.btnImportParam.clicked.connect(lambda: self.importCSV("tableParam"))
+        toolbarLayoutParam.addWidget(self.btnImportParam)
+
+        self.btnExportParam = QPushButton(lan["exportCSV"])
+        self.btnExportParam.clicked.connect(lambda: self.exportCSV("tableParam"))
+        toolbarLayoutParam.addWidget(self.btnExportParam)
+
+        layout.addLayout(toolbarLayoutParam)
+
+    def populateTable(self, tableWidget, data):
+        tableWidget.setRowCount(len(data))
+        for row, rowData in enumerate(data):
+            for col, value in enumerate(rowData):
+                item = QTableWidgetItem(str(value))
+                tableWidget.setItem(row, col, item)
+
+    def importCSV(self, table):
+        filepath, _ = QFileDialog.getOpenFileName(self, "Open File", "", "CSV Files (*.csv)")
+        
+        # If cancelled, do nothing
+        if not filepath:
+            return
+        
+        # Read file content 
+        file_content = readfile.ReadFile().Read(filepath)
+        
+        if file_content.startswith("Error"):
+            err = QMessageBox()
+            err.setWindowTitle("Error")
+            err.setIcon(QMessageBox.Icon.Warning)
+            err.exec()
+            return
+        
+        try:
+            # Reads CSV file content
+            reader = csv.reader(io.StringIO(file_content), delimiter=',')
+            # Skips header
+            next(reader, None)
+
+            if table == "tableRes":
+                self.populateTable(self.tableRes, reader)
+            
+            elif table == "tableTrac":
+                self.populateTable(self.tableTrac, reader)
+
+            elif table == "tableParam":
+                self.populateTable(self.tableParam, reader)
+
+            else:
+                raise ValueError
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
+            return
+        
+    def exportCSV(self, table):
+        filepath, _ = QFileDialog.getSaveFileName(self, "Save File", "", "CSV Files (*.csv)")
+        
+        # If cancelled, do nothing
+        if not filepath:
+            return
+        
+        try:
+            if table == "tableRes":
+                with open(filepath, "w", newline="") as file:
+                    writer = csv.writer(file)
+                    headers = ["Vehicle", "A", "B", "C"]
+                    writer.writerow(headers)
+
+                    for row in range(self.tableRes.rowCount()):
+                        rowData = [self.tableRes.item(row, col).text() for col in range(self.tableRes.columnCount())]
+                        writer.writerow(rowData)
+
+            elif table == "tableTrac":
+                with open(filepath, "w", newline="") as file:
+                    writer = csv.writer(file)
+                    headers = ["Vehicle", "Speed from", "Speed to", "Coefficient b_0", "Coefficient b_1", "Coefficient b_2"]
+                    writer.writerow(headers)
+
+                    for row in range(self.tableTrac.rowCount()):
+                        rowData = [self.tableTrac.item(row, col).text() for col in range(self.tableTrac.columnCount())]
+                        writer.writerow(rowData)
+
+            elif table == "tableParam":
+                with open(filepath, "w", newline="") as file:
+                    writer = csv.writer(file)
+                    headers = ["Vehicle", "Coefficient of Rotating Mass", "Weight (Tonnes)"]
+                    writer.writerow(headers)
+
+                    for row in range(self.tableParam.rowCount()):
+                        rowData = [self.tableParam.item(row, col).text() for col in range(self.tableParam.columnCount())]
+                        writer.writerow(rowData)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
+            return

@@ -21,9 +21,6 @@ def main():
     window.show()
     sys.exit(app.exec())
 
-
 # Run the application
-
 if __name__ == "__main__":
     main()
-

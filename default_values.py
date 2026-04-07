@@ -29,6 +29,11 @@ defVal = {
 "vInit":    [120],
 "profileDefault": ["I150"],
 "maxD":     [150],
-"designApproach": "standard"
+"designApproach": "standard",
+"trainRes": ["Placeholder BEMU", 1, 1, 1],
+"trainTrac": [["Placeholder BEMU", 0, 100, 1, 1, 1],
+              ["Placeholder BEMU", 100, 160, 1, 1, 1]
+              ],
+"trainParam": ["Placeholder BEMU", 1.08, 460]
         
 }
