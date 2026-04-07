@@ -286,6 +286,7 @@ class GeometryCalculator:
 
         for i in range(0, len(self.cantNew)):        
             self.cantNew[i] = np.floor(np.abs(self.cantNew[i]))
+            # self.cantDef[i] = self.calculateCantDef(self.vMax[i], self.cantDef[i], self.kappa[i])
             self.cantDef[i] = np.ceil(np.abs(self.cantDef[i]))
 
         if profile == "I100":
@@ -430,7 +431,7 @@ class GeometryCalculator:
                 self.vMax[i] = min(self.vInit[i], minVmax)
                 self.vMax[i+1] = min(self.vInit[i+1], minVmax)
 
-                if self.vMax[i] < self.vInit[i] or self.vMax[i+1] < self.vInit[i+1]:
+                if self.vMax[i] < self.vInit[i] or self.vMax[i+1] < self.vInit[i+1] or self.vMax[i] > cantSpeed[i]:
                     if self.vInit[i] > 20:
                         self.vInit[i] -= 5
                         self.vInit[i+1] -= 5
@@ -444,8 +445,8 @@ class GeometryCalculator:
         # print(self.getNormLimit("nLin", 120, approach))
         # print(f"Convergation reached after {iterationN} iterations.")
 
-        for i in range(0, len(self.cantNew)):        
-            self.cantNew[i] = np.floor(np.abs(self.cantNew[i]))
+        for i in range(0, len(self.cantNew)):
+            # self.cantDef[i] = self.calculateCantDef(self.vMax[i], self.cantNew[i], self.kappa[i])
             self.cantDef[i] = np.ceil(np.abs(self.cantDef[i]))
 
         if profile == "I100":
