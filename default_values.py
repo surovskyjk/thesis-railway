@@ -30,10 +30,13 @@ defVal = {
 "profileDefault": ["I150"],
 "maxD":     [150],
 "designApproach": "standard",
-"trainRes": ["Placeholder BEMU", 1, 1, 1],
-"trainTrac": [["Placeholder BEMU", 0, 100, 1, 1, 1],
-              ["Placeholder BEMU", 100, 160, 1, 1, 1]
+"trainRes": [["Placeholder BEMU", 1.8, 0.0005, 0.00023]],
+"trainTrac": [["Placeholder BEMU", 0, 100, 30591, -28.69, 0.0001],
+              ["Placeholder BEMU", 100, 160, 70801.3, -563.31, 1.4789]
               ],
-"trainParam": ["Placeholder BEMU", 1.08, 460]
+"trainBrake": [["Placeholder BEMU", 0, 160, 0, 0, 0]],
+"trainBrakeMech": 150.0,
+"trainParam": [["Placeholder BEMU", 1.08, 460]],
+"speedLimitPlot": ["stationSpeed150", "speedLimits150"]
         
 }

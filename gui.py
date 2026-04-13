@@ -13,6 +13,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
+import matplotlib as mpl
 
 # numpy import for data handling
 import numpy as np
@@ -24,6 +25,16 @@ import gui_overlay
 from map_viewer import MapWidget
 import default_values
 import geometry_engine
+import vehicle_engine
+
+# Apply global rcParams for smaller labels and titles
+mpl.rcParams['axes.titlesize'] = 10
+mpl.rcParams['axes.labelsize'] = 9
+mpl.rcParams['xtick.labelsize'] = 8
+mpl.rcParams['ytick.labelsize'] = 8
+mpl.rcParams['legend.fontsize'] = 8
+mpl.rcParams['figure.titlesize'] = 11
+import copy
 
 class AlignmentCanvas(FigureCanvas):
     # Canvas widget for Matplotlib plots - Horizontal Alignment data (Cant, Speed Limits)
@@ -42,15 +53,17 @@ class ProfileCanvas(FigureCanvas):
      # Canvas widget for Matplotlib plots - Vertical Alignment data
      def __init__(self, parent=None, width=5, height=4, dpi=100):
         self.fig = Figure(figsize=(width, height), dpi=dpi, layout="constrained")
-        self.ax_vertical = self.fig.add_subplot(111)
+        self.ax_profile = self.fig.add_subplot(111)
         super().__init__(self.fig)
 
 class KinematicsCanvas(FigureCanvas):
     # Canvas widget for Matplotlib plots - Kinematics data
-    def __init__(self, parent=None, width=5, height=4, dpi=100):
+    def __init__(self, parent=None, width=5, height=8, dpi=100):
         self.fig = Figure(figsize=(width, height), dpi=dpi, layout="constrained")
-        self.ax_tacho_track = self.fig.add_subplot(211)
-        self.ax_tacho_time = self.fig.add_subplot(212)
+        self.ax_tacho_track = self.fig.add_subplot(411)
+        self.ax_tacho_time = self.fig.add_subplot(412)
+        self.ax_dist_time = self.fig.add_subplot(413)
+        self.ax_forces = self.fig.add_subplot(414)
         super().__init__(self.fig)
 
 class MainWindow(QMainWindow):
@@ -71,10 +84,12 @@ class MainWindow(QMainWindow):
         self.plotCantData = {}
         self.plotCurvatureData = {}
         self.plotSpeedData = {}
+        self.plotProfileData = {}
+        self.plotKinematicsData = {}
 
         # Import default values to dataStorage
         self.dataStorage["settingsData"] = {}
-        self.dataStorage["settingsData"] = default_values.defVal  
+        self.dataStorage["settingsData"] = copy.deepcopy(default_values.defVal)
 
         # Layouts - main grid
         layoutTabsXML = QTabWidget()
@@ -191,6 +206,15 @@ class MainWindow(QMainWindow):
         self.settingsMenu.addAction(designApproachAction)
         designApproachAction.triggered.connect(self.openDesignApproach)
 
+        self.settingsMenu.addSeparator()
+
+        # Sub-submenu - Units
+        self.toggleUnitsAction = QAction(lan["units_kmh"], self)
+        self.toggleUnitsAction.setCheckable(True)
+        self.toggleUnitsAction.setChecked(False)
+        self.toggleUnitsAction.triggered.connect(self.plotKinematics)
+        self.settingsMenu.addAction(self.toggleUnitsAction)
+
         # Submenu - View
         self.toggleCantAction = QAction(lan["cant"], self)
         self.toggleCantAction.setCheckable(True)
@@ -296,6 +320,40 @@ class MainWindow(QMainWindow):
         self.toggleSpeedKAction.triggered.connect(self.toggleSpeedKVisibility)
         self.viewMenu.addAction(self.toggleSpeedKAction)
 
+        self.viewMenu.addSeparator()
+
+        self.toggleProfileAction = QAction(lan["profile"], self)
+        self.toggleProfileAction.setCheckable(True)
+        self.toggleProfileAction.setChecked(True)
+        self.toggleProfileAction.triggered.connect(self.toggleProfileVisibility)
+        self.viewMenu.addAction(self.toggleProfileAction)
+
+        self.viewMenu.addSeparator()
+
+        self.toggleKinematicsSpeedLimitTrackAction = QAction(lan["kinematicsSpeedLimitTrack"], self)
+        self.toggleKinematicsSpeedLimitTrackAction.setCheckable(True)
+        self.toggleKinematicsSpeedLimitTrackAction.setChecked(True)
+        self.toggleKinematicsSpeedLimitTrackAction.triggered.connect(self.toggleKinematicsSpeedLimitTrackVisibility)
+        self.viewMenu.addAction(self.toggleKinematicsSpeedLimitTrackAction)
+
+        self.toggleKinematicsSpeedLimitTimeAction = QAction(lan["kinematicsSpeedLimitTime"], self)
+        self.toggleKinematicsSpeedLimitTimeAction.setCheckable(True)
+        self.toggleKinematicsSpeedLimitTimeAction.setChecked(True)
+        self.toggleKinematicsSpeedLimitTimeAction.triggered.connect(self.toggleKinematicsSpeedLimitTimeVisibility)
+        self.viewMenu.addAction(self.toggleKinematicsSpeedLimitTimeAction)
+
+        self.toggleKinematicsDistanceTimeAction = QAction(lan["kinematicsDistanceTime"], self)
+        self.toggleKinematicsDistanceTimeAction.setCheckable(True)
+        self.toggleKinematicsDistanceTimeAction.setChecked(True)
+        self.toggleKinematicsDistanceTimeAction.triggered.connect(self.toggleKinematicsDistanceTimeVisibility)
+        self.viewMenu.addAction(self.toggleKinematicsDistanceTimeAction)
+
+        self.toggleKinematicsForcesAction = QAction(lan.get("kinematicsForces", "Forces Profile"), self)
+        self.toggleKinematicsForcesAction.setCheckable(True)
+        self.toggleKinematicsForcesAction.setChecked(True)
+        self.toggleKinematicsForcesAction.triggered.connect(self.toggleKinematicsForcesVisibility)
+        self.viewMenu.addAction(self.toggleKinematicsForcesAction)
+
         # Submenu - Exit
         exitAction = QAction(lan["exit"], self)
         self.exitMenu.addAction(exitAction)
@@ -380,7 +438,7 @@ class MainWindow(QMainWindow):
         layoutTabsXML.addTab(layoutXMLLand_container, "LandXML")
         layoutTabsXML.addTab(layoutXMLTTP_container, "XML TTP")
 
-        # Plot tabs (plots - different types and map)
+        # Plots, report and map tabs
         self.layoutTabsPlotsAlignment_container = QWidget()
         layoutPlotsAlignment = QVBoxLayout(self.layoutTabsPlotsAlignment_container)
         layoutPlotsAlignment.setContentsMargins(0,0,0,0)
@@ -395,6 +453,11 @@ class MainWindow(QMainWindow):
         layoutPlotsKinematics = QVBoxLayout(self.layoutTabsPlotsKinematics_container)
         layoutPlotsKinematics.setContentsMargins(0,0,0,0)
         layoutPlotsKinematics.setSpacing(0)
+
+        self.layoutTabsPlotsReport_container = QWidget()
+        layoutPlotsReport = QVBoxLayout(self.layoutTabsPlotsReport_container)
+        layoutPlotsReport.setContentsMargins(0,0,0,0)
+        layoutPlotsReport.setSpacing(0)
 
         self.layoutTabsPlotsMap_container = QWidget()
         layoutPlotsMap = QVBoxLayout(self.layoutTabsPlotsMap_container)
@@ -415,10 +478,15 @@ class MainWindow(QMainWindow):
         layoutPlotsProfile.addWidget(self.toolbar)
 
         # Plots for Train Kinematics
-        self.canvasKinematics = KinematicsCanvas(self, width=5, height=4, dpi=100)
+        self.canvasKinematics = KinematicsCanvas(self, width=5, height=8, dpi=100)
         layoutPlotsKinematics.addWidget(self.canvasKinematics, stretch=3)
         self.toolbar = NavigationToolbar(self.canvasKinematics, self)
         layoutPlotsKinematics.addWidget(self.toolbar)
+
+        # Report - add widget for plotting reports
+        self.reportWidget = QPlainTextEdit()
+        self.reportWidget.setReadOnly(True)
+        layoutPlotsReport.addWidget(self.reportWidget)
 
         # Map - add widget for maps
         self.mapWidget = MapWidget(self)
@@ -429,6 +497,9 @@ class MainWindow(QMainWindow):
         self.layoutTabsPlots.addTab(self.layoutTabsPlotsAlignment_container, lan["plotsAlignment"])
         self.layoutTabsPlots.addTab(self.layoutTabsPlotsProfile_container, lan["plotsProfile"])
         self.layoutTabsPlots.addTab(self.layoutTabsPlotsKinematics_container, lan["plotsKinematics"])
+
+        # Tab for report
+        self.layoutTabsPlots.addTab(self.layoutTabsPlotsReport_container, lan["report"])
         
         # Tab for map
         self.layoutTabsPlots.addTab(self.layoutTabsPlotsMap_container,lan["map"])
@@ -487,6 +558,12 @@ class MainWindow(QMainWindow):
         self.exitMenu.actions()[0].setText(lan["exit"])
 
         self.helpMenu.actions()[0].setText(lan["help"])
+
+        self.toggleUnitsAction.setText(lan["units_kmh"])
+        self.toggleKinematicsSpeedLimitTrackAction.setText(lan["kinematicsSpeedLimitTrack"])
+        self.toggleKinematicsSpeedLimitTimeAction.setText(lan["kinematicsSpeedLimitTime"])
+        self.toggleKinematicsDistanceTimeAction.setText(lan["kinematicsDistanceTime"])
+        self.toggleKinematicsForcesAction.setText(lan.get("kinematicsForces", "Forces Profile"))
 
         # Update labels
         self.labelXMLTTPRaw.setText(lan["raw_data"])
@@ -577,6 +654,7 @@ class MainWindow(QMainWindow):
             lxml = self.dataStorage.get("LandXML",{})
             self.plotCant()
             self.plotCurvature()
+            self.plotProfile()
             self.mapWidget.drawAlignment(lxml.get("alignmentCoordinates",{}))
 
         else:
@@ -722,61 +800,61 @@ class MainWindow(QMainWindow):
 
         cant = lxml.get("cant")
         if (cant is not None and len(cant)>0) and (stationCant is not None and len(stationCant)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCant, cant, marker='o', linestyle='-', color='tab:blue', label=lan["cant"])
+            line, = self.canvasAlignment.ax_cant.plot(stationCant, cant, marker='o', linestyle='-', color='black', label=lan["cant"])
             self.plotCantData["cant"] = line
             line.set_visible(self.toggleCantAction.isChecked())
 
         cantPossible = lxml.get("cantPossible")
         if (cantPossible is not None and len(cantPossible)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cantPossible, marker='o', linestyle='-', color='tab:orange', label=lan["cant_possible"])
+            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cantPossible, marker='o', linestyle='-', color='green', label=lan["cant_possible"])
             self.plotCantData["cantPossible"] = line
             line.set_visible(self.toggleCantPossibleAction.isChecked())
 
         cDef100 = lxml.get("cDef100")
         if (cDef100 is not None and len(cDef100)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cDef100, marker='o', linestyle='-', color='tab:green', label=lan["cdef_100"])
+            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cDef100, marker='o', linestyle='-', color='red', label=lan["cdef_100"])
             self.plotCantData["cDef100"] = line
             line.set_visible(self.toggleCDef100Action.isChecked())
 
         cDef130 = lxml.get("cDef130")
         if (cDef130 is not None and len(cDef130)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cDef130, marker='o', linestyle='-', color='tab:green', label=lan["cdef_130"])
+            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cDef130, marker='o', linestyle='-', color='teal', label=lan["cdef_130"])
             self.plotCantData["cDef130"] = line
             line.set_visible(self.toggleCDef130Action.isChecked())
 
         cDef150 = lxml.get("cDef150")
         if (cDef150 is not None and len(cDef150)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cDef150, marker='o', linestyle='-', color='tab:green', label=lan["cdef_150"])
+            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cDef150, marker='o', linestyle='-', color='darkorchid', label=lan["cdef_150"])
             self.plotCantData["cDef150"] = line
             line.set_visible(self.toggleCDef150Action.isChecked())
 
         cDefK = lxml.get("cDefK")
         if (cDefK is not None and len(cDefK)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cDefK, marker='o', linestyle='-', color='tab:green', label=lan["cdef_K"])
+            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cDefK, marker='o', linestyle='-', color='cornflowerblue', label=lan["cdef_K"])
             self.plotCantData["cDefK"] = line
             line.set_visible(self.toggleCDefKAction.isChecked())
 
         cantDef100 = lxml.get("cantDef100")
         if (cantDef100 is not None and len(cantDef100)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cantDef100, marker='o', linestyle='-', color='tab:red', label=lan["cant_def_100"])
+            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cantDef100, marker='o', linestyle='-', color='tomato', label=lan["cant_def_100"])
             self.plotCantData["cantDef100"] = line
             line.set_visible(self.toggleCantDef100Action.isChecked())
 
         cantDef130 = lxml.get("cantDef130")
         if (cantDef130 is not None and len(cantDef130)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cantDef130, marker='o', linestyle='-', color='tab:red', label=lan["cant_def_130"])
+            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cantDef130, marker='o', linestyle='-', color='aqua', label=lan["cant_def_130"])
             self.plotCantData["cantDef130"] = line
             line.set_visible(self.toggleCantDef130Action.isChecked())
 
         cantDef150 = lxml.get("cantDef150")
         if (cantDef150 is not None and len(cantDef150)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cantDef150, marker='o', linestyle='-', color='tab:red', label=lan["cant_def_150"])
+            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cantDef150, marker='o', linestyle='-', color='mediumorchid', label=lan["cant_def_150"])
             self.plotCantData["cantDef150"] = line
             line.set_visible(self.toggleCantDef150Action.isChecked())
 
         cantDefK = lxml.get("cantDefK")
         if (cantDefK is not None and len(cantDefK)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cantDefK, marker='o', linestyle='-', color='tab:red', label=lan["cant_def_K"])
+            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cantDefK, marker='o', linestyle='-', color='royalblue', label=lan["cant_def_K"])
             self.plotCantData["cantDefK"] = line
             line.set_visible(self.toggleCantDefKAction.isChecked())
 
@@ -834,10 +912,46 @@ class MainWindow(QMainWindow):
         self.canvasAlignment.ax_curvature.legend(loc = 'upper right')
         self.canvasAlignment.draw()
 
+    def plotProfile(self):
+        lan = lang.DIC[self.current_language]
+        lxml = self.dataStorage.get("LandXML",{})
+
+        self.canvasProfile.ax_profile.clear()
+        self.plotProfileData.clear()
+
+        # Initial check to avoid plotting data without station available
+        stationVertical = lxml.get("stationVertical")
+        if (stationVertical is None or len(stationVertical) == 0):
+            self.canvasProfile.draw()
+            return  # No data to plot
+        
+        elevation = lxml.get("elevation")
+        slope = lxml.get("slope")
+        midX = (stationVertical[:-1] + stationVertical[1:]) / 2
+        midZ = (elevation[:-1] + elevation[1:]) / 2
+
+        if (elevation is not None and len(elevation) > 0) and (stationVertical is not None and len(stationVertical) > 0):
+            line, = self.canvasProfile.ax_profile.plot(stationVertical, elevation, marker='o', linestyle='-', color='tab:gray', label=lan["profile"])
+            self.plotCurvatureData["profile"] = line
+            line.set_visible(self.toggleProfileAction.isChecked())
+            
+            if self.toggleProfileAction.isChecked():
+                for i in range(len(midX)):
+                    self.canvasProfile.ax_profile.text(midX[i], midZ[i] + 0.1, f"{slope[i]:.2f} ‰", fontsize = 6)
+
+        self.canvasProfile.ax_profile.grid(True)
+        self.canvasProfile.ax_profile.autoscale(enable=True, axis='x', tight=True)
+        self.canvasProfile.ax_profile.set_xlabel(lan["station"])
+        self.canvasProfile.ax_profile.set_ylabel(lan["elevation"])
+        self.canvasProfile.ax_profile.set_title(f'{lan["profile"]}')
+        self.canvasProfile.ax_profile.legend()
+        self.canvasProfile.draw()
+
     def plotSpeedLimits(self):
         lan = lang.DIC[self.current_language]
 
         self.canvasAlignment.ax_speed.clear()
+        self.plotSpeedData.clear()
 
         stationSpeedLimits = self.dataStorage.get("stationSpeedLimits")
         stationSpeed100 = self.dataStorage.get("stationSpeed100")
@@ -851,31 +965,31 @@ class MainWindow(QMainWindow):
         
         speedLimits = self.dataStorage.get("speedLimits")
         if (speedLimits is not None and len(speedLimits) > 0) and (stationSpeedLimits is not None and len(stationSpeedLimits) > 0):
-            line, = self.canvasAlignment.ax_speed.step(stationSpeedLimits, speedLimits, where="post", marker='s', linestyle='-', label=lan["speed_lim"])
+            line, = self.canvasAlignment.ax_speed.step(stationSpeedLimits, speedLimits, where="post", marker='s', linestyle='-', color = 'black', label=lan["speed_lim"])
             self.plotSpeedData["speedLimits"] = line
             line.set_visible(self.toggleSpeedAction.isChecked())
 
         speedLimits100 = self.dataStorage.get("speedLimits100")
         if (speedLimits100 is not None and len(speedLimits100) > 0) and (stationSpeed100 is not None and len(stationSpeed100) > 0):
-            line, = self.canvasAlignment.ax_speed.step(stationSpeed100, speedLimits100, where="post", marker='s', linestyle='-', label=lan["speed_lim_100"])
+            line, = self.canvasAlignment.ax_speed.step(stationSpeed100, speedLimits100, where="post", marker='s', linestyle='-', color = 'red', label=lan["speed_lim_100"])
             self.plotSpeedData["speedLimits100"] = line
             line.set_visible(self.toggleSpeed100Action.isChecked())
 
         speedLimits130 = self.dataStorage.get("speedLimits130")
         if (speedLimits130 is not None and len(speedLimits130) > 0) and (stationSpeed130 is not None and len(stationSpeed130) > 0):
-            line, = self.canvasAlignment.ax_speed.step(stationSpeed130, speedLimits130, where="post", marker='s', linestyle='-', label=lan["speed_lim_130"])
+            line, = self.canvasAlignment.ax_speed.step(stationSpeed130, speedLimits130, where="post", marker='s', linestyle='-', color = 'teal', label=lan["speed_lim_130"])
             self.plotSpeedData["speedLimits130"] = line
             line.set_visible(self.toggleSpeed130Action.isChecked())
 
         speedLimits150 = self.dataStorage.get("speedLimits150")
         if (speedLimits150 is not None and len(speedLimits150) > 0) and (stationSpeed150 is not None and len(stationSpeed150) > 0):
-            line, = self.canvasAlignment.ax_speed.step(stationSpeed150, speedLimits150, where="post", marker='s', linestyle='-', label=lan["speed_lim_150"])
+            line, = self.canvasAlignment.ax_speed.step(stationSpeed150, speedLimits150, where="post", marker='s', linestyle='-', color = 'darkorchid', label=lan["speed_lim_150"])
             self.plotSpeedData["speedLimits150"] = line
             line.set_visible(self.toggleSpeed150Action.isChecked())
 
         speedLimitsK = self.dataStorage.get("speedLimitsK")
         if (speedLimitsK is not None and len(speedLimitsK) > 0) and (stationSpeedK is not None and len(stationSpeedK) > 0):
-            line, = self.canvasAlignment.ax_speed.step(stationSpeedK, speedLimitsK, where="post", marker='s', linestyle='-', label=lan["speed_lim_K"])
+            line, = self.canvasAlignment.ax_speed.step(stationSpeedK, speedLimitsK, where="post", marker='s', linestyle='-', color='cornflowerblue', label=lan["speed_lim_K"])
             self.plotSpeedData["speedLimitsK"] = line
             line.set_visible(self.toggleSpeedKAction.isChecked())
 
@@ -887,17 +1001,117 @@ class MainWindow(QMainWindow):
         self.canvasAlignment.ax_speed.legend()
         self.canvasAlignment.draw()
 
+    def plotKinematics(self):
+        lan = lang.DIC[self.current_language]
+        self.canvasKinematics.ax_tacho_track.clear()
+        self.canvasKinematics.ax_tacho_time.clear()
+        self.canvasKinematics.ax_dist_time.clear()
+        self.canvasKinematics.ax_forces.clear()
+        self.plotKinematicsData.clear()
+
+        use_kmh = self.toggleUnitsAction.isChecked()
+        v_factor = 3.6 if use_kmh else 1.0
+        d_factor = 1000.0 if use_kmh else 1.0
+        t_factor = 60.0 if use_kmh else 1.0 # time in minutes
+
+        speed_lbl = lan.get("speedKmh", "Speed [km/h]") if use_kmh else lan.get("speedM", "Speed [m/s]")
+        speed_lim_lbl = lan.get("speedLimKmh", "Speed Limit [km/h]") if use_kmh else lan.get("speedLimM", "Speed Limit [m/s]")
+        dist_lbl = lan.get("distanceKm", "Distance [km]") if use_kmh else lan.get("distance", "Distance [m]")
+        time_lbl = lan.get("timeMin", "Time [min]") if use_kmh else lan.get("time", "Time [s]")
+
+        stationSpeedLimits = self.dataStorage.get("stationSpeedLimitM")
+        speedLimits = self.dataStorage.get("speedLimitsM")
+        speedLimitsT = self.dataStorage.get("speedLimitsT")
+
+        if (speedLimits is not None and len(speedLimits) > 0) and (stationSpeedLimits is not None and len(stationSpeedLimits) > 0):
+            line, = self.canvasKinematics.ax_tacho_track.step(stationSpeedLimits / d_factor, speedLimits * v_factor, where="post", marker='s', linestyle='-', color='crimson', label=speed_lim_lbl)
+            self.plotKinematicsData["tachoTrack"] = line
+            line.set_visible(self.toggleKinematicsSpeedLimitTrackAction.isChecked())
+
+        if (speedLimitsT is not None and len(speedLimitsT) > 0) and (speedLimits is not None and len(speedLimits) > 0):
+            line, = self.canvasKinematics.ax_tacho_time.step(speedLimitsT / t_factor, speedLimits * v_factor, where="post", marker='s', linestyle='-', color='crimson', label=speed_lim_lbl)
+            self.plotKinematicsData["tachoTime"] = line
+            line.set_visible(self.toggleKinematicsSpeedLimitTimeAction.isChecked())
+
+        if (speedLimitsT is not None and len(speedLimitsT) > 0) and (stationSpeedLimits is not None and len(stationSpeedLimits) > 0):
+            line, = self.canvasKinematics.ax_dist_time.plot(speedLimitsT / t_factor, stationSpeedLimits / d_factor, marker='s', linestyle='-', color='crimson', label=dist_lbl)
+            self.plotKinematicsData["distTime"] = line
+            line.set_visible(self.toggleKinematicsDistanceTimeAction.isChecked())
+
+        kinematicsStation = self.dataStorage.get("kinematicsStationM")
+        kinematicsSpeed = self.dataStorage.get("kinematicsSpeedM")
+        kinematicsTime = self.dataStorage.get("kinematicsTimeS")
+
+        if (kinematicsStation is not None and len(kinematicsStation) > 0) and (kinematicsSpeed is not None and len(kinematicsSpeed) > 0):
+            line2, = self.canvasKinematics.ax_tacho_track.plot(kinematicsStation / d_factor, kinematicsSpeed * v_factor, linestyle='-', color='blue', label=speed_lbl)
+            self.plotKinematicsData["simTrack"] = line2
+            line2.set_visible(self.toggleKinematicsSpeedLimitTrackAction.isChecked())
+
+        if (kinematicsTime is not None and len(kinematicsTime) > 0) and (kinematicsSpeed is not None and len(kinematicsSpeed) > 0):
+            line2, = self.canvasKinematics.ax_tacho_time.plot(kinematicsTime / t_factor, kinematicsSpeed * v_factor, linestyle='-', color='blue', label=speed_lbl)
+            self.plotKinematicsData["simTime"] = line2
+            line2.set_visible(self.toggleKinematicsSpeedLimitTimeAction.isChecked())
+
+        if (kinematicsTime is not None and len(kinematicsTime) > 0) and (kinematicsStation is not None and len(kinematicsStation) > 0):
+            line2, = self.canvasKinematics.ax_dist_time.plot(kinematicsTime / t_factor, kinematicsStation / d_factor, linestyle='-', color='blue', label=dist_lbl)
+            self.plotKinematicsData["distTimeSim"] = line2
+            line2.set_visible(self.toggleKinematicsDistanceTimeAction.isChecked())
+
+        forceTrac = self.dataStorage.get("kinematicsForceTractionKN")
+        forceBrake = self.dataStorage.get("kinematicsForceBrakingKN")
+        forceRes = self.dataStorage.get("kinematicsForceResistanceKN")
+
+        if forceTrac is not None and len(forceTrac) > 0 and kinematicsStation is not None and len(kinematicsStation) > 0:
+            line3, = self.canvasKinematics.ax_forces.plot(kinematicsStation / d_factor, forceTrac, linestyle='-', color='green', label=lan.get("forceTraction", "Tractive Force [kN]"))
+            self.plotKinematicsData["forceTrac"] = line3
+            line3.set_visible(self.toggleKinematicsForcesAction.isChecked())
+
+        if forceBrake is not None and len(forceBrake) > 0 and kinematicsStation is not None and len(kinematicsStation) > 0:
+            line4, = self.canvasKinematics.ax_forces.plot(kinematicsStation / d_factor, forceBrake, linestyle='-', color='red', label=lan.get("forceBraking", "Braking Force [kN]"))
+            self.plotKinematicsData["forceBrake"] = line4
+            line4.set_visible(self.toggleKinematicsForcesAction.isChecked())
+
+        if forceRes is not None and len(forceRes) > 0 and kinematicsStation is not None and len(kinematicsStation) > 0:
+            line5, = self.canvasKinematics.ax_forces.plot(kinematicsStation / d_factor, forceRes, linestyle='-', color='orange', label=lan.get("forceResistance", "Resistance [kN]"))
+            self.plotKinematicsData["forceRes"] = line5
+            line5.set_visible(self.toggleKinematicsForcesAction.isChecked())
+
+        self.canvasKinematics.ax_tacho_track.grid(True)
+        self.canvasKinematics.ax_tacho_track.autoscale(enable=True, axis='x', tight=True)
+        self.canvasKinematics.ax_tacho_track.set_xlabel(dist_lbl)
+        self.canvasKinematics.ax_tacho_track.set_ylabel(speed_lim_lbl)
+        self.canvasKinematics.ax_tacho_track.set_title(f'{speed_lim_lbl} vs {dist_lbl}')
+        self.canvasKinematics.ax_tacho_track.legend()
+
+        self.canvasKinematics.ax_tacho_time.grid(True)
+        self.canvasKinematics.ax_tacho_time.autoscale(enable=True, axis='x', tight=True)
+        self.canvasKinematics.ax_tacho_time.set_xlabel(time_lbl)
+        self.canvasKinematics.ax_tacho_time.set_ylabel(speed_lim_lbl)
+        self.canvasKinematics.ax_tacho_time.set_title(f'{speed_lim_lbl} vs {time_lbl}')
+        self.canvasKinematics.ax_tacho_time.legend()
+
+        self.canvasKinematics.ax_dist_time.grid(True)
+        self.canvasKinematics.ax_dist_time.autoscale(enable=True, axis='x', tight=True)
+        self.canvasKinematics.ax_dist_time.set_xlabel(time_lbl)
+        self.canvasKinematics.ax_dist_time.set_ylabel(dist_lbl)
+        self.canvasKinematics.ax_dist_time.set_title(lan["kinematicsDistanceTime"])
+        self.canvasKinematics.ax_dist_time.legend()
+
+        self.canvasKinematics.ax_forces.grid(True)
+        self.canvasKinematics.ax_forces.autoscale(enable=True, axis='x', tight=True)
+        self.canvasKinematics.ax_forces.set_xlabel(dist_lbl)
+        self.canvasKinematics.ax_forces.set_ylabel(lan.get("forceKN", "Force [kN]"))
+        self.canvasKinematics.ax_forces.set_title(lan.get("kinematicsForces", "Forces Profile"))
+        self.canvasKinematics.ax_forces.legend()
+
+        self.canvasKinematics.draw()
+
+
     def cleanData(self):
         self.cleanLandXMLData()
         self.cleanTTPData()
         self.cleanCalculatedCants()
         self.cleanCalculatedSpeeds()
-
-        self.canvasAlignment.ax_cant.clear()
-        self.canvasAlignment.ax_speed.clear()
-        self.canvasAlignment.ax_curvature.clear()
-
-        self.canvasAlignment.draw()
 
         keep = ["settingsData",]
 
@@ -908,12 +1122,14 @@ class MainWindow(QMainWindow):
     def cleanTTPData(self):
         self.textboxRawTTP.setPlainText("")
         self.tableTTP.setData({})
-        while self.canvasAlignment.ax_speed.lines:
-            self.canvasAlignment.ax_speed.lines[0].remove()
         self.dataStorage["stationSpeedLimits"] = []
         self.dataStorage["speedLimits"] = []
+        self.dataStorage["stationSpeedLimitM"] = []
+        self.dataStorage["speedLimitsM"] = []
+        self.dataStorage["speedLimitsT"] = []
         self.plotSpeedData.clear()
-        self.canvasAlignment.draw()
+        self.plotSpeedLimits()
+        self.plotKinematics()
 
     def cleanLandXMLData(self):
         self.textboxRawLandXML.setPlainText("")
@@ -921,7 +1137,10 @@ class MainWindow(QMainWindow):
         self.dataStorage["LandXML"] = {}
         self.plotCantData.clear()
         self.plotCurvatureData.clear()
-        self.canvasAlignment.draw()
+        self.plotProfileData.clear()
+        self.plotCant()
+        self.plotCurvature()
+        self.plotProfile()
 
     def cleanCalculatedCants(self):
         lxml = self.dataStorage.setdefault("LandXML",{})
@@ -936,7 +1155,7 @@ class MainWindow(QMainWindow):
         lxml["cantDef150"] = []
         lxml["cantDefK"] = []
         self.plotCantData.clear()
-        self.canvasAlignment.draw()
+        self.plotCant()
 
     def cleanCalculatedSpeeds(self):
         self.dataStorage["stationSpeed100"] = []
@@ -947,8 +1166,17 @@ class MainWindow(QMainWindow):
         self.dataStorage["speedLimits130"] = []
         self.dataStorage["speedLimits150"] = []
         self.dataStorage["speedLimitsK"] = []
+        self.dataStorage["kinematicsStationM"] = []
+        self.dataStorage["kinematicsSpeedM"] = []
+        self.dataStorage["kinematicsTimeS"] = []
+        self.dataStorage["kinematicsAcceleration"] = []
+        self.dataStorage["kinematicsForceTractionKN"] = []
+        self.dataStorage["kinematicsForceBrakingKN"] = []
+        self.dataStorage["kinematicsForceResistanceKN"] = []
         self.plotSpeedData.clear()
-        self.canvasAlignment.draw()
+        self.plotKinematicsData.clear()
+        self.plotSpeedLimits()
+        self.plotKinematics()
 
     # Set visibility
     def toggleCantVisibility(self, isChecked):
@@ -1036,6 +1264,41 @@ class MainWindow(QMainWindow):
             self.plotSpeedData["speedLimitsK"].set_visible(isChecked)
             self.canvasAlignment.draw()
 
+    def toggleProfileVisibility(self, isChecked):
+        if 'profile' in self.plotProfileData:
+            self.plotProfileData["profile"].set_visible(isChecked)
+            self.canvasProfile.draw()
+
+    def toggleKinematicsSpeedLimitTrackVisibility(self, isChecked):
+        if 'tachoTrack' in self.plotKinematicsData:
+            self.plotKinematicsData["tachoTrack"].set_visible(isChecked)
+        if 'simTrack' in self.plotKinematicsData:
+            self.plotKinematicsData["simTrack"].set_visible(isChecked)
+            self.canvasKinematics.draw()
+
+    def toggleKinematicsSpeedLimitTimeVisibility(self, isChecked):
+        if 'tachoTime' in self.plotKinematicsData:
+            self.plotKinematicsData["tachoTime"].set_visible(isChecked)
+        if 'simTime' in self.plotKinematicsData:
+            self.plotKinematicsData["simTime"].set_visible(isChecked)
+        self.canvasKinematics.draw()
+
+    def toggleKinematicsDistanceTimeVisibility(self, isChecked):
+        if 'distTime' in self.plotKinematicsData:
+            self.plotKinematicsData["distTime"].set_visible(isChecked)
+        if 'distTimeSim' in self.plotKinematicsData:
+            self.plotKinematicsData["distTimeSim"].set_visible(isChecked)
+            self.canvasKinematics.draw()
+
+    def toggleKinematicsForcesVisibility(self, isChecked):
+        if 'forceTrac' in self.plotKinematicsData:
+            self.plotKinematicsData["forceTrac"].set_visible(isChecked)
+        if 'forceBrake' in self.plotKinematicsData:
+            self.plotKinematicsData["forceBrake"].set_visible(isChecked)
+        if 'forceRes' in self.plotKinematicsData:
+            self.plotKinematicsData["forceRes"].set_visible(isChecked)
+        self.canvasKinematics.draw()
+
     # Map settings
     def openMapSettings(self):
         lan = lang.DIC[self.current_language]
@@ -1047,7 +1310,7 @@ class MainWindow(QMainWindow):
     def openGeometrySettings(self):
         lan = lang.DIC[self.current_language]
 
-        dialog = gui_overlay.GeometrySettingsDialog(lan, self)
+        dialog = gui_overlay.GeometrySettingsDialog(self.dataStorage.get("settingsData", {}), lan, self)
         if dialog.exec():
             self.dataStorage["settingsData"].update(dialog.getSettings())
 
@@ -1055,7 +1318,9 @@ class MainWindow(QMainWindow):
     def openVehicleSettings(self):
         lan = lang.DIC[self.current_language]
 
-        pass
+        dialog = gui_overlay.VehicleSettingsDialog(self.dataStorage.get("settingsData", {}), lan, self)
+        if dialog.exec():
+            self.dataStorage["settingsData"].update(dialog.getSettings())
 
     # Design approach settings
     def openDesignApproach(self):
@@ -1148,5 +1413,11 @@ class MainWindow(QMainWindow):
 
     def calculateTrainSpeed(self):
 
-        pass
-    
+        # TO DO - Edit this line - changeable via dialogue window
+
+        vehicle = vehicle_engine.VehicleCalculator(self.dataStorage)
+        vehicle.calculateKinematics()
+        vehicle.speedLimitsToTime()
+
+        self.plotKinematics()
+        

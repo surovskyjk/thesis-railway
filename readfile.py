@@ -91,6 +91,11 @@ class ReadFile:
                         except ValueError:
                             continue
 
+        # Calculate vertical and horizontal difference and slope in per mille
+        deltaZ = np.diff(np.array(elevation, dtype=float))
+        deltaX = np.diff(np.array(stationVertical, dtype=float))
+        slope = (deltaZ / deltaX) * 1000
+
         # Extract start and end of elements coordinates
         lineStartX = []
         lineStartY = []
@@ -323,6 +328,8 @@ class ReadFile:
         curveRadius = np.array(curveRadius, dtype=float)
         curveRot = np.array(curveRot)
         curveType = np.array(curveType)
+        slope = np.array(slope, dtype=float)
+
 
         # Combine extracted data into a structured dictionary
         parsedXML = {
@@ -362,7 +369,8 @@ class ReadFile:
             "curveStationStart": curveStationStart,
             "curveRot": curveRot,
             "curveType": curveType,
-            "curveRadius": curveRadius
+            "curveRadius": curveRadius,
+            "slope": slope
         }
 
         # Add transformed coordinates and more points for transition curves
@@ -522,7 +530,6 @@ class ReadFile:
         azimuth = np.arctan2(piY-startY, piX-startX)
 
         # Calculate curvature
-
         kappaStart = 1/radiusStart if (radiusStart != 0 and radiusStart != float('inf')) else 0.0
         kappaEnd = 1/radiusEnd if (radiusEnd != 0 and radiusEnd != float('inf')) else 0.0
 
