@@ -63,7 +63,7 @@ class TTPSelectSectionDialog(QDialog):
         return selectedIds, self.LandXMLCheckBox.isChecked(), self.loadAllCheckBox.isChecked()
 
 class MapSettingsDialog(QDialog):
-    def __init__(self, currentEPSG, lan, parent=None):
+    def __init__(self, currentEPSG, currentMap, lan, parent=None):
         super().__init__(parent)
 
         self.setWindowTitle(lan["mapSettings"])
@@ -76,6 +76,18 @@ class MapSettingsDialog(QDialog):
 
         formLayout.addRow(QLabel(lan["currentEPSG"]), self.inputEPSG)
         layout.addLayout(formLayout)
+        
+        self.comboMap = QComboBox()
+        self.comboMap.addItem(lan.get("mapPositron", "CartoDB Positron"), "positron")
+        self.comboMap.addItem(lan.get("mapOSM", "OpenStreetMap"), "osm")
+        self.comboMap.addItem(lan.get("mapORM", "OpenRailwayMap"), "orm")
+        self.comboMap.addItem(lan.get("mapCUZK", "ČÚZK Ortofoto"), "cuzk")
+        
+        index = self.comboMap.findData(currentMap)
+        if index >= 0:
+            self.comboMap.setCurrentIndex(index)
+            
+        formLayout.addRow(QLabel(lan.get("mapBase", "Map Base:")), self.comboMap)
 
         label = QLabel(lan["EPSGinfo"])
         layout.addWidget(label)
@@ -86,14 +98,14 @@ class MapSettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         
-    def getEPSG(self):
+    def getMapSettings(self):
 
         epsg = self.inputEPSG.text().strip().upper()
 
         if not epsg.startswith("EPSG:"):
-            return f"EPSG:{epsg}"
-        else:
-            return epsg
+            epsg = f"EPSG:{epsg}"
+            
+        return epsg, self.comboMap.currentData()
         
 class HelpDialog(QDialog):
     def __init__(self, lan, parent=None):
@@ -464,6 +476,117 @@ class DesignApproachDialog(QDialog):
         else:
             return "standard"
 
+class StopsSettingsDialog(QDialog):
+    def __init__(self, settingsData, lan, parent=None):
+        super().__init__(parent)
+        self.settingsData = settingsData
+        
+        self.setWindowTitle(lan.get("stopsSettings", "Stops Settings"))
+        self.setMinimumSize(400, 400)
+
+        layout = QVBoxLayout(self)
+        
+        formLayout = QFormLayout()
+        self.inputDwellTime = QLineEdit(str(self.settingsData.get("defaultDwellTime", 30.0)))
+        formLayout.addRow(QLabel(lan.get("defaultDwellTime", "Default Dwell Time [s]:")), self.inputDwellTime)
+        layout.addLayout(formLayout)
+
+        labelStops = QLabel(lan.get("trainStops", "Train Stops"))
+        layout.addWidget(labelStops)
+
+        self.tableStops = QTableWidget(0, 2)
+        self.tableStops.setHorizontalHeaderLabels([
+            lan["station"],
+            lan.get("dwellTimeTable", "Dwell Time [s]")
+        ])
+        headerStops = self.tableStops.horizontalHeader()
+        headerStops.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.tableStops)
+
+        defaultStops = self.settingsData.get("trainStops", [])
+        self.populateTable(self.tableStops, defaultStops)
+
+        toolbarLayoutStops = QHBoxLayout()
+        
+        self.btnAddStop = QPushButton(lan.get("addRow", "Add Row"))
+        self.btnAddStop.clicked.connect(self.addStopRow)
+        toolbarLayoutStops.addWidget(self.btnAddStop)
+
+        self.btnRemoveStop = QPushButton(lan.get("removeRow", "Remove Row"))
+        self.btnRemoveStop.clicked.connect(self.removeStopRow)
+        toolbarLayoutStops.addWidget(self.btnRemoveStop)
+
+        self.btnImportStops = QPushButton(lan["importCSV"])
+        self.btnImportStops.clicked.connect(lambda: self.importCSV("tableStops"))
+        toolbarLayoutStops.addWidget(self.btnImportStops)
+
+        self.btnExportStops = QPushButton(lan["exportCSV"])
+        self.btnExportStops.clicked.connect(lambda: self.exportCSV("tableStops"))
+        toolbarLayoutStops.addWidget(self.btnExportStops)
+
+        layout.addLayout(toolbarLayoutStops)
+
+        self.buttonBox = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.buttonBox.accepted.connect(self.accept)
+        self.buttonBox.rejected.connect(self.reject)
+        layout.addWidget(self.buttonBox)
+
+    def addStopRow(self):
+        row = self.tableStops.rowCount()
+        self.tableStops.insertRow(row)
+        itemStation = QTableWidgetItem("")
+        defaultDwell = self.inputDwellTime.text()
+        itemDwell = QTableWidgetItem(defaultDwell)
+        self.tableStops.setItem(row, 0, itemStation)
+        self.tableStops.setItem(row, 1, itemDwell)
+
+    def removeStopRow(self):
+        currentRow = self.tableStops.currentRow()
+        if currentRow >= 0:
+            self.tableStops.removeRow(currentRow)
+
+    def populateTable(self, tableWidget, data):
+        tableWidget.setRowCount(len(data))
+        for row, rowData in enumerate(data):
+            for col, value in enumerate(rowData):
+                item = QTableWidgetItem(str(value))
+                tableWidget.setItem(row, col, item)
+
+    def importCSV(self, table):
+        filepath, _ = QFileDialog.getOpenFileName(self, "Open File", "", "CSV Files (*.csv)")
+        if not filepath: return
+        file_content = readfile.ReadFile().Read(filepath)
+        if file_content.startswith("Error"):
+            err = QMessageBox(); err.setWindowTitle("Error"); err.setIcon(QMessageBox.Icon.Warning); err.exec(); return
+        try:
+            reader = csv.reader(io.StringIO(file_content), delimiter=',')
+            next(reader, None)
+            if table == "tableStops": self.populateTable(self.tableStops, reader)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
+            
+    def exportCSV(self, table):
+        filepath, _ = QFileDialog.getSaveFileName(self, "Save File", "", "CSV Files (*.csv)")
+        if not filepath: return
+        try:
+            if table == "tableStops":
+                with open(filepath, "w", newline="") as file:
+                    writer = csv.writer(file)
+                    writer.writerow(["Station", "Dwell Time"])
+                    for row in range(self.tableStops.rowCount()):
+                        writer.writerow([self.tableStops.item(row, col).text() for col in range(self.tableStops.columnCount())])
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
+            
+    def getSettings(self):
+        settingsData = {"trainStops": []}
+        try: settingsData["defaultDwellTime"] = float(self.inputDwellTime.text())
+        except ValueError: pass
+        for row in range(self.tableStops.rowCount()):
+            try: settingsData["trainStops"].append([float(self.tableStops.item(row, 0).text()), float(self.tableStops.item(row, 1).text())])
+            except (ValueError, AttributeError): continue
+        return settingsData
+
 class VehicleSettingsDialog(QDialog):
     def __init__(self, settingsData, lan, parent = None):
         super().__init__(parent)
@@ -476,6 +599,13 @@ class VehicleSettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         
         formLayout = QFormLayout()
+        
+        self.inputInitialSpeed = QLineEdit(str(self.settingsData.get("trainInitialSpeed", 0.0)))
+        formLayout.addRow(QLabel(lan.get("trainInitialSpeed", "Initial Speed [km/h]:")), self.inputInitialSpeed)
+
+        self.inputFinalSpeed = QLineEdit(str(self.settingsData.get("trainFinalSpeed", 0.0)))
+        formLayout.addRow(QLabel(lan.get("trainFinalSpeed", "Final Speed [km/h]:")), self.inputFinalSpeed)
+        
         self.inputMaxSpeed = QLineEdit(str(self.settingsData.get("trainMaxSpeed", self.settingsData.get("vInit", [120])[0])))
         
         self.comboProfile = QComboBox()
@@ -752,6 +882,16 @@ class VehicleSettingsDialog(QDialog):
         
         try:
             settingsData["trainMaxSpeed"] = float(self.inputMaxSpeed.text())
+        except ValueError:
+            pass
+            
+        try:
+            settingsData["trainInitialSpeed"] = float(self.inputInitialSpeed.text())
+        except ValueError:
+            pass
+
+        try:
+            settingsData["trainFinalSpeed"] = float(self.inputFinalSpeed.text())
         except ValueError:
             pass
 

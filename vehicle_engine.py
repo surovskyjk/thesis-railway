@@ -76,9 +76,16 @@ class VehicleCalculator:
             slopeArr[i] = self.getSlopeAt(stationKm)
             curvArr[i] = self.getCurvatureAt(stationKm)
 
+        # Apply explicit stops to vLimitMps
+        for stop in self.trainStops:
+            stopStationM = stop[0] * 1000.0
+            idx = np.argmin(np.abs(stationsM - stopStationM))
+            if np.abs(stationsM[idx] - stopStationM) <= ds:
+                vLimitMps[idx] = 0.0
+
         # 1. Forward Pass (Acceleration and Cruising)
         vFwd = np.zeros_like(stationsM)
-        vFwd[0] = 0.0
+        vFwd[0] = min(vLimitMps[0], self.trainInitialSpeed / 3.6)
         for i in range(1, len(stationsM)):
             vPrev = vFwd[i-1]
             vPrevKmh = vPrev * 3.6
@@ -96,7 +103,7 @@ class VehicleCalculator:
 
         # 2. Backward Pass (Braking to limits)
         vBwd = np.zeros_like(stationsM)
-        vBwd[-1] = vLimitMps[-1]
+        vBwd[-1] = min(vLimitMps[-1], self.trainFinalSpeed / 3.6)
         
         for i in range(len(stationsM)-2, -1, -1):
             vNext = vBwd[i+1]
@@ -127,7 +134,36 @@ class VehicleCalculator:
         forceBrakeArr = np.zeros_like(stationsM)
         forceResArr = np.zeros_like(stationsM)
 
-        tS[0] = 0.0
+        # Dwell times
+        dwell_times = np.zeros_like(stationsM)
+        applied_stop_indices = set()
+        
+        for stop in self.trainStops:
+            stopStationM = stop[0] * 1000.0
+            dwell_time = stop[1]
+            idx = np.argmin(np.abs(stationsM - stopStationM))
+            if np.abs(stationsM[idx] - stopStationM) <= ds:
+                dwell_times[idx] += dwell_time
+                applied_stop_indices.add(idx)
+
+        # Automatic dwell times for contiguous 0 speed limit regions
+        is_zero = (vLimitMps == 0)
+        diff_zero = np.diff(is_zero.astype(int))
+        zero_starts = np.where(diff_zero == 1)[0] + 1
+        zero_ends = np.where(diff_zero == -1)[0]
+        
+        if len(is_zero) > 0:
+            if is_zero[0]:
+                zero_starts = np.insert(zero_starts, 0, 0)
+            if is_zero[-1]:
+                zero_ends = np.append(zero_ends, len(is_zero) - 1)
+
+        for start, end in zip(zero_starts, zero_ends):
+            region_indices = set(range(start, end + 1))
+            if not region_indices.intersection(applied_stop_indices):
+                dwell_times[start] += self.defaultDwellTime
+
+        tS[0] = 0.0 + dwell_times[0]
 
         for i in range(1, len(stationsM)):
             vCurr = vMps[i]
@@ -136,11 +172,13 @@ class VehicleCalculator:
             vAvgKmh = vAvg * 3.6
             
             if vAvg > 0.5: # Threshold to avoid near zero division 
-                tS[i] = tS[i-1] + ds / vAvg
+                dt = ds / vAvg
                 aMps2[i-1] = (vCurr**2 - vPrev**2) / (2 * ds)
             else:
-                tS[i] = tS[i-1] + ds / 0.5
+                dt = ds / 0.5
                 aMps2[i-1] = 0.0
+
+            tS[i] = tS[i-1] + dt + dwell_times[i]
 
             # Calculate forces at this step
             F_res = self.getVehicleResistance(vAvgKmh) + self.getTrackResistance(slopeArr[i-1], curvArr[i-1])
@@ -218,6 +256,11 @@ class VehicleCalculator:
 
         # Mechanical brake in N (input was in kN)
         self.mechBrakeN = float(settings.get("trainBrakeMech", 150.0)) * 1000.0
+        
+        self.trainInitialSpeed = float(settings.get("trainInitialSpeed", 0.0))
+        self.trainFinalSpeed = float(settings.get("trainFinalSpeed", 0.0))
+        self.defaultDwellTime = float(settings.get("defaultDwellTime", 30.0))
+        self.trainStops = settings.get("trainStops", [])
 
     def loadTrackData(self):
         lxml = self.data.get("LandXML", {})

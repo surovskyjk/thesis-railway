@@ -144,7 +144,21 @@ DIC = {
          "forceTraction": "Trakční síla [kN]",
          "forceBraking": "Brzdná síla [kN]",
          "forceResistance": "Jízdní odpor [kN]",
-         "forceKN": "Síla [kN]"
+         "forceKN": "Síla [kN]",
+         "stopsSettings": "Nastavení zastávek",
+         "importStopsTTP": "Importovat zastávky z XML TTP",
+         "trainInitialSpeed": "Počáteční rychlost [km/h]",
+         "trainFinalSpeed": "Koncová rychlost [km/h]",
+         "defaultDwellTime": "Výchozí doba stání [s]",
+         "trainStops": "Zastávky vlaku",
+         "dwellTimeTable": "Doba stání [s]",
+         "addRow": "Přidat řádek",
+         "removeRow": "Odebrat řádek",
+         "mapBase": "Mapový podklad:",
+         "mapPositron": "CartoDB Positron",
+         "mapOSM": "OpenStreetMap",
+         "mapORM": "OpenRailwayMap",
+         "mapCUZK": "ČÚZK Ortofoto"
          
          
         },
@@ -291,7 +305,21 @@ DIC = {
          "forceTraction": "Tractive Force [kN]",
          "forceBraking": "Braking Force [kN]",
          "forceResistance": "Resistance [kN]",
-         "forceKN": "Force [kN]"
+         "forceKN": "Force [kN]",
+         "stopsSettings": "Stops Settings",
+         "importStopsTTP": "Import Stops from XML TTP",
+         "trainInitialSpeed": "Initial Speed [km/h]",
+         "trainFinalSpeed": "Final Speed [km/h]",
+         "defaultDwellTime": "Default Dwell Time [s]",
+         "trainStops": "Train Stops",
+         "dwellTimeTable": "Dwell Time [s]",
+         "addRow": "Add Row",
+         "removeRow": "Remove Row",
+         "mapBase": "Base Map:",
+         "mapPositron": "CartoDB Positron",
+         "mapOSM": "OpenStreetMap",
+         "mapORM": "OpenRailwayMap",
+         "mapCUZK": "ČÚZK Orthophoto"
          
          
          
@@ -440,7 +468,21 @@ DIC = {
          "forceTraction": "Zugkraft [kN]",
          "forceBraking": "Bremskraft [kN]",
          "forceResistance": "Widerstand [kN]",
-         "forceKN": "Kraft [kN]"
+         "forceKN": "Kraft [kN]",
+         "stopsSettings": "Halteeinstellungen",
+         "importStopsTTP": "Halte aus XML TTP importieren",
+         "trainInitialSpeed": "Anfangsgeschwindigkeit [km/h]",
+         "trainFinalSpeed": "Endgeschwindigkeit [km/h]",
+         "defaultDwellTime": "Standardhaltezeit [s]",
+         "trainStops": "Zughalte",
+         "dwellTimeTable": "Haltezeit [s]",
+         "addRow": "Zeile hinzufügen",
+         "removeRow": "Zeile entfernen",
+         "mapBase": "Kartengrundlage:",
+         "mapPositron": "CartoDB Positron",
+         "mapOSM": "OpenStreetMap",
+         "mapORM": "OpenRailwayMap",
+         "mapCUZK": "ČÚZK Orthofoto"
          
         
         }

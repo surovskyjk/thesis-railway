@@ -27,7 +27,7 @@ import default_values
 import geometry_engine
 import vehicle_engine
 
-# Apply global rcParams for smaller labels and titles
+# Apply global rcParams for text sizes
 mpl.rcParams['axes.titlesize'] = 10
 mpl.rcParams['axes.labelsize'] = 9
 mpl.rcParams['xtick.labelsize'] = 8
@@ -132,8 +132,13 @@ class MainWindow(QMainWindow):
 
         openParseXMLTTPAction = QAction(lan["open_parse_xmlttp"], self)      
         self.fileMenu.addAction(openParseXMLTTPAction)
-        self.fileMenu.addSeparator()
         openParseXMLTTPAction.triggered.connect(self.openXMLTTP)
+        
+        # importStopsTTPAction = QAction(lan.get("importStopsTTP", "Import Stops from XML TTP"), self)
+        # self.fileMenu.addAction(importStopsTTPAction)
+        # importStopsTTPAction.triggered.connect(self.importStopsTTP)
+        
+        self.fileMenu.addSeparator()
         
         # Submenu - Calculate
         calculateGeometryAction = QAction(lan["calculate_geometry"], self)
@@ -200,6 +205,11 @@ class MainWindow(QMainWindow):
         vehicleSettingsAction = QAction(lan["vehicleSettings"], self)
         self.settingsMenu.addAction(vehicleSettingsAction)
         vehicleSettingsAction.triggered.connect(self.openVehicleSettings)
+        
+        # Sub-submenu - Stops settings
+        stopsSettingsAction = QAction(lan.get("stopsSettings", "Stops Settings"), self)
+        self.settingsMenu.addAction(stopsSettingsAction)
+        stopsSettingsAction.triggered.connect(self.openStopsSettings)
 
         # Sub-submenu - Design approach selection
         designApproachAction = QAction(lan["designApproach"], self)
@@ -526,9 +536,13 @@ class MainWindow(QMainWindow):
         self.fileMenu.actions()[1].setText(lan["autodetect"])
         self.fileMenu.actions()[2].setText(lan["open_parse_landxml"])
         self.fileMenu.actions()[3].setText(lan["open_parse_xmlttp"])
+        # self.fileMenu.actions()[4].setText(lan.get("importStopsTTP", "Import Stops from XML TTP"))
 
         self.settingsMenu.actions()[2].setText(lan["mapSettings"])
         self.settingsMenu.actions()[3].setText(lan["geometrySettings"])
+        self.settingsMenu.actions()[4].setText(lan.get("vehicleSettings", "Vehicle Settings"))
+        self.settingsMenu.actions()[5].setText(lan.get("stopsSettings", "Stops Settings"))
+        self.settingsMenu.actions()[6].setText(lan["designApproach"])
 
         self.viewMenu.actions()[0].setText(lan["cant"])
         self.viewMenu.actions()[1].setText(lan["cant_possible"])
@@ -783,6 +797,30 @@ class MainWindow(QMainWindow):
             err.setText(lan["no_file"])
             err.setIcon(QMessageBox.Icon.Warning)
             err.exec()
+            
+    # def importStopsTTP(self):
+    #     file_content = self.getFileContent()
+    #     if file_content is not None:
+    #         XMLTTPData = readfile.ReadFile().ParseXMLTTP(file_content)
+    #         stations = XMLTTPData.get("stationSpeedLimits", [])
+    #         settings = self.dataStorage.setdefault("settingsData", {})
+    #         trainStops = settings.setdefault("trainStops", [])
+    #         defaultDwell = float(settings.get("defaultDwellTime", 30.0))
+    #         for st in stations:
+    #             trainStops.append([float(st), defaultDwell])
+    #         lan = lang.DIC[self.current_language]
+    #         msg = QMessageBox()
+    #         msg.setWindowTitle(lan.get("importStopsTTP", "Import Stops"))
+    #         msg.setText(f"Imported {len(stations)} stops.")
+    #         msg.setIcon(QMessageBox.Icon.Information)
+    #         msg.exec()
+    #     else:
+    #         lan = lang.DIC[self.current_language]
+    #         err = QMessageBox()
+    #         err.setWindowTitle(lan["error"])
+    #         err.setText(lan["no_file"])
+    #         err.setIcon(QMessageBox.Icon.Warning)
+    #         err.exec()
 
     def plotCant(self):
         lan = lang.DIC[self.current_language]
@@ -1302,9 +1340,10 @@ class MainWindow(QMainWindow):
     # Map settings
     def openMapSettings(self):
         lan = lang.DIC[self.current_language]
-        dialog = gui_overlay.MapSettingsDialog(self.epsgInput, lan, self)
+        dialog = gui_overlay.MapSettingsDialog(self.epsgInput, self.mapWidget.currentBaseMap, lan, self)
         if dialog.exec():
-            self.epsgInput = dialog.getEPSG()
+            self.epsgInput, selected_map = dialog.getMapSettings()
+            self.mapWidget.setBaseMap(selected_map)
 
     # Geometry settings
     def openGeometrySettings(self):
@@ -1319,6 +1358,13 @@ class MainWindow(QMainWindow):
         lan = lang.DIC[self.current_language]
 
         dialog = gui_overlay.VehicleSettingsDialog(self.dataStorage.get("settingsData", {}), lan, self)
+        if dialog.exec():
+            self.dataStorage["settingsData"].update(dialog.getSettings())
+
+    # Stops settings
+    def openStopsSettings(self):
+        lan = lang.DIC[self.current_language]
+        dialog = gui_overlay.StopsSettingsDialog(self.dataStorage.get("settingsData", {}), lan, self)
         if dialog.exec():
             self.dataStorage["settingsData"].update(dialog.getSettings())
 
