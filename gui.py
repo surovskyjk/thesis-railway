@@ -111,6 +111,7 @@ class MainWindow(QMainWindow):
         self.cleanMenu = main_menu.addMenu(lan["clean"])
         self.settingsMenu = main_menu.addMenu(lan["settings"])
         self.viewMenu = main_menu.addMenu(lan["view"])
+        self.reportMenu = main_menu.addMenu(lan.get("reportMenu", "&Report"))
         self.exitMenu = main_menu.addMenu(lan["exit"])
         self.helpMenu = main_menu.addMenu(lan["help"])
 
@@ -364,6 +365,15 @@ class MainWindow(QMainWindow):
         self.toggleKinematicsForcesAction.triggered.connect(self.toggleKinematicsForcesVisibility)
         self.viewMenu.addAction(self.toggleKinematicsForcesAction)
 
+        # Submenu - Report
+        self.reportGeometryAction = QAction(lan.get("reportGeometry", "Report - Geometry"), self)
+        self.reportMenu.addAction(self.reportGeometryAction)
+        self.reportGeometryAction.triggered.connect(self.generateGeometryReport)
+
+        self.reportVehicleAction = QAction(lan.get("reportVehicle", "Report - Vehicle"), self)
+        self.reportMenu.addAction(self.reportVehicleAction)
+        self.reportVehicleAction.triggered.connect(self.generateVehicleReport)
+
         # Submenu - Exit
         exitAction = QAction(lan["exit"], self)
         self.exitMenu.addAction(exitAction)
@@ -494,9 +504,15 @@ class MainWindow(QMainWindow):
         layoutPlotsKinematics.addWidget(self.toolbar)
 
         # Report - add widget for plotting reports
-        self.reportWidget = QPlainTextEdit()
-        self.reportWidget.setReadOnly(True)
-        layoutPlotsReport.addWidget(self.reportWidget)
+        self.reportSplitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        self.reportGeometryWidget = QPlainTextEdit()
+        self.reportGeometryWidget.setReadOnly(True)
+        self.reportSplitter.addWidget(self.reportGeometryWidget)
+        
+        self.reportVehicleTable = pg.TableWidget(sortable=False)
+        self.reportSplitter.addWidget(self.reportVehicleTable)
+        layoutPlotsReport.addWidget(self.reportSplitter)
 
         # Map - add widget for maps
         self.mapWidget = MapWidget(self)
@@ -528,6 +544,7 @@ class MainWindow(QMainWindow):
         self.settingsMenu.setTitle(lan["settings"])
         self.languageMenu.setTitle(lan["language"])
         self.viewMenu.setTitle(lan["view"])
+        self.reportMenu.setTitle(lan.get("reportMenu", "&Report"))
         self.cleanMenu.setTitle(lan["clean"])
         self.exitMenu.setTitle(lan["exit"])
         self.helpMenu.setTitle(lan["help"])
@@ -567,6 +584,9 @@ class MainWindow(QMainWindow):
         self.cleanMenu.actions()[2].setText(lan["cleanAll"])
         self.cleanMenu.actions()[3].setText(lan["cleanCants"])
         self.cleanMenu.actions()[4].setText(lan["cleanSpeeds"])
+
+        self.reportGeometryAction.setText(lan.get("reportGeometry", "Report - Geometry"))
+        self.reportVehicleAction.setText(lan.get("reportVehicle", "Report - Vehicle"))
 
 
         self.exitMenu.actions()[0].setText(lan["exit"])
@@ -669,7 +689,7 @@ class MainWindow(QMainWindow):
             self.plotCant()
             self.plotCurvature()
             self.plotProfile()
-            self.mapWidget.drawAlignment(lxml.get("alignmentCoordinates",{}))
+            self.mapWidget.drawAlignment(lxml.get("alignmentCoordinates",[]), lxml)
 
         else:
             lan = lang.DIC[self.current_language]
@@ -1372,7 +1392,7 @@ class MainWindow(QMainWindow):
     def openDesignApproach(self):
         lan = lang.DIC[self.current_language]
 
-        dialog = gui_overlay.DesignApproachDialog(lan, self)
+        dialog = gui_overlay.DesignApproachDialog(self.dataStorage.get("settingsData", {}), lan, self)
         if dialog.exec():
             self.dataStorage["settingsData"]["designApproach"] = dialog.getDesignApproach()
 
@@ -1381,6 +1401,113 @@ class MainWindow(QMainWindow):
         lan = lang.DIC[self.current_language]
         dialog = gui_overlay.HelpDialog(lan, self)
         dialog.exec()
+
+    # Reports
+    def generateGeometryReport(self):
+        lan = lang.DIC[self.current_language]
+        lxml = self.dataStorage.get("LandXML", {})
+        if not lxml or len(lxml.get("stationCantPossible", [])) < 2:
+            self.reportGeometryWidget.setPlainText(lan.get("no_data", "No data available. Calculate values first."))
+            self.layoutTabsPlots.setCurrentWidget(self.layoutTabsPlotsReport_container)
+            return
+
+        stations = lxml["stationCantPossible"]
+        geomType = lxml["geometryType"]
+        cant = lxml.get("cantPossible", np.zeros_like(stations))
+        cDef100 = lxml.get("cDef100", np.zeros_like(stations))
+        cDef130 = lxml.get("cDef130", np.zeros_like(stations))
+        cDef150 = lxml.get("cDef150", np.zeros_like(stations))
+        cDefK = lxml.get("cDefK", np.zeros_like(stations))
+
+        v100 = self.dataStorage.get("speedLimits100", np.zeros_like(stations))
+        v130 = self.dataStorage.get("speedLimits130", np.zeros_like(stations))
+        v150 = self.dataStorage.get("speedLimits150", np.zeros_like(stations))
+        vK = self.dataStorage.get("speedLimitsK", np.zeros_like(stations))
+        
+        radius = lxml.get("radius", np.full_like(stations, np.inf))
+
+        report_lines = [lan.get("reportGeometryTitle", "=== Geometry Report ==="), ""]
+
+        def calc_n(L_m, d_val, v):
+            if abs(d_val) < 1e-3 or v < 1e-3: return "INF"
+            return f"{L_m * 1000 / (abs(d_val) * v):.2f}"
+            
+        def format_r(r_val):
+            if np.isinf(r_val) or np.isnan(r_val): return "INF"
+            return f"{r_val:.0f}"
+
+        for i in range(len(stations) - 1):
+            L = (stations[i+1] - stations[i]) * 1000
+            if L <= 0: continue
+            
+            g_type = geomType[i]
+            r_start = radius[i] if i < len(radius) else float('inf')
+            r_end = radius[i+1] if i+1 < len(radius) else float('inf')
+            
+            header_line = f"--- {g_type} | {lan['station']}: {stations[i]:.3f} - {stations[i+1]:.3f} | L = {L:.2f} m"
+            if g_type == "Curve":
+                header_line += f" | R: {format_r(r_start)} m"
+            elif g_type == "Spiral":
+                header_line += f" | R: {format_r(r_start)} -> {format_r(r_end)} m"
+            header_line += " ---"
+            report_lines.append(header_line)
+
+            profiles = [
+                ("V100", v100, cDef100),
+                ("V130", v130, cDef130),
+                ("V150", v150, cDef150),
+                ("VK", vK, cDefK),
+            ]
+
+            for p_name, v_arr, i_arr in profiles:
+                v_start, v_end = v_arr[i], v_arr[i+1]
+                d_start, d_end = cant[i], cant[i+1]
+                i_start, i_end = i_arr[i], i_arr[i+1]
+
+                line_str = f"  [{p_name}] V: {v_start:.0f} -> {v_end:.0f} km/h"
+                if g_type == "Curve":
+                    line_str += f" | D: {d_start:.0f} mm | I: {i_start:.0f} mm"
+                elif g_type == "Spiral":
+                    dD = abs(d_end - d_start)
+                    dI = abs(i_end - i_start)
+                    n_val = calc_n(L, dD, v_start)
+                    nI_val = calc_n(L, dI, v_start)
+                    line_str += f" | D: {d_start:.0f} -> {d_end:.0f} mm | I: {i_start:.0f} -> {i_end:.0f} mm | n: {n_val} | nI: {nI_val}"
+                
+                report_lines.append(line_str)
+            report_lines.append("")
+
+        self.reportGeometryWidget.setPlainText("\n".join(report_lines))
+        self.layoutTabsPlots.setCurrentWidget(self.layoutTabsPlotsReport_container)
+
+    def generateVehicleReport(self):
+        lan = lang.DIC[self.current_language]
+        stations = self.dataStorage.get("kinematicsStationM", [])
+        if len(stations) == 0:
+            self.reportVehicleTable.setData([{"Info": lan.get("no_data", "No data available. Calculate values first.")}])
+            self.layoutTabsPlots.setCurrentWidget(self.layoutTabsPlotsReport_container)
+            return
+
+        speeds = self.dataStorage.get("kinematicsSpeedM", np.zeros_like(stations))
+        accels = self.dataStorage.get("kinematicsAcceleration", np.zeros_like(stations))
+        f_trac = self.dataStorage.get("kinematicsForceTractionKN", np.zeros_like(stations))
+        f_brake = self.dataStorage.get("kinematicsForceBrakingKN", np.zeros_like(stations))
+        f_res = self.dataStorage.get("kinematicsForceResistanceKN", np.zeros_like(stations))
+
+        tableData = []
+        for i in range(0, len(stations), 10):
+            s_km = stations[i] / 1000.0
+            tableData.append({
+                lan.get("station", "Station [km]"): f"{s_km:.3f}",
+                lan.get("speed", "Speed [km/h]"): f"{speeds[i]*3.6:.1f}",
+                "Accel [m/s2]": f"{accels[i]:.3f}",
+                lan.get("forceTraction", "Tractive Force [kN]"): f"{f_trac[i]:.1f}",
+                lan.get("forceBraking", "Braking Force [kN]"): f"{f_brake[i]:.1f}",
+                lan.get("forceResistance", "Resistance [kN]"): f"{f_res[i]:.1f}"
+            })
+
+        self.reportVehicleTable.setData(tableData)
+        self.layoutTabsPlots.setCurrentWidget(self.layoutTabsPlotsReport_container)
 
     # Update tables
     def updateTableLandXML(self, data):

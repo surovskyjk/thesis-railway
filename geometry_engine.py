@@ -525,6 +525,11 @@ class GeometryCalculator:
     def getNormLimit(self, parameter, speedLimit, approach): 
         normLimits = self.data.get("settingsData", {}).get(parameter,[])
 
+        if isinstance(approach, dict):
+            current_approach = approach.get(parameter, "standard")
+        else:
+            current_approach = approach
+
         if parameter == "nLin":
             approachDict = {
                 "standard": 2,
@@ -539,7 +544,7 @@ class GeometryCalculator:
                 "minmax": 4
             }
 
-        col = approachDict.get(approach, 3)
+        col = approachDict.get(current_approach, 3)
 
         if parameter == "nLin":
             for row in normLimits:

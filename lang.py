@@ -158,7 +158,13 @@ DIC = {
          "mapPositron": "CartoDB Positron",
          "mapOSM": "OpenStreetMap",
          "mapORM": "OpenRailwayMap",
-         "mapCUZK": "ČÚZK Ortofoto"
+         "mapCUZK": "ČÚZK Ortofoto",
+         "reportMenu": "&Report",
+         "reportGeometry": "Report - Geometrie",
+         "reportVehicle": "Report - Vozidlo",
+         "reportGeometryTitle": "=== Report parametrů geometrie ===",
+         "reportVehicleTitle": "=== Report jízdy vozidla ===",
+         "no_data": "Žádná data nejsou k dispozici. Proveďte nejprve výpočet."
          
          
         },
@@ -319,7 +325,13 @@ DIC = {
          "mapPositron": "CartoDB Positron",
          "mapOSM": "OpenStreetMap",
          "mapORM": "OpenRailwayMap",
-         "mapCUZK": "ČÚZK Orthophoto"
+         "mapCUZK": "ČÚZK Orthophoto",
+         "reportMenu": "&Report",
+         "reportGeometry": "Report - Geometry",
+         "reportVehicle": "Report - Vehicle",
+         "reportGeometryTitle": "=== Geometry Report ===",
+         "reportVehicleTitle": "=== Vehicle Kinematics Report ===",
+         "no_data": "No data available. Calculate values first."
          
          
          
@@ -482,7 +494,13 @@ DIC = {
          "mapPositron": "CartoDB Positron",
          "mapOSM": "OpenStreetMap",
          "mapORM": "OpenRailwayMap",
-         "mapCUZK": "ČÚZK Orthofoto"
+         "mapCUZK": "ČÚZK Orthofoto",
+         "reportMenu": "&Report",
+         "reportGeometry": "Bericht - Geometrie",
+         "reportVehicle": "Bericht - Fahrzeug",
+         "reportGeometryTitle": "=== Geometriebericht ===",
+         "reportVehicleTitle": "=== Fahrzeugkinematikbericht ===",
+         "no_data": "Keine Daten verfügbar. Bitte berechnen Sie die Werte zuerst."
          
         
         }

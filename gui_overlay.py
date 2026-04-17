@@ -443,9 +443,10 @@ class GeometrySettingsDialog(QDialog):
         return settingsData
     
 class DesignApproachDialog(QDialog):
-    def __init__(self, lan, parent=None):
+    def __init__(self, settingsData, lan, parent=None):
         super().__init__(parent)
         self.lan = lan
+        self.settingsData = settingsData
         
         self.setWindowTitle(lan["designApproach"])
 
@@ -453,10 +454,41 @@ class DesignApproachDialog(QDialog):
         labelLimit = QLabel(lan["designApproachLimitDescription"])
         layout.addWidget(labelLimit)
 
-        # Combo box with design approach possibilities
-        self.approachCombobox = QComboBox(self)
-        self.approachCombobox.addItems([lan["standard"],lan["limit"],lan["minmax"]])
-        layout.addWidget(self.approachCombobox)
+        formLayout = QFormLayout()
+
+        self.designApproach = self.settingsData.get("designApproach", {})
+        if isinstance(self.designApproach, str):
+            self.designApproach = {
+                "I": self.designApproach,
+                "dI": self.designApproach,
+                "nLin": self.designApproach,
+                "nILin": self.designApproach
+            }
+
+        self.comboboxes = {}
+        parameters = [
+            ("I", lan.get("cant_def", "cant deficiency I [mm]")),
+            ("dI", lan.get("abrupt_cant_def", "abrupt change of cant deficiency deltaI [mm]")),
+            ("nLin", lan.get("nLin", "cant ramp gradient n [-]")),
+            ("nILin", lan.get("nILin", "Coefficient of cant deficiency change nI [-]"))
+        ]
+
+        for param_key, param_label in parameters:
+            cb = QComboBox(self)
+            cb.addItems([lan["standard"], lan["limit"], lan["minmax"]])
+            
+            current_val = self.designApproach.get(param_key, "standard")
+            if current_val == "standard":
+                cb.setCurrentText(lan["standard"])
+            elif current_val == "limit":
+                cb.setCurrentText(lan["limit"])
+            elif current_val == "minmax":
+                cb.setCurrentText(lan["minmax"])
+                
+            self.comboboxes[param_key] = cb
+            formLayout.addRow(QLabel(param_label), cb)
+            
+        layout.addLayout(formLayout)
 
         # Buttons for the whole dialog
         self.buttonBox = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -466,15 +498,18 @@ class DesignApproachDialog(QDialog):
         layout.addWidget(self.buttonBox)
 
     def getDesignApproach(self):
-        selected = self.approachCombobox.currentText()
-        if selected == self.lan["standard"]:
-            return "standard"
-        elif selected == self.lan["limit"]:
-            return "limit"
-        elif selected == self.lan["minmax"]:
-            return "minmax"
-        else:
-            return "standard"
+        result = {}
+        for param_key, cb in self.comboboxes.items():
+            selected = cb.currentText()
+            if selected == self.lan["standard"]:
+                result[param_key] = "standard"
+            elif selected == self.lan["limit"]:
+                result[param_key] = "limit"
+            elif selected == self.lan["minmax"]:
+                result[param_key] = "minmax"
+            else:
+                result[param_key] = "standard"
+        return result
 
 class StopsSettingsDialog(QDialog):
     def __init__(self, settingsData, lan, parent=None):

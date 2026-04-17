@@ -58,7 +58,7 @@ class VehicleCalculator:
             return
 
         # Discretization step in meters
-        ds = 10.0
+        ds = 1.0
         
         # Simulation range based on horizontal alignment
         sStart = np.min(self.stationHorizontal) * 1000

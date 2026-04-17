@@ -187,6 +187,41 @@ class ReadFile:
             stationHorizontal.append(staStart)
             stationHorizontal.append(staEnd)
 
+        keyStations = []
+        keyTypes = []
+        keyX = []
+        keyY = []
+
+        for i, el in enumerate(elements):
+            sta = float(el.get('staStart', "0")) / 1000.0
+            ctype = "Změna"
+            if i == 0:
+                ctype = "ZÚ"
+            else:
+                prev_tag = elements[i-1].tag
+                curr_tag = el.tag
+                if curr_tag.endswith('Spiral'): ctype = "ZP" if prev_tag.endswith('Line') else "KP"
+                elif curr_tag.endswith('Curve'): ctype = "ZO"
+                elif curr_tag.endswith('Line'): ctype = "KO" if prev_tag.endswith('Curve') else "KP"
+            
+            for child in el:
+                if child.tag.endswith('Start'):
+                    coords = child.text.strip().split()
+                    if len(coords) >= 2:
+                        keyStations.append(sta); keyTypes.append(ctype)
+                        keyX.append(float(coords[0])); keyY.append(float(coords[1]))
+                    break
+
+        if elements:
+            end_sta = (length[0]+length[1])/1000.0
+            for child in elements[-1]:
+                if child.tag.endswith('End'):
+                    coords = child.text.strip().split()
+                    if len(coords) >= 2:
+                        keyStations.append(end_sta); keyTypes.append("KÚ")
+                        keyX.append(float(coords[0])); keyY.append(float(coords[1]))
+                    break
+
         # Extract radius values
         radius = []
         curvature = []
@@ -370,7 +405,11 @@ class ReadFile:
             "curveRot": curveRot,
             "curveType": curveType,
             "curveRadius": curveRadius,
-            "slope": slope
+            "slope": slope,
+            "keyStations": np.array(keyStations),
+            "keyTypes": np.array(keyTypes),
+            "keyX": np.array(keyX),
+            "keyY": np.array(keyY)
         }
 
         # Add transformed coordinates and more points for transition curves
@@ -430,12 +469,13 @@ class ReadFile:
         
         alignmentCoords = []
         alignmentCoordsOriginal = []
+        dense_points = []
         
         transformer = Transformer.from_crs(epsgInput, epsgOutput, always_xy=True)
 
         # Universal add segment method
 
-        def addSegment(x, y):
+        def addSegment(x, y, s=None):
 
             originalCoords = np.column_stack((x, y)).tolist()
             alignmentCoordsOriginal.append(originalCoords)
@@ -453,10 +493,20 @@ class ReadFile:
             transformedCoords = np.column_stack((lat, lon)).tolist()
             alignmentCoords.append(transformedCoords)
 
+            if s is not None:
+                for sta, la, lo in zip(s, lat, lon):
+                    dense_points.append((sta, la, lo))
+
         # Line
         if "lineStartX" in parsedXML:
             for i in range(len(parsedXML["lineStartX"])):
-                addSegment([parsedXML["lineStartX"][i], parsedXML["lineEndX"][i]], [parsedXML["lineStartY"][i], parsedXML["lineEndY"][i]])
+                staStart = parsedXML["lineStationStart"][i]
+                dx = parsedXML["lineEndX"][i] - parsedXML["lineStartX"][i]
+                dy = parsedXML["lineEndY"][i] - parsedXML["lineStartY"][i]
+                length = np.sqrt(dx**2 + dy**2) / 1000.0
+                staEnd = staStart + length
+                addSegment([parsedXML["lineStartX"][i], parsedXML["lineEndX"][i]], 
+                           [parsedXML["lineStartY"][i], parsedXML["lineEndY"][i]], [staStart, staEnd])
 
         # Spiral
         if "spiralStartX" in parsedXML:
@@ -474,7 +524,11 @@ class ReadFile:
                     epsgInput = epsgInput
                     )
                 
-                addSegment(x, y)   
+                staStart = parsedXML["spiralStationStart"][i]
+                length = parsedXML["spiralLength"][i] / 1000.0
+                staEnd = staStart + length
+                s = np.linspace(staStart, staEnd, len(x)).tolist()
+                addSegment(x, y, s)   
 
         # Curve
         if "curveStartX" in parsedXML:
@@ -492,7 +546,31 @@ class ReadFile:
                     epsgInput = epsgInput
                     )
                 
-                addSegment(x, y)
+                staStart = parsedXML["curveStationStart"][i]
+                staEnd = staStart
+                idx = np.where(np.isclose(parsedXML["stationHorizontal"], staStart))[0]
+                if len(idx) > 0 and idx[0] + 1 < len(parsedXML["stationHorizontal"]):
+                    staEnd = parsedXML["stationHorizontal"][idx[0] + 1]
+                else:
+                    length = sum(np.sqrt((x[k]-x[k-1])**2 + (y[k]-y[k-1])**2) for k in range(1, len(x))) / 1000.0
+                    staEnd = staStart + length
+                
+                s = np.linspace(staStart, staEnd, len(x)).tolist()
+                addSegment(x, y, s)
+
+        dense_points.sort(key=lambda p: p[0])
+        parsedXML["denseAlignment"] = dense_points
+
+        if "keyX" in parsedXML and len(parsedXML["keyX"]) > 0:
+            if epsgInput == "EPSG:5514":
+                easting = -np.array(parsedXML["keyY"])
+                northing = -np.array(parsedXML["keyX"])
+            else:
+                easting = np.array(parsedXML["keyX"])
+                northing = np.array(parsedXML["keyY"])
+            lon, lat = transformer.transform(easting, northing)
+            parsedXML["keyLat"] = lat.tolist()
+            parsedXML["keyLon"] = lon.tolist()
 
         parsedXML["alignmentCoordinates"] = alignmentCoords
         parsedXML["alignmentCoordsOriginal"] = alignmentCoordsOriginal
