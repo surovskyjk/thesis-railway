@@ -39,7 +39,23 @@ class ReadFile:
         except:
             return 0
 
-    def ParseLandXML(self, xml_data, epsgInput) -> dict:
+    def GetAlignments(self, xml_data):
+        try:
+            root = ET.fromstring(xml_data)
+            alignments = []
+            count = 1
+            for alig in root.iter():
+                if alig.tag.endswith('Alignment'):
+                    name = alig.get('name')
+                    if not name:
+                        name = alig.get('desc', f'Alignment {count}')
+                    alignments.append(name)
+                    count += 1
+            return alignments
+        except:
+            return []
+
+    def ParseLandXML(self, xml_data, epsgInput, alignmentIndex=0) -> dict:
 
         # Check if xml_data is provided
         if not xml_data:
@@ -48,24 +64,32 @@ class ReadFile:
         # Use the provided XML data string instead of opening a file            
         root = ET.fromstring(xml_data)
 
-        # Alignment length
-        length = []
+        alignments = []
         for alig in root.iter():
             if alig.tag.endswith('Alignment'):
-                length.append(alig.get('length'))
-                length.append(alig.get('staStart'))
+                alignments.append(alig)
+
+        if not alignments:
+            return {"error": "No alignment found / Keine Achse gefunden / Nebyla nalezena žádná osa."}
+
+        target_alignment = alignments[alignmentIndex] if alignmentIndex < len(alignments) else alignments[0]
+
+        # Alignment length
+        length = []
+        length.append(target_alignment.get('length', "0"))
+        length.append(target_alignment.get('staStart', "0"))
         length = np.array(length, dtype=float)
 
         # Extract stations where cant is defined
         stationCant = []
-        for km in root.iter():
+        for km in target_alignment.iter():
             if km.tag.endswith('CantStation'):
                 stationCant.append(km.get('station'))
         stationCant.append(length[0]+length[1])
 
         # Extract cant values
         cant = []
-        for mm in root.iter():
+        for mm in target_alignment.iter():
             if mm.tag.endswith('CantStation'):
                 cant.append(mm.get('appliedCant'))
         cant.append(cant[-1])
@@ -74,7 +98,7 @@ class ReadFile:
         stationVertical = []
         elevation = []
 
-        for vl in root.iter():
+        for vl in target_alignment.iter():
             if vl.tag.endswith('PVI') or vl.tag.endswith('CircCurve'):
 
                 verticalData = vl.text
@@ -102,7 +126,7 @@ class ReadFile:
         lineEndX = []
         lineEndY = []
 
-        for lineCoordinates in root.iter():
+        for lineCoordinates in target_alignment.iter():
             if lineCoordinates.tag.endswith('Line'):
                 for coordinate in lineCoordinates:
                     if coordinate.tag.endswith('Start'):
@@ -123,7 +147,7 @@ class ReadFile:
         spiralPIX = []
         spiralPIY = []
 
-        for spiralCoordinates in root.iter():
+        for spiralCoordinates in target_alignment.iter():
             if spiralCoordinates.tag.endswith('Spiral'):
                 for coordinate in spiralCoordinates:
                     if coordinate.tag.endswith('Start'):
@@ -149,7 +173,7 @@ class ReadFile:
         curveCenterX = []
         curveCenterY = []
 
-        for curveCoordinates in root.iter():
+        for curveCoordinates in target_alignment.iter():
             if curveCoordinates.tag.endswith('Curve'):
                 for coordinate in curveCoordinates:
                     if coordinate.tag.endswith('Start'):
@@ -171,7 +195,7 @@ class ReadFile:
         # Extract station, where horizontal alignment is being changed
         stationHorizontal = []
         elements = []
-        for el in root.iter():
+        for el in target_alignment.iter():
             if el.tag.endswith('Line') or el.tag.endswith('Spiral') or el.tag.endswith('Curve'):
                 if el.get('staStart') is not None:
                     elements.append(el)
@@ -278,7 +302,7 @@ class ReadFile:
 
         # Parse line station
         lineStationStart = []
-        for km in root.iter():
+        for km in target_alignment.iter():
             if km.tag.endswith('Line'):
                 lineStationStart.append(km.get('staStart'))
 
@@ -291,7 +315,7 @@ class ReadFile:
         spiralType = []
         spiralConst = []
 
-        for spiral in root.iter():
+        for spiral in target_alignment.iter():
             if spiral.tag.endswith('Spiral') and spiral.get('staStart') is not None:
                 
                 spiralStationStart.append(spiral.get('staStart'))
@@ -314,7 +338,7 @@ class ReadFile:
         curveType = []
         curveRadius = []
 
-        for curve in root.iter():
+        for curve in target_alignment.iter():
             if curve.tag.endswith('Curve') and curve.get('staStart') is not None:
                 
                 curveStationStart.append(curve.get('staStart'))

@@ -35,6 +35,8 @@ DIC = {
          "elevation": "výška [m]",
          "select_sections_for_ttp_title": "Vyberte úsek",
          "select_sections_for_ttp_description": "Vyberte úseky, které chcete zahrnout do TTP.",
+         "select_alignment_title": "Výběr osy",
+         "select_alignment_description": "LandXML soubor obsahuje více os. Vyberte, kterou chcete načíst:",
          "crop_to_landxml": "Oříznout na rozsah LandXML dat",
          "unknown_xml_file": "Neznámý formát XML souboru. Očekává se LandXML nebo XML TTP.",
          "autodetect": "&Automaticky rozpoznat a zpracovat LandXML nebo XML TTP",
@@ -117,6 +119,8 @@ DIC = {
          "coef_b2": "Koeficient b2",
          "vehicleBrakeDyn": "Dynamická brzda vozidla",
          "vehicleBrakeMech": "Mechanická brzda vozidla [kN]:",
+         "trainLength": "Délka vlaku [m]",
+         "train_too_long": "Délka vlaku je větší než celková délka úseku!",
          "vehicleParam": "Parametry vozidla",
          "rotMass": "Součinitel rotující hmoty",
          "weight": "Hmotnost vozidla",
@@ -162,9 +166,11 @@ DIC = {
          "reportMenu": "&Report",
          "reportGeometry": "Report - Geometrie",
          "reportVehicle": "Report - Vozidlo",
-         "reportGeometryTitle": "=== Report parametrů geometrie ===",
-         "reportVehicleTitle": "=== Report jízdy vozidla ===",
-         "no_data": "Žádná data nejsou k dispozici. Proveďte nejprve výpočet."
+         "reportGeometryTitle": "Report parametrů geometrie",
+         "reportVehicleTitle": "Report jízdy vozidla",
+         "no_data": "Žádná data nejsou k dispozici. Proveďte nejprve výpočet.",
+         "exportGeometryReport": "Exportovat report geometrie",
+         "exportVehicleReport": "Exportovat report vozidla"
          
          
         },
@@ -202,6 +208,8 @@ DIC = {
          "elevation": "elevation [m]",
          "select_sections_for_ttp_title": "Select Sections for TTP",
          "select_sections_for_ttp_description": "Select the sections you want to include in the TTP.",
+         "select_alignment_title": "Select Alignment",
+         "select_alignment_description": "The LandXML file contains multiple alignments. Select which one to load:",
          "crop_to_landxml": "Crop to LandXML data range",
          "unknown_xml_file": "Unknown XML file format. Expecting LandXML or XML TTP.",
          "autodetect": "&Autodetect and parse LandXML or XML TTP",
@@ -284,6 +292,8 @@ DIC = {
          "coef_b2": "Coefficient b2",
          "vehicleBrakeDyn": "Vehicle Dynamic Braking",
          "vehicleBrakeMech": "Mechanical Braking [kN]:",
+         "trainLength": "Train Length [m]",
+         "train_too_long": "Train length is greater than the total section length!",
          "vehicleParam": "Vehicle Parameters",
          "rotMass": "Rotation Mass Coefficient",
          "weight": "Vehicle Weight",
@@ -331,7 +341,9 @@ DIC = {
          "reportVehicle": "Report - Vehicle",
          "reportGeometryTitle": "=== Geometry Report ===",
          "reportVehicleTitle": "=== Vehicle Kinematics Report ===",
-         "no_data": "No data available. Calculate values first."
+         "no_data": "No data available. Calculate values first.",
+         "exportGeometryReport": "Export Geometry Report",
+         "exportVehicleReport": "Export Vehicle Report"
          
          
          
@@ -371,6 +383,8 @@ DIC = {
          "elevation": "Höhe [m]",
          "select_sections_for_ttp_title": "Abschnitte für TTP auswählen",
          "select_sections_for_ttp_description": "Wählen Sie die Abschnitte aus, die Sie in das TTP aufnehmen möchten.",
+         "select_alignment_title": "Achse auswählen",
+         "select_alignment_description": "Die LandXML-Datei enthält mehrere Achsen. Wählen Sie aus, welche geladen werden soll:",
          "crop_to_landxml": "Auf LandXML-Datenbereich zuschneiden",
          "unknown_xml_file": "Unbekanntes XML-Dateiformat. Erwartet wird LandXML oder XML TTP.",
          "autodetect": "&LandXML oder XML TTP automatisch erkennen und verarbeiten",
@@ -453,6 +467,8 @@ DIC = {
          "coef_b2": "Koeffizient b2",
          "vehicleBrakeDyn": "Dynamische Bremse",
          "vehicleBrakeMech": "Mechanische Bremse [kN]:",
+         "trainLength": "Zuglänge [m]",
+         "train_too_long": "Zuglänge ist größer als die Gesamtlänge des Abschnitts!",
          "vehicleParam": "Fahrzeugparameter",
          "rotMass": "Drehmomentkoeffizient",
          "weight": "Fahrzeuggewicht",
@@ -498,9 +514,11 @@ DIC = {
          "reportMenu": "&Report",
          "reportGeometry": "Bericht - Geometrie",
          "reportVehicle": "Bericht - Fahrzeug",
-         "reportGeometryTitle": "=== Geometriebericht ===",
-         "reportVehicleTitle": "=== Fahrzeugkinematikbericht ===",
-         "no_data": "Keine Daten verfügbar. Bitte berechnen Sie die Werte zuerst."
+         "reportGeometryTitle": "Geometriebericht",
+         "reportVehicleTitle": "Fahrzeugkinematikbericht",
+         "no_data": "Keine Daten verfügbar. Bitte berechnen Sie die Werte zuerst.",
+         "exportGeometryReport": "Geometriebericht exportieren",
+         "exportVehicleReport": "Fahrzeugbericht exportieren"
          
         
         }

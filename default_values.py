@@ -36,7 +36,7 @@ defVal = {
               ],
 "trainBrake": [["Placeholder BEMU", 0, 160, 0, 0, 0]],
 "trainBrakeMech": 150.0,
-"trainParam": [["Placeholder BEMU", 1.08, 460]],
+"trainParam": [["Placeholder BEMU", 1.08, 460, 0.0]],
 "speedLimitPlot": ["stationSpeed150", "speedLimits150"]
         
 }

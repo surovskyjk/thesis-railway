@@ -3,7 +3,8 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout,
                                QListWidget, QListWidgetItem, QFormLayout, 
                                QLineEdit, QTableWidget, QTableWidgetItem, 
                                QHeaderView, QFileDialog, QMessageBox, 
-                               QDialogButtonBox, QPushButton, QComboBox)
+                               QDialogButtonBox, QPushButton, QComboBox,
+                               QTabWidget, QWidget)
 from PySide6.QtCore import Qt
 
 import csv
@@ -61,6 +62,40 @@ class TTPSelectSectionDialog(QDialog):
         selectedIds = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
         
         return selectedIds, self.LandXMLCheckBox.isChecked(), self.loadAllCheckBox.isChecked()
+
+class AlignmentSelectDialog(QDialog):
+    def __init__(self, alignments, lan, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(lan.get("select_alignment_title", "Select Alignment"))
+        self.setMinimumWidth(300)
+        layout = QVBoxLayout()
+        
+        layout.addWidget(QLabel(lan.get("select_alignment_description", "Select the alignment to load:")))
+        
+        self.listWidget = QListWidget()
+        self.listWidget.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        
+        for id, alig_name in enumerate(alignments):
+            item = QListWidgetItem(f"{alig_name}")
+            item.setData(Qt.ItemDataRole.UserRole, id)
+            self.listWidget.addItem(item)
+            
+        if self.listWidget.count() > 0:
+            self.listWidget.setCurrentRow(0)
+            
+        layout.addWidget(self.listWidget)
+        
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.setLayout(layout)
+        
+    def get_selected_index(self):
+        selected = self.listWidget.selectedItems()
+        if selected:
+            return selected[0].data(Qt.ItemDataRole.UserRole)
+        return 0
 
 class MapSettingsDialog(QDialog):
     def __init__(self, currentEPSG, currentMap, lan, parent=None):
@@ -148,18 +183,6 @@ class GeometrySettingsDialog(QDialog):
 
         self.populateTable(self.tableI, defaultCZI)
 
-        toolbarLayoutI = QHBoxLayout()
-
-        self.btnImportI = QPushButton(lan["importCSV"])
-        self.btnImportI.clicked.connect(lambda: self.importCSV("tableI"))
-        toolbarLayoutI.addWidget(self.btnImportI)
-
-        self.btnExportI = QPushButton(lan["exportCSV"])
-        self.btnExportI.clicked.connect(lambda: self.exportCSV("tableI"))
-        toolbarLayoutI.addWidget(self.btnExportI)
-
-        layout.addLayout(toolbarLayoutI)
-
         # Table for editing settings and thresholds for abrupt change of cant deficiency
         labelDI = QLabel(lan["abrupt_cant_def"])
         layout.addWidget(labelDI)
@@ -181,18 +204,6 @@ class GeometrySettingsDialog(QDialog):
         defaultCZDI = self.settingsData.get("dI", default_values.defVal["dI"])
 
         self.populateTable(self.tableDI, defaultCZDI)
-
-        toolbarLayoutDI = QHBoxLayout()
-
-        self.btnImportDI = QPushButton(lan["importCSV"])
-        self.btnImportDI.clicked.connect(lambda: self.importCSV("tableDI"))
-        toolbarLayoutDI.addWidget(self.btnImportDI)
-
-        self.btnExportDI = QPushButton(lan["exportCSV"])
-        self.btnExportDI.clicked.connect(lambda: self.exportCSV("tableDI"))
-        toolbarLayoutDI.addWidget(self.btnExportDI)
-
-        layout.addLayout(toolbarLayoutDI)
 
         # Table for editing settings and thresholds for cant ramp gradient
         labelNlin = QLabel(lan["nLin"])
@@ -219,18 +230,6 @@ class GeometrySettingsDialog(QDialog):
 
         self.populateTable(self.tableNlin, defaultCZnLin)
 
-        toolbarLayoutNlin = QHBoxLayout()
-
-        self.btnImportNlin = QPushButton(lan["importCSV"])
-        self.btnImportNlin.clicked.connect(lambda: self.importCSV("tableNlin"))
-        toolbarLayoutNlin.addWidget(self.btnImportNlin)
-
-        self.btnExportNlin = QPushButton(lan["exportCSV"])
-        self.btnExportNlin.clicked.connect(lambda: self.exportCSV("tableNlin"))
-        toolbarLayoutNlin.addWidget(self.btnExportNlin)
-
-        layout.addLayout(toolbarLayoutNlin)
-
         # Table for editing settings and thresholds for cant deficiency gradient
         labelNIlin = QLabel(lan["nILin"])
         layout.addWidget(labelNIlin)
@@ -253,17 +252,17 @@ class GeometrySettingsDialog(QDialog):
 
         self.populateTable(self.tableNIlin, defaultCZnILin)
 
-        toolbarLayoutNIlin = QHBoxLayout()
-
-        self.btnImportNIlin = QPushButton(lan["importCSV"])
-        self.btnImportNIlin.clicked.connect(lambda: self.importCSV("tableNIlin"))
-        toolbarLayoutNIlin.addWidget(self.btnImportNIlin)
-
-        self.btnExportNIlin = QPushButton(lan["exportCSV"])
-        self.btnExportNIlin.clicked.connect(lambda: self.exportCSV("tableNIlin"))
-        toolbarLayoutNIlin.addWidget(self.btnExportNIlin)
-
-        layout.addLayout(toolbarLayoutNIlin)
+        toolbarLayoutGeometry = QHBoxLayout()
+        
+        self.btnImportGeometry = QPushButton(lan["importCSV"])
+        self.btnImportGeometry.clicked.connect(self.importGeometryCSV)
+        toolbarLayoutGeometry.addWidget(self.btnImportGeometry)
+        
+        self.btnExportGeometry = QPushButton(lan["exportCSV"])
+        self.btnExportGeometry.clicked.connect(self.exportGeometryCSV)
+        toolbarLayoutGeometry.addWidget(self.btnExportGeometry)
+        
+        layout.addLayout(toolbarLayoutGeometry)
 
         # Buttons for the whole dialog
         self.buttonBox = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -279,7 +278,7 @@ class GeometrySettingsDialog(QDialog):
                 item = QTableWidgetItem(str(value))
                 tableWidget.setItem(row, col, item)
 
-    def importCSV(self, table):
+    def importGeometryCSV(self):
         filepath, _ = QFileDialog.getOpenFileName(self, "Open File", "", "CSV Files (*.csv)")
         
         # If cancelled, do nothing
@@ -302,26 +301,34 @@ class GeometrySettingsDialog(QDialog):
             # Skips header
             next(reader, None)
 
-            if table == "tableI":
-                self.populateTable(self.tableI, reader)
+            i_data = []
+            di_data = []
+            nlin_data = []
+            nilin_data = []
 
-            elif table == "tableDI":
-                self.populateTable(self.tableDI, reader)
+            for row in reader:
+                if not row:
+                    continue
+                section = row[0]
+                if section == "I" and len(row) >= 6:
+                    i_data.append(row[1:6])
+                elif section == "DI" and len(row) >= 6:
+                    di_data.append(row[1:6])
+                elif section == "nLin" and len(row) >= 9:
+                    nlin_data.append(row[1:9])
+                elif section == "nILin" and len(row) >= 6:
+                    nilin_data.append(row[1:6])
 
-            elif table == "tableNlin":
-                self.populateTable(self.tableNlin, reader)
-
-            elif table == "tableNIlin":
-                self.populateTable(self.tableNIlin, reader)
-            
-            else:
-                raise ValueError
+            if i_data: self.populateTable(self.tableI, i_data)
+            if di_data: self.populateTable(self.tableDI, di_data)
+            if nlin_data: self.populateTable(self.tableNlin, nlin_data)
+            if nilin_data: self.populateTable(self.tableNIlin, nilin_data)
             
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
             return
         
-    def exportCSV(self, table):
+    def exportGeometryCSV(self):
         filepath, _ = QFileDialog.getSaveFileName(self, "Save File", "", "CSV Files (*.csv)")
         
         # If cancelled, do nothing
@@ -329,45 +336,26 @@ class GeometrySettingsDialog(QDialog):
             return
         
         try:
-            if table == "tableI":
-                with open(filepath, "w", newline="") as file:
-                    writer = csv.writer(file)
-                    headers = ["Vbottom", "Vtop", "I_std", "I_lim", "I_max"]
-                    writer.writerow(headers)
+            with open(filepath, "w", newline="", encoding="utf-8") as file:
+                writer = csv.writer(file)
+                headers = ["Section", "Col1", "Col2", "Col3", "Col4", "Col5", "Col6", "Col7", "Col8"]
+                writer.writerow(headers)
 
-                    for row in range(self.tableI.rowCount()):
-                        rowData = [self.tableI.item(row, col).text() for col in range(self.tableI.columnCount())]
-                        writer.writerow(rowData)
+                for row in range(self.tableI.rowCount()):
+                    rowData = ["I"] + [self.tableI.item(row, col).text() if self.tableI.item(row, col) else "" for col in range(self.tableI.columnCount())]
+                    writer.writerow(rowData)
 
-            elif table == "tableDI":
-                with open(filepath, "w", newline="") as file:
-                    writer = csv.writer(file)
-                    headers = ["Vbottom", "Vtop", "dI_std", "dI_lim", "dI_max"]
-                    writer.writerow(headers)
+                for row in range(self.tableDI.rowCount()):
+                    rowData = ["DI"] + [self.tableDI.item(row, col).text() if self.tableDI.item(row, col) else "" for col in range(self.tableDI.columnCount())]
+                    writer.writerow(rowData)
 
-                    for row in range(self.tableDI.rowCount()):
-                        rowData = [self.tableDI.item(row, col).text() for col in range(self.tableDI.columnCount())]
-                        writer.writerow(rowData)
+                for row in range(self.tableNlin.rowCount()):
+                    rowData = ["nLin"] + [self.tableNlin.item(row, col).text() if self.tableNlin.item(row, col) else "" for col in range(self.tableNlin.columnCount())]
+                    writer.writerow(rowData)
 
-            elif table == "tableNlin":
-                with open(filepath, "w", newline="") as file:
-                    writer = csv.writer(file)
-                    headers = ["Vbottom", "Vtop", "n_n", "n_n_abs", "n_lim", "n_lim_abs", "n_min", "n_min_abs"]
-                    writer.writerow(headers)
-
-                    for row in range(self.tableNlin.rowCount()):
-                        rowData = [self.tableNlin.item(row, col).text() for col in range(self.tableNlin.columnCount())]
-                        writer.writerow(rowData)
-
-            elif table == "tableNIlin":
-                with open(filepath, "w", newline="") as file:
-                    writer = csv.writer(file)
-                    headers = ["Vbottom", "Vtop", "nI_n", "nI_lim", "nI_min"]
-                    writer.writerow(headers)
-
-                    for row in range(self.tableNIlin.rowCount()):
-                        rowData = [self.tableNIlin.item(row, col).text() for col in range(self.tableNIlin.columnCount())]
-                        writer.writerow(rowData)
+                for row in range(self.tableNIlin.rowCount()):
+                    rowData = ["nILin"] + [self.tableNIlin.item(row, col).text() if self.tableNIlin.item(row, col) else "" for col in range(self.tableNIlin.columnCount())]
+                    writer.writerow(rowData)
 
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
@@ -622,26 +610,22 @@ class StopsSettingsDialog(QDialog):
             except (ValueError, AttributeError): continue
         return settingsData
 
-class VehicleSettingsDialog(QDialog):
-    def __init__(self, settingsData, lan, parent = None):
+class VehicleTab(QWidget):
+    def __init__(self, v_data, lan, parent = None):
         super().__init__(parent)
         self.lan = lan
-        self.settingsData = settingsData
-        
-        self.setWindowTitle(lan["vehicleSettings"])
-        self.setMinimumSize(600,400)
+        self.v_data = v_data
 
         layout = QVBoxLayout(self)
-        
         formLayout = QFormLayout()
         
-        self.inputInitialSpeed = QLineEdit(str(self.settingsData.get("trainInitialSpeed", 0.0)))
+        self.inputInitialSpeed = QLineEdit(str(self.v_data.get("trainInitialSpeed", 0.0)))
         formLayout.addRow(QLabel(lan.get("trainInitialSpeed", "Initial Speed [km/h]:")), self.inputInitialSpeed)
 
-        self.inputFinalSpeed = QLineEdit(str(self.settingsData.get("trainFinalSpeed", 0.0)))
+        self.inputFinalSpeed = QLineEdit(str(self.v_data.get("trainFinalSpeed", 0.0)))
         formLayout.addRow(QLabel(lan.get("trainFinalSpeed", "Final Speed [km/h]:")), self.inputFinalSpeed)
         
-        self.inputMaxSpeed = QLineEdit(str(self.settingsData.get("trainMaxSpeed", self.settingsData.get("vInit", [120])[0])))
+        self.inputMaxSpeed = QLineEdit(str(self.v_data.get("trainMaxSpeed", 120.0)))
         
         self.comboProfile = QComboBox()
         self.profiles = [
@@ -656,7 +640,7 @@ class VehicleSettingsDialog(QDialog):
         for text, data in self.profiles:
             self.comboProfile.addItem(text, data)
             
-        current_profile = self.settingsData.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"])
+        current_profile = self.v_data.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"])
         for i, (text, data) in enumerate(self.profiles):
             if data == current_profile:
                 self.comboProfile.setCurrentIndex(i)
@@ -664,11 +648,23 @@ class VehicleSettingsDialog(QDialog):
 
         formLayout.addRow(QLabel(lan.get("max_train_speed", "Max Train Speed [km/h]:")), self.inputMaxSpeed)
         
-        self.inputBrakeMech = QLineEdit(str(self.settingsData.get("trainBrakeMech", default_values.defVal.get("trainBrakeMech", 150.0))))
+        self.inputBrakeMech = QLineEdit(str(self.v_data.get("trainBrakeMech", default_values.defVal.get("trainBrakeMech", 150.0))))
         formLayout.addRow(QLabel(lan.get("vehicleBrakeMech", "Mechanical Braking [kN]:")), self.inputBrakeMech)
+
         formLayout.addRow(QLabel(lan.get("speed_profile", "Speed Profile:")), self.comboProfile)
         
         layout.addLayout(formLayout)
+
+        toolbarLayoutVehicle = QHBoxLayout()
+        self.btnImportVehicle = QPushButton(lan.get("importVehicleCSV", "Import full vehicle from CSV"))
+        self.btnImportVehicle.clicked.connect(self.importVehicleCSV)
+        toolbarLayoutVehicle.addWidget(self.btnImportVehicle)
+        
+        self.btnExportVehicle = QPushButton(lan.get("exportVehicleCSV", "Export full vehicle to CSV"))
+        self.btnExportVehicle.clicked.connect(self.exportVehicleCSV)
+        toolbarLayoutVehicle.addWidget(self.btnExportVehicle)
+        
+        layout.addLayout(toolbarLayoutVehicle)
 
         labelRes = QLabel(lan["vehicleResistance"])
         layout.addWidget(labelRes)
@@ -687,21 +683,9 @@ class VehicleSettingsDialog(QDialog):
         layout.addWidget(self.tableRes)
 
         # Default values for train resistance coefficients
-        defaultRes = self.settingsData.get("trainRes", default_values.defVal.get("trainRes", []))
+        defaultRes = self.v_data.get("trainRes", default_values.defVal.get("trainRes", []))
 
         self.populateTable(self.tableRes, defaultRes)
-
-        toolbarLayoutRes = QHBoxLayout()
-
-        self.btnImportRes = QPushButton(lan["importCSV"])
-        self.btnImportRes.clicked.connect(lambda: self.importCSV("tableRes"))
-        toolbarLayoutRes.addWidget(self.btnImportRes)
-
-        self.btnExportRes = QPushButton(lan["exportCSV"])
-        self.btnExportRes.clicked.connect(lambda: self.exportCSV("tableRes"))
-        toolbarLayoutRes.addWidget(self.btnExportRes)
-
-        layout.addLayout(toolbarLayoutRes)
 
         labelTrac = QLabel(lan["vehicleTraction"])
         layout.addWidget(labelTrac)
@@ -722,21 +706,9 @@ class VehicleSettingsDialog(QDialog):
         layout.addWidget(self.tableTrac)
 
         # Default values for vehicle resistance
-        defaultTrac = self.settingsData.get("trainTrac", default_values.defVal.get("trainTrac", []))
+        defaultTrac = self.v_data.get("trainTrac", default_values.defVal.get("trainTrac", []))
 
         self.populateTable(self.tableTrac, defaultTrac)
-
-        toolbarLayoutTrac = QHBoxLayout()
-
-        self.btnImportTrac = QPushButton(lan["importCSV"])
-        self.btnImportTrac.clicked.connect(lambda: self.importCSV("tableTrac"))
-        toolbarLayoutTrac.addWidget(self.btnImportTrac)
-
-        self.btnExportTrac = QPushButton(lan["exportCSV"])
-        self.btnExportTrac.clicked.connect(lambda: self.exportCSV("tableTrac"))
-        toolbarLayoutTrac.addWidget(self.btnExportTrac)
-
-        layout.addLayout(toolbarLayoutTrac)
 
         labelBrake = QLabel(lan.get("vehicleBrakeDyn", "Vehicle Dynamic Braking"))
         layout.addWidget(labelBrake)
@@ -755,27 +727,19 @@ class VehicleSettingsDialog(QDialog):
         headerBrake.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.tableBrake)
 
-        defaultBrake = self.settingsData.get("trainBrake", default_values.defVal.get("trainBrake", []))
+        defaultBrake = self.v_data.get("trainBrake", default_values.defVal.get("trainBrake", []))
         self.populateTable(self.tableBrake, defaultBrake)
-
-        toolbarLayoutBrake = QHBoxLayout()
-        self.btnImportBrake = QPushButton(lan["importCSV"])
-        self.btnImportBrake.clicked.connect(lambda: self.importCSV("tableBrake"))
-        toolbarLayoutBrake.addWidget(self.btnImportBrake)
-        self.btnExportBrake = QPushButton(lan["exportCSV"])
-        self.btnExportBrake.clicked.connect(lambda: self.exportCSV("tableBrake"))
-        toolbarLayoutBrake.addWidget(self.btnExportBrake)
-        layout.addLayout(toolbarLayoutBrake)
 
         labelParam = QLabel(lan["vehicleParam"])
         layout.addWidget(labelParam)
 
         # Table for editing train parameters coefficients
-        self.tableParam = QTableWidget(0, 3)
+        self.tableParam = QTableWidget(0, 4)
         self.tableParam.setHorizontalHeaderLabels([
             lan["vehicle"],
             lan["rotMass"],
-            lan["weight"]
+            lan["weight"],
+            lan.get("trainLength", "Train Length [m]")
         ])
 
         headerParam = self.tableParam.horizontalHeader()
@@ -783,28 +747,14 @@ class VehicleSettingsDialog(QDialog):
         layout.addWidget(self.tableParam)
 
         # Default values for train parameters
-        defaultParam = self.settingsData.get("trainParam", default_values.defVal.get("trainParam", []))
+        defaultParam = self.v_data.get("trainParam", default_values.defVal.get("trainParam", []))
+        
+        # Ensure older saves have the 4th column (train length) initialized
+        for rowData in defaultParam:
+            if isinstance(rowData, list) and len(rowData) == 3:
+                rowData.append(0.0)
 
         self.populateTable(self.tableParam, defaultParam)
-
-        toolbarLayoutParam = QHBoxLayout()
-
-        self.btnImportParam = QPushButton(lan["importCSV"])
-        self.btnImportParam.clicked.connect(lambda: self.importCSV("tableParam"))
-        toolbarLayoutParam.addWidget(self.btnImportParam)
-
-        self.btnExportParam = QPushButton(lan["exportCSV"])
-        self.btnExportParam.clicked.connect(lambda: self.exportCSV("tableParam"))
-        toolbarLayoutParam.addWidget(self.btnExportParam)
-
-        layout.addLayout(toolbarLayoutParam)
-
-        # Buttons for the whole dialog
-        self.buttonBox = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        
-        self.buttonBox.accepted.connect(self.accept)
-        self.buttonBox.rejected.connect(self.reject)
-        layout.addWidget(self.buttonBox)
 
     def populateTable(self, tableWidget, data):
         tableWidget.setRowCount(len(data))
@@ -813,16 +763,12 @@ class VehicleSettingsDialog(QDialog):
                 item = QTableWidgetItem(str(value))
                 tableWidget.setItem(row, col, item)
 
-    def importCSV(self, table):
+    def importVehicleCSV(self):
         filepath, _ = QFileDialog.getOpenFileName(self, "Open File", "", "CSV Files (*.csv)")
-        
-        # If cancelled, do nothing
         if not filepath:
             return
         
-        # Read file content 
         file_content = readfile.ReadFile().Read(filepath)
-        
         if file_content.startswith("Error"):
             err = QMessageBox()
             err.setWindowTitle("Error")
@@ -831,81 +777,66 @@ class VehicleSettingsDialog(QDialog):
             return
         
         try:
-            # Reads CSV file content
             reader = csv.reader(io.StringIO(file_content), delimiter=',')
-            # Skips header
             next(reader, None)
 
-            if table == "tableRes":
-                self.populateTable(self.tableRes, reader)
-            
-            elif table == "tableTrac":
-                self.populateTable(self.tableTrac, reader)
+            res_data = []
+            trac_data = []
+            brake_data = []
+            param_data = []
 
-            elif table == "tableBrake":
-                self.populateTable(self.tableBrake, reader)
+            for row in reader:
+                if not row:
+                    continue
+                section = row[0]
+                if section == "Res" and len(row) >= 5:
+                    res_data.append(row[1:5])
+                elif section == "Trac" and len(row) >= 7:
+                    trac_data.append(row[1:7])
+                elif section == "Brake" and len(row) >= 7:
+                    brake_data.append(row[1:7])
+                elif section == "Param" and len(row) >= 5:
+                    param_data.append(row[1:5])
 
-            elif table == "tableParam":
-                self.populateTable(self.tableParam, reader)
+            if res_data: self.populateTable(self.tableRes, res_data)
+            if trac_data: self.populateTable(self.tableTrac, trac_data)
+            if brake_data: self.populateTable(self.tableBrake, brake_data)
+            if param_data: self.populateTable(self.tableParam, param_data)
 
-            else:
-                raise ValueError
-            
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
             return
-        
-    def exportCSV(self, table):
+
+    def exportVehicleCSV(self):
         filepath, _ = QFileDialog.getSaveFileName(self, "Save File", "", "CSV Files (*.csv)")
-        
-        # If cancelled, do nothing
         if not filepath:
             return
         
         try:
-            if table == "tableRes":
-                with open(filepath, "w", newline="") as file:
-                    writer = csv.writer(file)
-                    headers = ["Vehicle", "A", "B", "C"]
-                    writer.writerow(headers)
+            with open(filepath, "w", newline="", encoding="utf-8") as file:
+                writer = csv.writer(file)
+                headers = ["Section", "Col1", "Col2", "Col3", "Col4", "Col5", "Col6"]
+                writer.writerow(headers)
 
-                    for row in range(self.tableRes.rowCount()):
-                        rowData = [self.tableRes.item(row, col).text() for col in range(self.tableRes.columnCount())]
-                        writer.writerow(rowData)
+                for row in range(self.tableParam.rowCount()):
+                    rowData = ["Param"] + [self.tableParam.item(row, col).text() if self.tableParam.item(row, col) else "" for col in range(self.tableParam.columnCount())]
+                    writer.writerow(rowData)
 
-            elif table == "tableTrac":
-                with open(filepath, "w", newline="") as file:
-                    writer = csv.writer(file)
-                    headers = ["Vehicle", "Speed from", "Speed to", "Coefficient b_0", "Coefficient b_1", "Coefficient b_2"]
-                    writer.writerow(headers)
+                for row in range(self.tableRes.rowCount()):
+                    rowData = ["Res"] + [self.tableRes.item(row, col).text() if self.tableRes.item(row, col) else "" for col in range(self.tableRes.columnCount())]
+                    writer.writerow(rowData)
+                    
+                for row in range(self.tableTrac.rowCount()):
+                    rowData = ["Trac"] + [self.tableTrac.item(row, col).text() if self.tableTrac.item(row, col) else "" for col in range(self.tableTrac.columnCount())]
+                    writer.writerow(rowData)
 
-                    for row in range(self.tableTrac.rowCount()):
-                        rowData = [self.tableTrac.item(row, col).text() for col in range(self.tableTrac.columnCount())]
-                        writer.writerow(rowData)
-
-            elif table == "tableBrake":
-                with open(filepath, "w", newline="") as file:
-                    writer = csv.writer(file)
-                    headers = ["Vehicle", "Speed from", "Speed to", "Coefficient b_0", "Coefficient b_1", "Coefficient b_2"]
-                    writer.writerow(headers)
-                    for row in range(self.tableBrake.rowCount()):
-                        rowData = [self.tableBrake.item(row, col).text() for col in range(self.tableBrake.columnCount())]
-                        writer.writerow(rowData)
-
-            elif table == "tableParam":
-                with open(filepath, "w", newline="") as file:
-                    writer = csv.writer(file)
-                    headers = ["Vehicle", "Coefficient of Rotating Mass", "Weight (Tonnes)"]
-                    writer.writerow(headers)
-
-                    for row in range(self.tableParam.rowCount()):
-                        rowData = [self.tableParam.item(row, col).text() for col in range(self.tableParam.columnCount())]
-                        writer.writerow(rowData)
+                for row in range(self.tableBrake.rowCount()):
+                    rowData = ["Brake"] + [self.tableBrake.item(row, col).text() if self.tableBrake.item(row, col) else "" for col in range(self.tableBrake.columnCount())]
+                    writer.writerow(rowData)
 
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
             return
-        
     def getSettings(self):
         settingsData = {
             "trainRes": [],
@@ -980,13 +911,83 @@ class VehicleSettingsDialog(QDialog):
         # Table Train Parameters
         for row in range(self.tableParam.rowCount()):
             try:
+                length_item = self.tableParam.item(row, 3)
                 settingsData["trainParam"].append([
                     self.tableParam.item(row, 0).text(),
                     float(self.tableParam.item(row, 1).text()),
-                    float(self.tableParam.item(row, 2).text())
+                    float(self.tableParam.item(row, 2).text()),
+                    float(length_item.text()) if length_item and length_item.text() else 0.0
                 ])
-
             except(ValueError, AttributeError):
                 continue
 
         return settingsData
+
+class VehicleSettingsDialog(QDialog):
+    def __init__(self, settingsData, lan, parent=None):
+        super().__init__(parent)
+        self.lan = lan
+        self.settingsData = settingsData
+        
+        self.setWindowTitle(lan["vehicleSettings"])
+        self.setMinimumSize(600, 450)
+
+        layout = QVBoxLayout(self)
+        
+        toolbarLayout = QHBoxLayout()
+        self.btnAdd = QPushButton(lan.get("addVehicle", "Add Vehicle"))
+        self.btnAdd.clicked.connect(self.addVehicle)
+        self.btnRemove = QPushButton(lan.get("removeVehicle", "Remove Vehicle"))
+        self.btnRemove.clicked.connect(self.removeVehicle)
+        toolbarLayout.addWidget(self.btnAdd)
+        toolbarLayout.addWidget(self.btnRemove)
+        layout.addLayout(toolbarLayout)
+        
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
+        
+        vehicles = self.settingsData.get("vehicles", [])
+        if not vehicles:
+            old_v = {
+                "trainInitialSpeed": self.settingsData.get("trainInitialSpeed", 0.0),
+                "trainFinalSpeed": self.settingsData.get("trainFinalSpeed", 0.0),
+                "trainMaxSpeed": self.settingsData.get("trainMaxSpeed", self.settingsData.get("vInit", [120])[0]),
+                "trainBrakeMech": self.settingsData.get("trainBrakeMech", default_values.defVal.get("trainBrakeMech", 150.0)),
+                "trainRes": self.settingsData.get("trainRes", default_values.defVal.get("trainRes", [])),
+                "trainTrac": self.settingsData.get("trainTrac", default_values.defVal.get("trainTrac", [])),
+                "trainBrake": self.settingsData.get("trainBrake", default_values.defVal.get("trainBrake", [])),
+                "trainParam": self.settingsData.get("trainParam", default_values.defVal.get("trainParam", [])),
+                "speedLimitPlot": self.settingsData.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"])
+            }
+            vehicles.append(old_v)
+            
+        for v_data in vehicles:
+            self.addTab(v_data)
+            
+        self.buttonBox = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.buttonBox.accepted.connect(self.accept)
+        self.buttonBox.rejected.connect(self.reject)
+        layout.addWidget(self.buttonBox)
+
+    def addTab(self, v_data):
+        if self.tabs.count() >= 3: return
+        tab = VehicleTab(v_data, self.lan)
+        self.tabs.addTab(tab, f'{self.lan.get("vehicle", "Vehicle")} {self.tabs.count() + 1}')
+        self.updateButtons()
+
+    def addVehicle(self):
+        last_settings = self.tabs.widget(self.tabs.count() - 1).getSettings() if self.tabs.count() > 0 else {}
+        self.addTab(last_settings)
+        
+    def removeVehicle(self):
+        if self.tabs.count() > 1:
+            self.tabs.removeTab(self.tabs.count() - 1)
+        self.updateButtons()
+        
+    def updateButtons(self):
+        self.btnAdd.setEnabled(self.tabs.count() < 3)
+        self.btnRemove.setEnabled(self.tabs.count() > 1)
+        
+    def getSettings(self):
+        vehicles = [self.tabs.widget(i).getSettings() for i in range(self.tabs.count())]
+        return {"vehicles": vehicles}

@@ -1,4 +1,5 @@
 import numpy as np
+from collections import deque
 
 class VehicleCalculator:
     def __init__(self, dataStorage):
@@ -6,214 +7,262 @@ class VehicleCalculator:
 
     def speedLimitsToTime(self):
         settings = self.data.get("settingsData", {})
-        speedProfile = settings.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"])
-        trainMaxSpeed = float(settings.get("trainMaxSpeed", settings.get("vInit", [120])[0]))
+        vehicles = settings.get("vehicles", [])
+        if not vehicles:
+            vehicles = [{
+                "speedLimitPlot": settings.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"]),
+                "trainMaxSpeed": settings.get("trainMaxSpeed", settings.get("vInit", [120])[0])
+            }]
 
-        if speedProfile[0] == "unlimited":
-            lxml = self.data.get("LandXML", {})
-            stationHorizontal = lxml.get("stationHorizontal", np.array([]))
-            if len(stationHorizontal) > 0:
-                stationSpeedLimit = np.array([np.min(stationHorizontal), np.max(stationHorizontal)]) * 1000
-                speedLimit = np.array([trainMaxSpeed, trainMaxSpeed])
+        self.data["num_vehicles"] = len(vehicles)
+
+        for v_idx, v_data in enumerate(vehicles):
+            speedProfile = v_data.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"])
+            trainMaxSpeed = float(v_data.get("trainMaxSpeed", settings.get("vInit", [120])[0]))
+
+            if speedProfile[0] == "unlimited":
+                lxml = self.data.get("LandXML", {})
+                stationHorizontal = lxml.get("stationHorizontal", np.array([]))
+                if len(stationHorizontal) > 0:
+                    stationSpeedLimit = np.array([np.min(stationHorizontal), np.max(stationHorizontal)]) * 1000
+                    speedLimit = np.array([trainMaxSpeed, trainMaxSpeed])
+                else:
+                    stationSpeedLimit = np.array([])
+                    speedLimit = np.array([])
             else:
-                stationSpeedLimit = np.array([])
-                speedLimit = np.array([])
-        else:
-            stationSpeedLimit = np.copy(self.data.get(speedProfile[0], []))
-            if len(stationSpeedLimit) > 0:
-                stationSpeedLimit = stationSpeedLimit * 1000
-            speedLimit = np.copy(self.data.get(speedProfile[1], []))
+                stationSpeedLimit = np.copy(self.data.get(speedProfile[0], []))
+                if len(stationSpeedLimit) > 0:
+                    stationSpeedLimit = stationSpeedLimit * 1000
+                speedLimit = np.copy(self.data.get(speedProfile[1], []))
 
-        if len(speedLimit) > 0:
-            speedLimit = np.clip(speedLimit, 0, trainMaxSpeed)
+            if len(speedLimit) > 0:
+                speedLimit = np.clip(speedLimit, 0, trainMaxSpeed)
 
-        if len(stationSpeedLimit) == 0:
-            self.data["stationSpeedLimitM"] = np.array([])
-            self.data["speedLimitsM"] = np.array([])
-            self.data["speedLimitsT"] = np.array([])
-            return
+            if len(stationSpeedLimit) == 0:
+                self.data[f"stationSpeedLimitM_{v_idx}"] = np.array([])
+                self.data[f"speedLimitsM_{v_idx}"] = np.array([])
+                self.data[f"speedLimitsT_{v_idx}"] = np.array([])
+                continue
 
-        speedLimitM = speedLimit / 3.6
-        ds = np.diff(stationSpeedLimit)
+            speedLimitM = speedLimit / 3.6
+            ds = np.diff(stationSpeedLimit)
 
-        # Speed limit 0 check to prevent division by zero
-        with np.errstate(divide='ignore', invalid='ignore'):
-            dt = np.where(speedLimitM[:-1] > 0, ds / speedLimitM[:-1], 0)
+            # Speed limit 0 check to prevent division by zero
+            with np.errstate(divide='ignore', invalid='ignore'):
+                dt = np.where(speedLimitM[:-1] > 0, ds / speedLimitM[:-1], 0)
 
-        t = np.concatenate(([0], np.cumsum(dt)))
+            t = np.concatenate(([0], np.cumsum(dt)))
 
-        self.data["stationSpeedLimitM"] = stationSpeedLimit
-        self.data["speedLimitsM"] = speedLimitM
-        self.data["speedLimitsT"] = t
+            self.data[f"stationSpeedLimitM_{v_idx}"] = stationSpeedLimit
+            self.data[f"speedLimitsM_{v_idx}"] = speedLimitM
+            self.data[f"speedLimitsT_{v_idx}"] = t
 
     def calculateKinematics(self):
         """
         Calculates train kinematics using the equation of motion:
         acceleration = (F_traction - F_braking - F_resistance - F_track) / (mass * (1 + rot_mass_factor))
         """
-        self.loadVehicleParameters()
-        self.loadTrackData()
-
-        if len(self.stationHorizontal) == 0:
-            return
-
-        # Discretization step in meters
-        ds = 1.0
+        settings = self.data.get("settingsData", {})
+        vehicles = settings.get("vehicles", [])
         
-        # Simulation range based on horizontal alignment
-        sStart = np.min(self.stationHorizontal) * 1000
-        sEnd = np.max(self.stationHorizontal) * 1000
-        stationsM = np.arange(sStart, sEnd + ds, ds)
+        if not vehicles:
+            old_v = {
+                "trainInitialSpeed": settings.get("trainInitialSpeed", 0.0),
+                "trainFinalSpeed": settings.get("trainFinalSpeed", 0.0),
+                "trainMaxSpeed": settings.get("trainMaxSpeed", settings.get("vInit", [120])[0]),
+                "trainBrakeMech": settings.get("trainBrakeMech", 150.0),
+                "trainRes": settings.get("trainRes", []),
+                "trainTrac": settings.get("trainTrac", []),
+                "trainBrake": settings.get("trainBrake", []),
+                "trainParam": settings.get("trainParam", []),
+                "speedLimitPlot": settings.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"])
+            }
+            vehicles = [old_v]
 
-        # Pre-calculate limits and track properties arrays for faster computing
-        vLimitMps = np.zeros_like(stationsM)
-        slopeArr = np.zeros_like(stationsM)
-        curvArr = np.zeros_like(stationsM)
-        
-        for i, s in enumerate(stationsM):
-            stationKm = s / 1000.0
-            vLimitMps[i] = self.getSpeedLimitAt(stationKm) / 3.6
-            slopeArr[i] = self.getSlopeAt(stationKm)
-            curvArr[i] = self.getCurvatureAt(stationKm)
+        self.data["num_vehicles"] = len(vehicles)
 
-        # Apply explicit stops to vLimitMps
-        for stop in self.trainStops:
-            stopStationM = stop[0] * 1000.0
-            idx = np.argmin(np.abs(stationsM - stopStationM))
-            if np.abs(stationsM[idx] - stopStationM) <= ds:
-                vLimitMps[idx] = 0.0
+        for v_idx, v_data in enumerate(vehicles):
+            self.loadVehicleParameters(v_data)
+            self.loadTrackData(v_data)
 
-        # 1. Forward Pass (Acceleration and Cruising)
-        vFwd = np.zeros_like(stationsM)
-        vFwd[0] = min(vLimitMps[0], self.trainInitialSpeed / 3.6)
-        for i in range(1, len(stationsM)):
-            vPrev = vFwd[i-1]
-            vPrevKmh = vPrev * 3.6
+            if len(self.stationHorizontal) == 0:
+                continue
 
-            # Evaluate forces (all in Newtons)
-            forceTrac = self.getTractiveForce(vPrevKmh)
-            forceRes = self.getVehicleResistance(vPrevKmh)
-            forceTrack = self.getTrackResistance(slopeArr[i-1], curvArr[i-1])
+            # Discretization step in meters
+            ds = 1.0
             
-            aFwd = (forceTrac - forceRes - forceTrack) / self.effectiveMass
-            vNewSq = vPrev**2 + 2 * aFwd * ds
+            # Simulation range based on horizontal alignment
+            sStart = np.min(self.stationHorizontal) * 1000
+            sEnd = np.max(self.stationHorizontal) * 1000
             
-            vNew = np.sqrt(max(0.0, vNewSq))
-            vFwd[i] = min(vNew, vLimitMps[i])
-
-        # 2. Backward Pass (Braking to limits)
-        vBwd = np.zeros_like(stationsM)
-        vBwd[-1] = min(vLimitMps[-1], self.trainFinalSpeed / 3.6)
-        
-        for i in range(len(stationsM)-2, -1, -1):
-            vNext = vBwd[i+1]
-            vNextKmh = vNext * 3.6
-            
-            forceDyn = self.getDynamicBrakingForce(vNextKmh)
-            forceMech = self.mechBrakeN
-            forceBrake = forceDyn + forceMech
-            
-            forceRes = self.getVehicleResistance(vNextKmh)
-            forceTrack = self.getTrackResistance(slopeArr[i], curvArr[i])
-            
-            # Braking deceleration (positive value) = total retarding forces / mass
-            aDecel = (forceBrake + forceRes + forceTrack) / self.effectiveMass
-            
-            # Calculate required entry speed solving backwards
-            vNewSq = vNext**2 + 2 * aDecel * ds
-            vNew = np.sqrt(max(0.0, vNewSq))
-            vBwd[i] = min(vNew, vLimitMps[i])
-
-        # 3. Apply actual constrained speed curve
-        vMps = np.minimum(vFwd, vBwd)
-
-        # 4. Final Pass: Time and Acceleration calculations
-        aMps2 = np.zeros_like(stationsM)
-        tS = np.zeros_like(stationsM)
-        forceTracArr = np.zeros_like(stationsM)
-        forceBrakeArr = np.zeros_like(stationsM)
-        forceResArr = np.zeros_like(stationsM)
-
-        # Dwell times
-        dwell_times = np.zeros_like(stationsM)
-        applied_stop_indices = set()
-        
-        for stop in self.trainStops:
-            stopStationM = stop[0] * 1000.0
-            dwell_time = stop[1]
-            idx = np.argmin(np.abs(stationsM - stopStationM))
-            if np.abs(stationsM[idx] - stopStationM) <= ds:
-                dwell_times[idx] += dwell_time
-                applied_stop_indices.add(idx)
-
-        # Automatic dwell times for contiguous 0 speed limit regions
-        is_zero = (vLimitMps == 0)
-        diff_zero = np.diff(is_zero.astype(int))
-        zero_starts = np.where(diff_zero == 1)[0] + 1
-        zero_ends = np.where(diff_zero == -1)[0]
-        
-        if len(is_zero) > 0:
-            if is_zero[0]:
-                zero_starts = np.insert(zero_starts, 0, 0)
-            if is_zero[-1]:
-                zero_ends = np.append(zero_ends, len(is_zero) - 1)
-
-        for start, end in zip(zero_starts, zero_ends):
-            region_indices = set(range(start, end + 1))
-            if not region_indices.intersection(applied_stop_indices):
-                dwell_times[start] += self.defaultDwellTime
-
-        tS[0] = 0.0 + dwell_times[0]
-
-        for i in range(1, len(stationsM)):
-            vCurr = vMps[i]
-            vPrev = vMps[i-1]
-            vAvg = (vCurr + vPrev) / 2.0
-            vAvgKmh = vAvg * 3.6
-            
-            if vAvg > 0.5: # Threshold to avoid near zero division 
-                dt = ds / vAvg
-                aMps2[i-1] = (vCurr**2 - vPrev**2) / (2 * ds)
+            if self.trainLength > (sEnd - sStart):
+                self.data[f"kinematicsWarning_{v_idx}"] = "train_too_long"
             else:
-                dt = ds / 0.5
-                aMps2[i-1] = 0.0
+                self.data.pop(f"kinematicsWarning_{v_idx}", None)
+                
+            stationsM = np.arange(sStart, sEnd + ds, ds)
 
-            tS[i] = tS[i-1] + dt + dwell_times[i]
-
-            # Calculate forces at this step
-            F_res = self.getVehicleResistance(vAvgKmh) + self.getTrackResistance(slopeArr[i-1], curvArr[i-1])
-            F_net = aMps2[i-1] * self.effectiveMass
-            F_req = F_net + F_res
+            # Pre-calculate limits and track properties arrays for faster computing
+            vLimitMps_raw = np.zeros_like(stationsM)
+            slopeArr = np.zeros_like(stationsM)
+            curvArr = np.zeros_like(stationsM)
             
-            forceResArr[i] = F_res
-            if F_req > 0:
-                forceTracArr[i] = min(F_req, self.getTractiveForce(vAvgKmh))
-                forceBrakeArr[i] = 0.0
-            else:
-                forceTracArr[i] = 0.0
-                forceBrakeArr[i] = abs(F_req)
+            for i, s in enumerate(stationsM):
+                stationKm = s / 1000.0
+                vLimitMps_raw[i] = self.getSpeedLimitAt(stationKm) / 3.6
+                slopeArr[i] = self.getSlopeAt(stationKm)
+                curvArr[i] = self.getCurvatureAt(stationKm)
 
-        # Save last acceleration point for dimension match
-        if len(aMps2) > 1:
-            aMps2[-1] = aMps2[-2]
-            forceTracArr[0] = forceTracArr[1]
-            forceBrakeArr[0] = forceBrakeArr[1]
-            forceResArr[0] = forceResArr[1]
+            vLimitMps = np.copy(vLimitMps_raw)
+            if self.trainLength > 0:
+                window_size = int(np.ceil(self.trainLength / ds))
+                q = deque()
+                for i in range(len(vLimitMps_raw)):
+                    while q and q[0] < i - window_size:
+                        q.popleft()
+                    while q and vLimitMps_raw[q[-1]] >= vLimitMps_raw[i]:
+                        q.pop()
+                    q.append(i)
+                    vLimitMps[i] = vLimitMps_raw[q[0]]
 
-        # Save calculated kinematics back to data storage
-        self.data["kinematicsStationM"] = stationsM
-        self.data["kinematicsSpeedM"] = vMps
-        self.data["kinematicsTimeS"] = tS
-        self.data["kinematicsAcceleration"] = aMps2
-        self.data["kinematicsForceTractionKN"] = forceTracArr / 1000.0
-        self.data["kinematicsForceBrakingKN"] = forceBrakeArr / 1000.0
-        self.data["kinematicsForceResistanceKN"] = forceResArr / 1000.0
+            # Apply explicit stops to vLimitMps
+            for stop in self.trainStops:
+                stopStationM = stop[0] * 1000.0
+                idx = np.argmin(np.abs(stationsM - stopStationM))
+                if np.abs(stationsM[idx] - stopStationM) <= ds:
+                    vLimitMps[idx] = 0.0
 
-    def loadVehicleParameters(self):
+            # 1. Forward Pass (Acceleration and Cruising)
+            vFwd = np.zeros_like(stationsM)
+            vFwd[0] = min(vLimitMps[0], self.trainInitialSpeed / 3.6)
+            for i in range(1, len(stationsM)):
+                vPrev = vFwd[i-1]
+                vPrevKmh = vPrev * 3.6
+
+                # Evaluate forces (all in Newtons)
+                forceTrac = self.getTractiveForce(vPrevKmh)
+                forceRes = self.getVehicleResistance(vPrevKmh)
+                forceTrack = self.getTrackResistance(slopeArr[i-1], curvArr[i-1])
+                
+                aFwd = (forceTrac - forceRes - forceTrack) / self.effectiveMass
+                vNewSq = vPrev**2 + 2 * aFwd * ds
+                
+                vNew = np.sqrt(max(0.0, vNewSq))
+                vFwd[i] = min(vNew, vLimitMps[i])
+
+            # 2. Backward Pass (Braking to limits)
+            vBwd = np.zeros_like(stationsM)
+            vBwd[-1] = min(vLimitMps[-1], self.trainFinalSpeed / 3.6)
+            
+            for i in range(len(stationsM)-2, -1, -1):
+                vNext = vBwd[i+1]
+                vNextKmh = vNext * 3.6
+                
+                forceDyn = self.getDynamicBrakingForce(vNextKmh)
+                forceMech = self.mechBrakeN
+                forceBrake = forceDyn + forceMech
+                
+                forceRes = self.getVehicleResistance(vNextKmh)
+                forceTrack = self.getTrackResistance(slopeArr[i], curvArr[i])
+                
+                # Braking deceleration (positive value) = total retarding forces / mass
+                aDecel = (forceBrake + forceRes + forceTrack) / self.effectiveMass
+                
+                # Calculate required entry speed solving backwards
+                vNewSq = vNext**2 + 2 * aDecel * ds
+                vNew = np.sqrt(max(0.0, vNewSq))
+                vBwd[i] = min(vNew, vLimitMps[i])
+
+            # 3. Apply actual constrained speed curve
+            vMps = np.minimum(vFwd, vBwd)
+
+            # 4. Final Pass: Time and Acceleration calculations
+            aMps2 = np.zeros_like(stationsM)
+            tS = np.zeros_like(stationsM)
+            forceTracArr = np.zeros_like(stationsM)
+            forceBrakeArr = np.zeros_like(stationsM)
+            forceResArr = np.zeros_like(stationsM)
+
+            # Dwell times
+            dwell_times = np.zeros_like(stationsM)
+            applied_stop_indices = set()
+            
+            for stop in self.trainStops:
+                stopStationM = stop[0] * 1000.0
+                dwell_time = stop[1]
+                idx = np.argmin(np.abs(stationsM - stopStationM))
+                if np.abs(stationsM[idx] - stopStationM) <= ds:
+                    dwell_times[idx] += dwell_time
+                    applied_stop_indices.add(idx)
+
+            # Automatic dwell times for contiguous 0 speed limit regions
+            is_zero = (vLimitMps == 0)
+            diff_zero = np.diff(is_zero.astype(int))
+            zero_starts = np.where(diff_zero == 1)[0] + 1
+            zero_ends = np.where(diff_zero == -1)[0]
+            
+            if len(is_zero) > 0:
+                if is_zero[0]:
+                    zero_starts = np.insert(zero_starts, 0, 0)
+                if is_zero[-1]:
+                    zero_ends = np.append(zero_ends, len(is_zero) - 1)
+
+            for start, end in zip(zero_starts, zero_ends):
+                region_indices = set(range(start, end + 1))
+                if not region_indices.intersection(applied_stop_indices):
+                    dwell_times[start] += self.defaultDwellTime
+
+            tS[0] = 0.0 + dwell_times[0]
+
+            for i in range(1, len(stationsM)):
+                vCurr = vMps[i]
+                vPrev = vMps[i-1]
+                vAvg = (vCurr + vPrev) / 2.0
+                vAvgKmh = vAvg * 3.6
+                
+                if vAvg > 0.5: # Threshold to avoid near zero division 
+                    dt = ds / vAvg
+                    aMps2[i-1] = (vCurr**2 - vPrev**2) / (2 * ds)
+                else:
+                    dt = ds / 0.5
+                    aMps2[i-1] = 0.0
+
+                tS[i] = tS[i-1] + dt + dwell_times[i]
+
+                # Calculate forces at this step
+                F_res = self.getVehicleResistance(vAvgKmh) + self.getTrackResistance(slopeArr[i-1], curvArr[i-1])
+                F_net = aMps2[i-1] * self.effectiveMass
+                F_req = F_net + F_res
+                
+                forceResArr[i] = F_res
+                if F_req > 0:
+                    forceTracArr[i] = min(F_req, self.getTractiveForce(vAvgKmh))
+                    forceBrakeArr[i] = 0.0
+                else:
+                    forceTracArr[i] = 0.0
+                    forceBrakeArr[i] = abs(F_req)
+
+            # Save last acceleration point for dimension match
+            if len(aMps2) > 1:
+                aMps2[-1] = aMps2[-2]
+                forceTracArr[0] = forceTracArr[1]
+                forceBrakeArr[0] = forceBrakeArr[1]
+                forceResArr[0] = forceResArr[1]
+
+            # Save calculated kinematics back to data storage
+            self.data[f"kinematicsStationM_{v_idx}"] = stationsM
+            self.data[f"kinematicsSpeedM_{v_idx}"] = vMps
+            self.data[f"kinematicsTimeS_{v_idx}"] = tS
+            self.data[f"kinematicsAcceleration_{v_idx}"] = aMps2
+            self.data[f"kinematicsForceTractionKN_{v_idx}"] = forceTracArr / 1000.0
+            self.data[f"kinematicsForceBrakingKN_{v_idx}"] = forceBrakeArr / 1000.0
+            self.data[f"kinematicsForceResistanceKN_{v_idx}"] = forceResArr / 1000.0
+
+    def loadVehicleParameters(self, v_data):
         settings = self.data.get("settingsData", {})
 
         # Train parameters
-        paramData = settings.get("trainParam", [["Placeholder BEMU", 1.08, 460]])
+        paramData = v_data.get("trainParam", [["Placeholder BEMU", 1.08, 460, 0.0]])
         if paramData and isinstance(paramData[0], (str, int, float)):
             paramData = [paramData]
         
@@ -223,6 +272,11 @@ class VehicleCalculator:
         except (IndexError, ValueError):
             self.rotMass = 1.08
             self.massTonnes = 460.0
+            
+        try:
+            self.trainLength = float(paramData[0][3])
+        except (IndexError, ValueError):
+            self.trainLength = 0.0
 
         self.massKg = self.massTonnes * 1000.0
 
@@ -231,7 +285,7 @@ class VehicleCalculator:
         self.effectiveMass = self.massKg * rotFactor
 
         # Resistance coefficients (A, B, C)
-        resData = settings.get("trainRes", [["Placeholder BEMU", 1, 1, 1]])
+        resData = v_data.get("trainRes", [["Placeholder BEMU", 1, 1, 1]])
         if resData and isinstance(resData[0], (str, int, float)):
             resData = [resData]
         
@@ -243,26 +297,26 @@ class VehicleCalculator:
             self.resA = self.resB = self.resC = 1.0
 
         # Traction coefficients
-        tracData = settings.get("trainTrac", [["Placeholder BEMU", 0, 160, 1, 1, 1]])
+        tracData = v_data.get("trainTrac", [["Placeholder BEMU", 0, 160, 1, 1, 1]])
         if tracData and isinstance(tracData[0], (str, int, float)):
             tracData = [tracData]
         self.trainTrac = tracData
 
         # Brake coefficients
-        brakeData = settings.get("trainBrake", [["Placeholder BEMU", 0, 160, 0, 0, 0]])
+        brakeData = v_data.get("trainBrake", [["Placeholder BEMU", 0, 160, 0, 0, 0]])
         if brakeData and not isinstance(brakeData[0], list):
             brakeData = [brakeData]
         self.trainBrake = brakeData
 
         # Mechanical brake in N (input was in kN)
-        self.mechBrakeN = float(settings.get("trainBrakeMech", 150.0)) * 1000.0
+        self.mechBrakeN = float(v_data.get("trainBrakeMech", 150.0)) * 1000.0
         
-        self.trainInitialSpeed = float(settings.get("trainInitialSpeed", 0.0))
-        self.trainFinalSpeed = float(settings.get("trainFinalSpeed", 0.0))
+        self.trainInitialSpeed = float(v_data.get("trainInitialSpeed", 0.0))
+        self.trainFinalSpeed = float(v_data.get("trainFinalSpeed", 0.0))
         self.defaultDwellTime = float(settings.get("defaultDwellTime", 30.0))
         self.trainStops = settings.get("trainStops", [])
 
-    def loadTrackData(self):
+    def loadTrackData(self, v_data):
         lxml = self.data.get("LandXML", {})
         self.stationHorizontal = lxml.get("stationHorizontal", np.array([]))
         self.curvature = lxml.get("curvature", np.array([]))
@@ -271,8 +325,8 @@ class VehicleCalculator:
 
         # Retrieve speed limit profile
         settings = self.data.get("settingsData", {})
-        speedProfile = settings.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"])
-        self.trainMaxSpeed = float(settings.get("trainMaxSpeed", settings.get("vInit", [120])[0]))
+        speedProfile = v_data.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"])
+        self.trainMaxSpeed = float(v_data.get("trainMaxSpeed", settings.get("vInit", [120])[0]))
 
         if speedProfile[0] == "unlimited":
             if len(self.stationHorizontal) > 0:

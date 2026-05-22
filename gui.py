@@ -18,6 +18,7 @@ import matplotlib as mpl
 # numpy import for data handling
 import numpy as np
 
+import csv
 # Local imports
 import lang
 import readfile
@@ -370,9 +371,33 @@ class MainWindow(QMainWindow):
         self.reportMenu.addAction(self.reportGeometryAction)
         self.reportGeometryAction.triggered.connect(self.generateGeometryReport)
 
-        self.reportVehicleAction = QAction(lan.get("reportVehicle", "Report - Vehicle"), self)
-        self.reportMenu.addAction(self.reportVehicleAction)
-        self.reportVehicleAction.triggered.connect(self.generateVehicleReport)
+        self.reportVehicleMenu = self.reportMenu.addMenu(lan.get("reportVehicle", "Report - Vehicle"))
+        self.reportVehicleAction1 = QAction(lan.get("vehicle", "Vehicle") + " 1", self)
+        self.reportVehicleAction2 = QAction(lan.get("vehicle", "Vehicle") + " 2", self)
+        self.reportVehicleAction3 = QAction(lan.get("vehicle", "Vehicle") + " 3", self)
+        self.reportVehicleMenu.addAction(self.reportVehicleAction1)
+        self.reportVehicleMenu.addAction(self.reportVehicleAction2)
+        self.reportVehicleMenu.addAction(self.reportVehicleAction3)
+        self.reportVehicleAction1.triggered.connect(lambda: self.generateVehicleReport(0))
+        self.reportVehicleAction2.triggered.connect(lambda: self.generateVehicleReport(1))
+        self.reportVehicleAction3.triggered.connect(lambda: self.generateVehicleReport(2))
+
+        self.reportMenu.addSeparator()
+
+        self.exportGeometryReportAction = QAction(lan.get("exportGeometryReport", "Export Geometry Report"), self)
+        self.reportMenu.addAction(self.exportGeometryReportAction)
+        self.exportGeometryReportAction.triggered.connect(self.exportGeometryReport)
+
+        self.exportVehicleReportMenu = self.reportMenu.addMenu(lan.get("exportVehicleReport", "Export Vehicle Report"))
+        self.exportVehicleReportAction1 = QAction(lan.get("vehicle", "Vehicle") + " 1", self)
+        self.exportVehicleReportAction2 = QAction(lan.get("vehicle", "Vehicle") + " 2", self)
+        self.exportVehicleReportAction3 = QAction(lan.get("vehicle", "Vehicle") + " 3", self)
+        self.exportVehicleReportMenu.addAction(self.exportVehicleReportAction1)
+        self.exportVehicleReportMenu.addAction(self.exportVehicleReportAction2)
+        self.exportVehicleReportMenu.addAction(self.exportVehicleReportAction3)
+        self.exportVehicleReportAction1.triggered.connect(lambda: self.exportVehicleReport(0))
+        self.exportVehicleReportAction2.triggered.connect(lambda: self.exportVehicleReport(1))
+        self.exportVehicleReportAction3.triggered.connect(lambda: self.exportVehicleReport(2))
 
         # Submenu - Exit
         exitAction = QAction(lan["exit"], self)
@@ -586,8 +611,16 @@ class MainWindow(QMainWindow):
         self.cleanMenu.actions()[4].setText(lan["cleanSpeeds"])
 
         self.reportGeometryAction.setText(lan.get("reportGeometry", "Report - Geometry"))
-        self.reportVehicleAction.setText(lan.get("reportVehicle", "Report - Vehicle"))
+        self.reportVehicleMenu.setTitle(lan.get("reportVehicle", "Report - Vehicle"))
+        self.exportGeometryReportAction.setText(lan.get("exportGeometryReport", "Export Geometry Report"))
+        self.exportVehicleReportMenu.setTitle(lan.get("exportVehicleReport", "Export Vehicle Report"))
 
+        self.reportVehicleAction1.setText(lan.get("vehicle", "Vehicle") + " 1")
+        self.reportVehicleAction2.setText(lan.get("vehicle", "Vehicle") + " 2")
+        self.reportVehicleAction3.setText(lan.get("vehicle", "Vehicle") + " 3")
+        self.exportVehicleReportAction1.setText(lan.get("vehicle", "Vehicle") + " 1")
+        self.exportVehicleReportAction2.setText(lan.get("vehicle", "Vehicle") + " 2")
+        self.exportVehicleReportAction3.setText(lan.get("vehicle", "Vehicle") + " 3")
 
         self.exitMenu.actions()[0].setText(lan["exit"])
 
@@ -678,7 +711,19 @@ class MainWindow(QMainWindow):
     def parseLandXML(self, file_content):
         if file_content is not None:
             self.textboxRawLandXML.setPlainText(file_content)
-            LandXMLData = readfile.ReadFile().ParseLandXML(file_content, self.epsgInput)
+            
+            # Check for multiple alignments and prompt the user if needed
+            alignments = readfile.ReadFile().GetAlignments(file_content)
+            selected_idx = 0
+            if len(alignments) > 1:
+                lan = lang.DIC[self.current_language]
+                dialog = gui_overlay.AlignmentSelectDialog(alignments, lan, self)
+                if dialog.exec():
+                    selected_idx = dialog.get_selected_index()
+                else:
+                    return  # User cancelled the dialog, do nothing
+
+            LandXMLData = readfile.ReadFile().ParseLandXML(file_content, self.epsgInput, selected_idx)
             self.updateTableLandXML(LandXMLData)
 
             # Save data to central data storage
@@ -1077,62 +1122,73 @@ class MainWindow(QMainWindow):
         dist_lbl = lan.get("distanceKm", "Distance [km]") if use_kmh else lan.get("distance", "Distance [m]")
         time_lbl = lan.get("timeMin", "Time [min]") if use_kmh else lan.get("time", "Time [s]")
 
-        stationSpeedLimits = self.dataStorage.get("stationSpeedLimitM")
-        speedLimits = self.dataStorage.get("speedLimitsM")
-        speedLimitsT = self.dataStorage.get("speedLimitsT")
+        colors_speed = ['blue', 'purple', 'brown']
+        colors_trac = ['green', 'lime', 'darkgreen']
+        colors_brake = ['red', 'darkred', 'salmon']
+        colors_res = ['orange', 'darkorange', 'gold']
+        limit_colors = ['crimson', 'darkred', 'lightcoral']
 
-        if (speedLimits is not None and len(speedLimits) > 0) and (stationSpeedLimits is not None and len(stationSpeedLimits) > 0):
-            line, = self.canvasKinematics.ax_tacho_track.step(stationSpeedLimits / d_factor, speedLimits * v_factor, where="post", marker='s', linestyle='-', color='crimson', label=speed_lim_lbl)
-            self.plotKinematicsData["tachoTrack"] = line
-            line.set_visible(self.toggleKinematicsSpeedLimitTrackAction.isChecked())
+        num_vehicles = self.dataStorage.get("num_vehicles", 1)
 
-        if (speedLimitsT is not None and len(speedLimitsT) > 0) and (speedLimits is not None and len(speedLimits) > 0):
-            line, = self.canvasKinematics.ax_tacho_time.step(speedLimitsT / t_factor, speedLimits * v_factor, where="post", marker='s', linestyle='-', color='crimson', label=speed_lim_lbl)
-            self.plotKinematicsData["tachoTime"] = line
-            line.set_visible(self.toggleKinematicsSpeedLimitTimeAction.isChecked())
+        for v_idx in range(num_vehicles):
+            stationSpeedLimits = self.dataStorage.get(f"stationSpeedLimitM_{v_idx}")
+            speedLimits = self.dataStorage.get(f"speedLimitsM_{v_idx}")
+            speedLimitsT = self.dataStorage.get(f"speedLimitsT_{v_idx}")
+            
+            lbl_v = f" V{v_idx+1}" if num_vehicles > 1 else ""
 
-        if (speedLimitsT is not None and len(speedLimitsT) > 0) and (stationSpeedLimits is not None and len(stationSpeedLimits) > 0):
-            line, = self.canvasKinematics.ax_dist_time.plot(speedLimitsT / t_factor, stationSpeedLimits / d_factor, marker='s', linestyle='-', color='crimson', label=dist_lbl)
-            self.plotKinematicsData["distTime"] = line
-            line.set_visible(self.toggleKinematicsDistanceTimeAction.isChecked())
+            if (speedLimits is not None and len(speedLimits) > 0) and (stationSpeedLimits is not None and len(stationSpeedLimits) > 0):
+                line, = self.canvasKinematics.ax_tacho_track.step(stationSpeedLimits / d_factor, speedLimits * v_factor, where="post", marker='s', linestyle='-', color=limit_colors[v_idx], label=speed_lim_lbl + lbl_v)
+                self.plotKinematicsData[f"tachoTrack_{v_idx}"] = line
+                line.set_visible(self.toggleKinematicsSpeedLimitTrackAction.isChecked())
 
-        kinematicsStation = self.dataStorage.get("kinematicsStationM")
-        kinematicsSpeed = self.dataStorage.get("kinematicsSpeedM")
-        kinematicsTime = self.dataStorage.get("kinematicsTimeS")
+            if (speedLimitsT is not None and len(speedLimitsT) > 0) and (speedLimits is not None and len(speedLimits) > 0):
+                line, = self.canvasKinematics.ax_tacho_time.step(speedLimitsT / t_factor, speedLimits * v_factor, where="post", marker='s', linestyle='-', color=limit_colors[v_idx], label=speed_lim_lbl + lbl_v)
+                self.plotKinematicsData[f"tachoTime_{v_idx}"] = line
+                line.set_visible(self.toggleKinematicsSpeedLimitTimeAction.isChecked())
 
-        if (kinematicsStation is not None and len(kinematicsStation) > 0) and (kinematicsSpeed is not None and len(kinematicsSpeed) > 0):
-            line2, = self.canvasKinematics.ax_tacho_track.plot(kinematicsStation / d_factor, kinematicsSpeed * v_factor, linestyle='-', color='blue', label=speed_lbl)
-            self.plotKinematicsData["simTrack"] = line2
-            line2.set_visible(self.toggleKinematicsSpeedLimitTrackAction.isChecked())
+            if (speedLimitsT is not None and len(speedLimitsT) > 0) and (stationSpeedLimits is not None and len(stationSpeedLimits) > 0):
+                line, = self.canvasKinematics.ax_dist_time.plot(speedLimitsT / t_factor, stationSpeedLimits / d_factor, marker='s', linestyle='-', color=limit_colors[v_idx], label=dist_lbl + lbl_v)
+                self.plotKinematicsData[f"distTime_{v_idx}"] = line
+                line.set_visible(self.toggleKinematicsDistanceTimeAction.isChecked())
 
-        if (kinematicsTime is not None and len(kinematicsTime) > 0) and (kinematicsSpeed is not None and len(kinematicsSpeed) > 0):
-            line2, = self.canvasKinematics.ax_tacho_time.plot(kinematicsTime / t_factor, kinematicsSpeed * v_factor, linestyle='-', color='blue', label=speed_lbl)
-            self.plotKinematicsData["simTime"] = line2
-            line2.set_visible(self.toggleKinematicsSpeedLimitTimeAction.isChecked())
+            kinematicsStation = self.dataStorage.get(f"kinematicsStationM_{v_idx}")
+            kinematicsSpeed = self.dataStorage.get(f"kinematicsSpeedM_{v_idx}")
+            kinematicsTime = self.dataStorage.get(f"kinematicsTimeS_{v_idx}")
 
-        if (kinematicsTime is not None and len(kinematicsTime) > 0) and (kinematicsStation is not None and len(kinematicsStation) > 0):
-            line2, = self.canvasKinematics.ax_dist_time.plot(kinematicsTime / t_factor, kinematicsStation / d_factor, linestyle='-', color='blue', label=dist_lbl)
-            self.plotKinematicsData["distTimeSim"] = line2
-            line2.set_visible(self.toggleKinematicsDistanceTimeAction.isChecked())
+            if (kinematicsStation is not None and len(kinematicsStation) > 0) and (kinematicsSpeed is not None and len(kinematicsSpeed) > 0):
+                line2, = self.canvasKinematics.ax_tacho_track.plot(kinematicsStation / d_factor, kinematicsSpeed * v_factor, linestyle='-', color=colors_speed[v_idx], label=speed_lbl + lbl_v)
+                self.plotKinematicsData[f"simTrack_{v_idx}"] = line2
+                line2.set_visible(self.toggleKinematicsSpeedLimitTrackAction.isChecked())
 
-        forceTrac = self.dataStorage.get("kinematicsForceTractionKN")
-        forceBrake = self.dataStorage.get("kinematicsForceBrakingKN")
-        forceRes = self.dataStorage.get("kinematicsForceResistanceKN")
+            if (kinematicsTime is not None and len(kinematicsTime) > 0) and (kinematicsSpeed is not None and len(kinematicsSpeed) > 0):
+                line2, = self.canvasKinematics.ax_tacho_time.plot(kinematicsTime / t_factor, kinematicsSpeed * v_factor, linestyle='-', color=colors_speed[v_idx], label=speed_lbl + lbl_v)
+                self.plotKinematicsData[f"simTime_{v_idx}"] = line2
+                line2.set_visible(self.toggleKinematicsSpeedLimitTimeAction.isChecked())
 
-        if forceTrac is not None and len(forceTrac) > 0 and kinematicsStation is not None and len(kinematicsStation) > 0:
-            line3, = self.canvasKinematics.ax_forces.plot(kinematicsStation / d_factor, forceTrac, linestyle='-', color='green', label=lan.get("forceTraction", "Tractive Force [kN]"))
-            self.plotKinematicsData["forceTrac"] = line3
-            line3.set_visible(self.toggleKinematicsForcesAction.isChecked())
+            if (kinematicsTime is not None and len(kinematicsTime) > 0) and (kinematicsStation is not None and len(kinematicsStation) > 0):
+                line2, = self.canvasKinematics.ax_dist_time.plot(kinematicsTime / t_factor, kinematicsStation / d_factor, linestyle='-', color=colors_speed[v_idx], label=dist_lbl + lbl_v)
+                self.plotKinematicsData[f"distTimeSim_{v_idx}"] = line2
+                line2.set_visible(self.toggleKinematicsDistanceTimeAction.isChecked())
 
-        if forceBrake is not None and len(forceBrake) > 0 and kinematicsStation is not None and len(kinematicsStation) > 0:
-            line4, = self.canvasKinematics.ax_forces.plot(kinematicsStation / d_factor, forceBrake, linestyle='-', color='red', label=lan.get("forceBraking", "Braking Force [kN]"))
-            self.plotKinematicsData["forceBrake"] = line4
-            line4.set_visible(self.toggleKinematicsForcesAction.isChecked())
+            forceTrac = self.dataStorage.get(f"kinematicsForceTractionKN_{v_idx}")
+            forceBrake = self.dataStorage.get(f"kinematicsForceBrakingKN_{v_idx}")
+            forceRes = self.dataStorage.get(f"kinematicsForceResistanceKN_{v_idx}")
 
-        if forceRes is not None and len(forceRes) > 0 and kinematicsStation is not None and len(kinematicsStation) > 0:
-            line5, = self.canvasKinematics.ax_forces.plot(kinematicsStation / d_factor, forceRes, linestyle='-', color='orange', label=lan.get("forceResistance", "Resistance [kN]"))
-            self.plotKinematicsData["forceRes"] = line5
-            line5.set_visible(self.toggleKinematicsForcesAction.isChecked())
+            if forceTrac is not None and len(forceTrac) > 0 and kinematicsStation is not None and len(kinematicsStation) > 0:
+                line3, = self.canvasKinematics.ax_forces.plot(kinematicsStation / d_factor, forceTrac, linestyle='-', color=colors_trac[v_idx], label=lan.get("forceTraction", "Tractive Force [kN]") + lbl_v)
+                self.plotKinematicsData[f"forceTrac_{v_idx}"] = line3
+                line3.set_visible(self.toggleKinematicsForcesAction.isChecked())
+
+            if forceBrake is not None and len(forceBrake) > 0 and kinematicsStation is not None and len(kinematicsStation) > 0:
+                line4, = self.canvasKinematics.ax_forces.plot(kinematicsStation / d_factor, forceBrake, linestyle='-', color=colors_brake[v_idx], label=lan.get("forceBraking", "Braking Force [kN]") + lbl_v)
+                self.plotKinematicsData[f"forceBrake_{v_idx}"] = line4
+                line4.set_visible(self.toggleKinematicsForcesAction.isChecked())
+
+            if forceRes is not None and len(forceRes) > 0 and kinematicsStation is not None and len(kinematicsStation) > 0:
+                line5, = self.canvasKinematics.ax_forces.plot(kinematicsStation / d_factor, forceRes, linestyle='-', color=colors_res[v_idx], label=lan.get("forceResistance", "Resistance [kN]") + lbl_v)
+                self.plotKinematicsData[f"forceRes_{v_idx}"] = line5
+                line5.set_visible(self.toggleKinematicsForcesAction.isChecked())
 
         self.canvasKinematics.ax_tacho_track.grid(True)
         self.canvasKinematics.ax_tacho_track.autoscale(enable=True, axis='x', tight=True)
@@ -1224,13 +1280,17 @@ class MainWindow(QMainWindow):
         self.dataStorage["speedLimits130"] = []
         self.dataStorage["speedLimits150"] = []
         self.dataStorage["speedLimitsK"] = []
-        self.dataStorage["kinematicsStationM"] = []
-        self.dataStorage["kinematicsSpeedM"] = []
-        self.dataStorage["kinematicsTimeS"] = []
-        self.dataStorage["kinematicsAcceleration"] = []
-        self.dataStorage["kinematicsForceTractionKN"] = []
-        self.dataStorage["kinematicsForceBrakingKN"] = []
-        self.dataStorage["kinematicsForceResistanceKN"] = []
+        for v_idx in range(3):
+            self.dataStorage[f"kinematicsStationM_{v_idx}"] = []
+            self.dataStorage[f"kinematicsSpeedM_{v_idx}"] = []
+            self.dataStorage[f"kinematicsTimeS_{v_idx}"] = []
+            self.dataStorage[f"kinematicsAcceleration_{v_idx}"] = []
+            self.dataStorage[f"kinematicsForceTractionKN_{v_idx}"] = []
+            self.dataStorage[f"kinematicsForceBrakingKN_{v_idx}"] = []
+            self.dataStorage[f"kinematicsForceResistanceKN_{v_idx}"] = []
+            self.dataStorage[f"stationSpeedLimitM_{v_idx}"] = []
+            self.dataStorage[f"speedLimitsM_{v_idx}"] = []
+            self.dataStorage[f"speedLimitsT_{v_idx}"] = []
         self.plotSpeedData.clear()
         self.plotKinematicsData.clear()
         self.plotSpeedLimits()
@@ -1328,33 +1388,37 @@ class MainWindow(QMainWindow):
             self.canvasProfile.draw()
 
     def toggleKinematicsSpeedLimitTrackVisibility(self, isChecked):
-        if 'tachoTrack' in self.plotKinematicsData:
-            self.plotKinematicsData["tachoTrack"].set_visible(isChecked)
-        if 'simTrack' in self.plotKinematicsData:
-            self.plotKinematicsData["simTrack"].set_visible(isChecked)
-            self.canvasKinematics.draw()
+        for v_idx in range(3):
+            if f'tachoTrack_{v_idx}' in self.plotKinematicsData:
+                self.plotKinematicsData[f"tachoTrack_{v_idx}"].set_visible(isChecked)
+            if f'simTrack_{v_idx}' in self.plotKinematicsData:
+                self.plotKinematicsData[f"simTrack_{v_idx}"].set_visible(isChecked)
+        self.canvasKinematics.draw()
 
     def toggleKinematicsSpeedLimitTimeVisibility(self, isChecked):
-        if 'tachoTime' in self.plotKinematicsData:
-            self.plotKinematicsData["tachoTime"].set_visible(isChecked)
-        if 'simTime' in self.plotKinematicsData:
-            self.plotKinematicsData["simTime"].set_visible(isChecked)
+        for v_idx in range(3):
+            if f'tachoTime_{v_idx}' in self.plotKinematicsData:
+                self.plotKinematicsData[f"tachoTime_{v_idx}"].set_visible(isChecked)
+            if f'simTime_{v_idx}' in self.plotKinematicsData:
+                self.plotKinematicsData[f"simTime_{v_idx}"].set_visible(isChecked)
         self.canvasKinematics.draw()
 
     def toggleKinematicsDistanceTimeVisibility(self, isChecked):
-        if 'distTime' in self.plotKinematicsData:
-            self.plotKinematicsData["distTime"].set_visible(isChecked)
-        if 'distTimeSim' in self.plotKinematicsData:
-            self.plotKinematicsData["distTimeSim"].set_visible(isChecked)
-            self.canvasKinematics.draw()
+        for v_idx in range(3):
+            if f'distTime_{v_idx}' in self.plotKinematicsData:
+                self.plotKinematicsData[f"distTime_{v_idx}"].set_visible(isChecked)
+            if f'distTimeSim_{v_idx}' in self.plotKinematicsData:
+                self.plotKinematicsData[f"distTimeSim_{v_idx}"].set_visible(isChecked)
+        self.canvasKinematics.draw()
 
     def toggleKinematicsForcesVisibility(self, isChecked):
-        if 'forceTrac' in self.plotKinematicsData:
-            self.plotKinematicsData["forceTrac"].set_visible(isChecked)
-        if 'forceBrake' in self.plotKinematicsData:
-            self.plotKinematicsData["forceBrake"].set_visible(isChecked)
-        if 'forceRes' in self.plotKinematicsData:
-            self.plotKinematicsData["forceRes"].set_visible(isChecked)
+        for v_idx in range(3):
+            if f'forceTrac_{v_idx}' in self.plotKinematicsData:
+                self.plotKinematicsData[f"forceTrac_{v_idx}"].set_visible(isChecked)
+            if f'forceBrake_{v_idx}' in self.plotKinematicsData:
+                self.plotKinematicsData[f"forceBrake_{v_idx}"].set_visible(isChecked)
+            if f'forceRes_{v_idx}' in self.plotKinematicsData:
+                self.plotKinematicsData[f"forceRes_{v_idx}"].set_visible(isChecked)
         self.canvasKinematics.draw()
 
     # Map settings
@@ -1480,19 +1544,19 @@ class MainWindow(QMainWindow):
         self.reportGeometryWidget.setPlainText("\n".join(report_lines))
         self.layoutTabsPlots.setCurrentWidget(self.layoutTabsPlotsReport_container)
 
-    def generateVehicleReport(self):
+    def generateVehicleReport(self, v_idx=0):
         lan = lang.DIC[self.current_language]
-        stations = self.dataStorage.get("kinematicsStationM", [])
+        stations = self.dataStorage.get(f"kinematicsStationM_{v_idx}", [])
         if len(stations) == 0:
             self.reportVehicleTable.setData([{"Info": lan.get("no_data", "No data available. Calculate values first.")}])
             self.layoutTabsPlots.setCurrentWidget(self.layoutTabsPlotsReport_container)
             return
 
-        speeds = self.dataStorage.get("kinematicsSpeedM", np.zeros_like(stations))
-        accels = self.dataStorage.get("kinematicsAcceleration", np.zeros_like(stations))
-        f_trac = self.dataStorage.get("kinematicsForceTractionKN", np.zeros_like(stations))
-        f_brake = self.dataStorage.get("kinematicsForceBrakingKN", np.zeros_like(stations))
-        f_res = self.dataStorage.get("kinematicsForceResistanceKN", np.zeros_like(stations))
+        speeds = self.dataStorage.get(f"kinematicsSpeedM_{v_idx}", np.zeros_like(stations))
+        accels = self.dataStorage.get(f"kinematicsAcceleration_{v_idx}", np.zeros_like(stations))
+        f_trac = self.dataStorage.get(f"kinematicsForceTractionKN_{v_idx}", np.zeros_like(stations))
+        f_brake = self.dataStorage.get(f"kinematicsForceBrakingKN_{v_idx}", np.zeros_like(stations))
+        f_res = self.dataStorage.get(f"kinematicsForceResistanceKN_{v_idx}", np.zeros_like(stations))
 
         tableData = []
         for i in range(0, len(stations), 10):
@@ -1508,6 +1572,63 @@ class MainWindow(QMainWindow):
 
         self.reportVehicleTable.setData(tableData)
         self.layoutTabsPlots.setCurrentWidget(self.layoutTabsPlotsReport_container)
+
+    def exportGeometryReport(self):
+        lan = lang.DIC[self.current_language]
+        content = self.reportGeometryWidget.toPlainText()
+        if not content:
+            QMessageBox.warning(self, lan.get("error", "Error"), lan.get("no_data", "No data available. Calculate values first."))
+            return
+            
+        filepath, _ = QFileDialog.getSaveFileName(self, lan.get("exportGeometryReport", "Export Geometry Report"), "", "Text Files (*.txt);;All Files (*)")
+        if filepath:
+            try:
+                with open(filepath, "w", encoding="utf-8") as file:
+                    file.write(content)
+            except Exception as e:
+                QMessageBox.critical(self, lan.get("error", "Error"), f"{e}")
+
+    def exportVehicleReport(self, v_idx=0):
+        lan = lang.DIC[self.current_language]
+        stations = self.dataStorage.get(f"kinematicsStationM_{v_idx}", [])
+        if len(stations) == 0:
+            QMessageBox.warning(self, lan.get("error", "Error"), lan.get("no_data", "No data available. Calculate values first."))
+            return
+
+        filepath, _ = QFileDialog.getSaveFileName(self, lan.get("exportVehicleReport", "Export Vehicle Report"), "", "CSV Files (*.csv);;All Files (*)")
+        if filepath:
+            try:
+                with open(filepath, "w", newline="", encoding="utf-8") as file:
+                    writer = csv.writer(file)
+                    headers = [
+                        lan.get("station", "Station [km]"),
+                        lan.get("speed", "Speed [km/h]"),
+                        "Accel [m/s2]",
+                        lan.get("forceTraction", "Tractive Force [kN]"),
+                        lan.get("forceBraking", "Braking Force [kN]"),
+                        lan.get("forceResistance", "Resistance [kN]")
+                    ]
+                    writer.writerow(headers)
+
+                    speeds = self.dataStorage.get(f"kinematicsSpeedM_{v_idx}", np.zeros_like(stations))
+                    accels = self.dataStorage.get(f"kinematicsAcceleration_{v_idx}", np.zeros_like(stations))
+                    f_trac = self.dataStorage.get(f"kinematicsForceTractionKN_{v_idx}", np.zeros_like(stations))
+                    f_brake = self.dataStorage.get(f"kinematicsForceBrakingKN_{v_idx}", np.zeros_like(stations))
+                    f_res = self.dataStorage.get(f"kinematicsForceResistanceKN_{v_idx}", np.zeros_like(stations))
+
+                    for i in range(len(stations)):
+                        s_km = stations[i] / 1000.0
+                        row = [
+                            f"{s_km:.3f}",
+                            f"{speeds[i]*3.6:.1f}",
+                            f"{accels[i]:.3f}",
+                            f"{f_trac[i]:.1f}",
+                            f"{f_brake[i]:.1f}",
+                            f"{f_res[i]:.1f}"
+                        ]
+                        writer.writerow(row)
+            except Exception as e:
+                QMessageBox.critical(self, lan.get("error", "Error"), f"{e}")
 
     # Update tables
     def updateTableLandXML(self, data):
@@ -1590,6 +1711,17 @@ class MainWindow(QMainWindow):
 
         vehicle = vehicle_engine.VehicleCalculator(self.dataStorage)
         vehicle.calculateKinematics()
+        
+        warnings = []
+        for i in range(3):
+            if self.dataStorage.get(f"kinematicsWarning_{i}") == "train_too_long":
+                warnings.append(str(i+1))
+                
+        if warnings:
+            lan = lang.DIC[self.current_language]
+            msg = lan["train_too_long"] + f" (Vehicle: {', '.join(warnings)})"
+            QMessageBox.warning(self, lan["error"], msg)
+
         vehicle.speedLimitsToTime()
 
         self.plotKinematics()
