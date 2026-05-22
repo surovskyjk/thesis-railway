@@ -31,9 +31,15 @@ class VehicleCalculator:
                     speedLimit = np.array([])
             else:
                 stationSpeedLimit = np.copy(self.data.get(speedProfile[0], []))
+                speedLimit = np.copy(self.data.get(speedProfile[1], []))
+                
+                if len(stationSpeedLimit) > 0 and len(speedLimit) == len(stationSpeedLimit):
+                    sort_idx = np.argsort(stationSpeedLimit)
+                    stationSpeedLimit = stationSpeedLimit[sort_idx]
+                    speedLimit = speedLimit[sort_idx]
+
                 if len(stationSpeedLimit) > 0:
                     stationSpeedLimit = stationSpeedLimit * 1000
-                speedLimit = np.copy(self.data.get(speedProfile[1], []))
 
             if len(speedLimit) > 0:
                 speedLimit = np.clip(speedLimit, 0, trainMaxSpeed)
@@ -320,8 +326,21 @@ class VehicleCalculator:
         lxml = self.data.get("LandXML", {})
         self.stationHorizontal = lxml.get("stationHorizontal", np.array([]))
         self.curvature = lxml.get("curvature", np.array([]))
+        
+        if len(self.stationHorizontal) > 0 and len(self.curvature) == len(self.stationHorizontal):
+            sort_idx = np.argsort(self.stationHorizontal)
+            self.stationHorizontal = self.stationHorizontal[sort_idx]
+            self.curvature = self.curvature[sort_idx]
+
         self.stationVertical = lxml.get("stationVertical", np.array([]))
         self.slope = lxml.get("slope", np.array([]))
+        
+        if len(self.stationVertical) > 1 and len(self.slope) == len(self.stationVertical) - 1:
+            sort_idx = np.argsort(self.stationVertical[:-1])
+            sorted_starts = self.stationVertical[:-1][sort_idx]
+            max_end = np.max(self.stationVertical)
+            self.stationVertical = np.append(sorted_starts, max_end)
+            self.slope = self.slope[sort_idx]
 
         # Retrieve speed limit profile
         settings = self.data.get("settingsData", {})
@@ -338,6 +357,11 @@ class VehicleCalculator:
         else:
             self.stationSpeedLimits = self.data.get(speedProfile[0], np.array([]))
             self.speedLimits = self.data.get(speedProfile[1], np.array([]))
+            
+            if len(self.stationSpeedLimits) > 0 and len(self.speedLimits) == len(self.stationSpeedLimits):
+                sort_idx = np.argsort(self.stationSpeedLimits)
+                self.stationSpeedLimits = self.stationSpeedLimits[sort_idx]
+                self.speedLimits = self.speedLimits[sort_idx]
 
     def getSlopeAt(self, stationKm):
         if len(self.stationVertical) == 0 or len(self.slope) == 0:

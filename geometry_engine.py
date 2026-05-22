@@ -41,7 +41,8 @@ class GeometryCalculator:
 
         self.vInit = np.full(len(lxml["stationCantPossible"]),defaultVal.get("vInit",[120])[0])
         self.vMax = np.full(len(lxml["stationCantPossible"]),defaultVal.get("vInit",[0])[0])
-        self.maxD = defaultVal.get("maxD",[0])[0]
+        maxD_val = defaultVal.get("maxD", 150.0)
+        self.maxD = float(maxD_val[0]) if isinstance(maxD_val, list) else float(maxD_val)
 
         self.geometryType = np.array(lxml.get("geometryType",[]))
 

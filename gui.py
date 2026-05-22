@@ -128,14 +128,28 @@ class MainWindow(QMainWindow):
         autodetectXMLAction.setShortcut("Ctrl+O")
         autodetectXMLAction.triggered.connect(self.openAutodetectXML)
 
+        append_autodetect_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileLinkIcon)
+        appendAutodetectXMLAction = QAction(append_autodetect_icon, lan.get("append_autodetect", "Append Autodetect"), self)
+        self.fileMenu.addAction(appendAutodetectXMLAction)
+        appendAutodetectXMLAction.setStatusTip(lan.get("append_autodetect_tip", "Autodetect and append"))
+        appendAutodetectXMLAction.triggered.connect(self.appendAutodetectXML)
+
         openParseLandXMLAction = QAction(lan["open_parse_landxml"], self)
         self.fileMenu.addAction(openParseLandXMLAction)
         openParseLandXMLAction.triggered.connect(self.openLandXML)
+
+        appendLandXMLAction = QAction(lan.get("append_landxml", "Append LandXML"), self)
+        self.fileMenu.addAction(appendLandXMLAction)
+        appendLandXMLAction.triggered.connect(self.appendLandXML)
 
         openParseXMLTTPAction = QAction(lan["open_parse_xmlttp"], self)      
         self.fileMenu.addAction(openParseXMLTTPAction)
         openParseXMLTTPAction.triggered.connect(self.openXMLTTP)
         
+        appendXMLTTPAction = QAction(lan.get("append_xmlttp", "Append XML TTP"), self)
+        self.fileMenu.addAction(appendXMLTTPAction)
+        appendXMLTTPAction.triggered.connect(self.appendXMLTTP)
+
         # importStopsTTPAction = QAction(lan.get("importStopsTTP", "Import Stops from XML TTP"), self)
         # self.fileMenu.addAction(importStopsTTPAction)
         # importStopsTTPAction.triggered.connect(self.importStopsTTP)
@@ -412,6 +426,7 @@ class MainWindow(QMainWindow):
         # Create toolbar for the most common actions
         toolbar = self.addToolBar(lan["toolbar"])
         toolbar.addAction(autodetectXMLAction)
+        toolbar.addAction(appendAutodetectXMLAction)
 
         # Widgets for XML parsing tabs
         # Raw data
@@ -576,8 +591,13 @@ class MainWindow(QMainWindow):
 
         self.fileMenu.actions()[0].setText(lan["open_file"])
         self.fileMenu.actions()[1].setText(lan["autodetect"])
-        self.fileMenu.actions()[2].setText(lan["open_parse_landxml"])
-        self.fileMenu.actions()[3].setText(lan["open_parse_xmlttp"])
+        self.fileMenu.actions()[1].setStatusTip(lan["autodetect_tip"])
+        self.fileMenu.actions()[2].setText(lan.get("append_autodetect", "Append Autodetect"))
+        self.fileMenu.actions()[2].setStatusTip(lan.get("append_autodetect_tip", "Autodetect and append"))
+        self.fileMenu.actions()[3].setText(lan["open_parse_landxml"])
+        self.fileMenu.actions()[4].setText(lan.get("append_landxml", "Append LandXML"))
+        self.fileMenu.actions()[5].setText(lan["open_parse_xmlttp"])
+        self.fileMenu.actions()[6].setText(lan.get("append_xmlttp", "Append XML TTP"))
         # self.fileMenu.actions()[4].setText(lan.get("importStopsTTP", "Import Stops from XML TTP"))
 
         self.settingsMenu.actions()[2].setText(lan["mapSettings"])
@@ -700,6 +720,24 @@ class MainWindow(QMainWindow):
             err.setIcon(QMessageBox.Icon.Warning)
             err.exec()
 
+    def appendAutodetectXML(self):
+        file_content = self.getFileContent()
+        if file_content is None:
+            return
+        
+        xml_type = readfile.ReadFile().XMLType(file_content)
+        if xml_type == 1:
+            self.appendLandXMLContent(file_content)
+        elif xml_type == 2:
+            self.appendXMLTTPContent(file_content)
+        else:
+            lan = lang.DIC[self.current_language]
+            err = QMessageBox()
+            err.setWindowTitle(lan["error"])
+            err.setText(lan.get("unknown_xml_file", "Unknown XML format."))
+            err.setIcon(QMessageBox.Icon.Warning)
+            err.exec()
+
     def openLandXML(self):
         file_content = self.getFileContent()
         self.parseLandXML(file_content)
@@ -707,6 +745,327 @@ class MainWindow(QMainWindow):
     def openXMLTTP(self):
         file_content = self.getFileContent()
         self.parseXMLTTP(file_content)
+
+    def appendXMLTTP(self):
+        if "stationSpeedLimits" not in self.dataStorage or len(self.dataStorage.get("stationSpeedLimits", [])) == 0:
+            lan = lang.DIC[self.current_language]
+            err = QMessageBox()
+            err.setWindowTitle(lan["error"])
+            err.setText(lan.get("no_data", "No data available. Calculate values first."))
+            err.setIcon(QMessageBox.Icon.Warning)
+            err.exec()
+            return
+
+        file_content = self.getFileContent()
+        if not file_content:
+            return
+        self.appendXMLTTPContent(file_content)
+
+    def appendXMLTTPContent(self, file_content):
+        if "stationSpeedLimits" not in self.dataStorage or len(self.dataStorage.get("stationSpeedLimits", [])) == 0:
+            lan = lang.DIC[self.current_language]
+            err = QMessageBox()
+            err.setWindowTitle(lan["error"])
+            err.setText(lan.get("no_data", "No data available. Calculate values first."))
+            err.setIcon(QMessageBox.Icon.Warning)
+            err.exec()
+            return
+
+        XMLTTPData = readfile.ReadFile().ParseXMLTTP(file_content)
+        new_stations = XMLTTPData["stationSpeedLimits"]
+        new_speeds = XMLTTPData["speedLimits"]
+
+        valid_mask = (new_speeds != 0) & ~np.isnan(new_speeds)
+        new_stations = new_stations[valid_mask]
+        new_speeds = new_speeds[valid_mask]
+
+        lan = lang.DIC[self.current_language]
+        sections = self.TTPSections(new_stations)
+        
+        if len(sections) > 0:
+            sectionsInfo = []
+            for i, section in enumerate(sections):
+                sectionsInfo.append(f"{lan['station']} {section['stationStart']:.6f} km - {section['stationEnd']:.6f} km")
+
+            HasLandXML = "stationHorizontal" in self.dataStorage.get("LandXML",{}) and len(self.dataStorage.get("LandXML",{}).get("stationHorizontal")) > 0
+
+            dialog = gui_overlay.TTPSelectSectionDialog(sectionsInfo, HasLandXML, lan, self)
+            if dialog.exec():
+                selectedSectionIDs, cropToLandXML, loadAll = dialog.get_selected_section()
+            else:
+                return
+        else:
+            selectedSectionIDs = []
+            HasLandXML = False
+            cropToLandXML = False
+            loadAll = True
+
+        stationsRaw = np.array(new_stations)
+        speedLimitsRaw = np.array(new_speeds)
+
+        if not loadAll:
+            if not selectedSectionIDs:
+                return
+            tempStations = []
+            tempSpeedLimits = []
+            for sectionID in sorted(selectedSectionIDs):
+                currentSection = sections[sectionID]
+                startID = currentSection["startID"]
+                endID = currentSection["endID"]+1
+                tempStations.append(stationsRaw[startID:endID])
+                tempSpeedLimits.append(speedLimitsRaw[startID:endID])
+            stationsRaw = np.concatenate(tempStations)
+            speedLimitsRaw = np.concatenate(tempSpeedLimits)
+
+        if cropToLandXML and HasLandXML:
+            LandXMLMin = np.nanmin(self.dataStorage.get("LandXML",{}).get("stationHorizontal"))
+            LandXMLMax = np.nanmax(self.dataStorage.get("LandXML",{}).get("stationHorizontal"))
+            if not (np.isnan(LandXMLMin) or np.isnan(LandXMLMax)):
+                beforeMinMask = stationsRaw <= LandXMLMin
+                if np.any(beforeMinMask):
+                    lastBefore = np.where(beforeMinMask)[0][-1]
+                    speedLimitAtMin = speedLimitsRaw[lastBefore]
+                else:
+                    speedLimitAtMin = speedLimitsRaw[0] if len(speedLimitsRaw) > 0 else 0
+                
+                validMask = (stationsRaw > LandXMLMin) & (stationsRaw < LandXMLMax)
+                stationsInside = stationsRaw[validMask]
+                speedLimitsInside = speedLimitsRaw[validMask]
+                
+                stationsCropped = [LandXMLMin]
+                speedLimitsCropped = [speedLimitAtMin]
+                stationsCropped.extend(stationsInside.tolist())
+                speedLimitsCropped.extend(speedLimitsInside.tolist())
+                if stationsCropped[-1] < LandXMLMax:
+                    stationsCropped.append(LandXMLMax)
+                    speedLimitsCropped.append(speedLimitsCropped[-1])
+                stationsRaw = np.array(stationsCropped, dtype=float)
+                speedLimitsRaw = np.array(speedLimitsCropped, dtype=float)
+
+        if len(stationsRaw) == 0:
+            return
+
+        old_text = self.textboxRawTTP.toPlainText()
+        self.textboxRawTTP.setPlainText(old_text + "\n\n<!-- MERGED XML TTP -->\n\n" + file_content)
+
+        old_stations = self.dataStorage["stationSpeedLimits"]
+        old_speeds = self.dataStorage["speedLimits"]
+
+        old_start = np.nanmin(old_stations)
+        old_end = np.nanmax(old_stations)
+        new_start = np.nanmin(stationsRaw)
+        new_end = np.nanmax(stationsRaw)
+
+        # Kontrola mezery (ve staničení TTP používáme [km], proto 0.1 je 100 m)
+        if new_start >= old_end or (abs(new_start - old_end) <= abs(new_end - old_start)):
+            is_append = True
+            crop_station = old_end
+            if abs(new_start - old_end) > 0.1:
+                QMessageBox.warning(self, lan.get("merge_gap_warning_title", "Warning"), lan.get("merge_gap_warning_desc", "Gap > 100m"))
+        else:
+            is_append = False
+            crop_station = old_start
+            if abs(old_start - new_end) > 0.1:
+                QMessageBox.warning(self, lan.get("merge_gap_warning_title", "Warning"), lan.get("merge_gap_warning_desc", "Gap > 100m"))
+
+        if is_append:
+            mask = stationsRaw > crop_station
+            merged_stations = np.concatenate((old_stations, stationsRaw[mask]))
+            merged_speeds = np.concatenate((old_speeds, speedLimitsRaw[mask]))
+        else:
+            mask = stationsRaw < crop_station
+            merged_stations = np.concatenate((stationsRaw[mask], old_stations))
+            merged_speeds = np.concatenate((speedLimitsRaw[mask], old_speeds))
+
+        self.dataStorage["stationSpeedLimits"] = merged_stations
+        self.dataStorage["speedLimits"] = merged_speeds
+
+        TTPData = {
+            "stationSpeedLimits": merged_stations,
+            "speedLimits": merged_speeds
+        }
+        self.tableTTP.setData(TTPData)
+        
+        self.cleanCalculatedSpeeds()
+        self.plotSpeedLimits()
+
+    def appendLandXML(self):
+        if "LandXML" not in self.dataStorage or len(self.dataStorage.get("LandXML", {}).get("stationHorizontal", [])) == 0:
+            lan = lang.DIC[self.current_language]
+            err = QMessageBox()
+            err.setWindowTitle(lan["error"])
+            err.setText(lan.get("no_data", "No data available. Calculate values first."))
+            err.setIcon(QMessageBox.Icon.Warning)
+            err.exec()
+            return
+
+        file_content = self.getFileContent()
+        if not file_content:
+            return
+        self.appendLandXMLContent(file_content)
+
+    def appendLandXMLContent(self, file_content):
+        if "LandXML" not in self.dataStorage or len(self.dataStorage.get("LandXML", {}).get("stationHorizontal", [])) == 0:
+            lan = lang.DIC[self.current_language]
+            err = QMessageBox()
+            err.setWindowTitle(lan["error"])
+            err.setText(lan.get("no_data", "No data available. Calculate values first."))
+            err.setIcon(QMessageBox.Icon.Warning)
+            err.exec()
+            return
+
+        alignments = readfile.ReadFile().GetAlignments(file_content)
+        selected_idx = 0
+        if len(alignments) > 1:
+            lan = lang.DIC[self.current_language]
+            dialog = gui_overlay.AlignmentSelectDialog(alignments, lan, self)
+            if dialog.exec():
+                selected_idx = dialog.get_selected_index()
+            else:
+                return
+
+        newLandXMLData = readfile.ReadFile().ParseLandXML(file_content, self.epsgInput, selected_idx)
+        
+        old_text = self.textboxRawLandXML.toPlainText()
+        self.textboxRawLandXML.setPlainText(old_text + "\n\n<!-- MERGED XML -->\n\n" + file_content)
+
+        self.mergeLandXMLData(newLandXMLData)
+
+    def mergeLandXMLData(self, newData):
+        oldData = self.dataStorage.get("LandXML", {})
+        
+        if len(newData.get("stationHorizontal", [])) == 0:
+            return
+            
+        old_start = np.nanmin(oldData["stationHorizontal"])
+        old_end = np.nanmax(oldData["stationHorizontal"])
+        new_start = np.nanmin(newData["stationHorizontal"])
+        new_end = np.nanmax(newData["stationHorizontal"])
+
+        lan = lang.DIC[self.current_language]
+
+        if new_start >= old_end or (abs(new_start - old_end) <= abs(new_end - old_start)):
+            is_append = True
+            crop_station = old_end
+            if "keyX" in oldData and "keyY" in oldData and "keyX" in newData and "keyY" in newData:
+                if len(oldData["keyX"]) > 0 and len(newData["keyX"]) > 0:
+                    old_last_x, old_last_y = oldData["keyX"][-1], oldData["keyY"][-1]
+                    new_first_x, new_first_y = newData["keyX"][0], newData["keyY"][0]
+                    dist = np.sqrt((new_first_x - old_last_x)**2 + (new_first_y - old_last_y)**2)
+                    if dist > 100:
+                        QMessageBox.warning(self, lan.get("merge_gap_warning_title", "Warning"), lan.get("merge_gap_warning_desc", "Gap > 100m"))
+        else:
+            is_append = False
+            crop_station = old_start
+            if "keyX" in oldData and "keyY" in oldData and "keyX" in newData and "keyY" in newData:
+                if len(oldData["keyX"]) > 0 and len(newData["keyX"]) > 0:
+                    old_first_x, old_first_y = oldData["keyX"][0], oldData["keyY"][0]
+                    new_last_x, new_last_y = newData["keyX"][-1], newData["keyY"][-1]
+                    dist = np.sqrt((new_last_x - old_first_x)**2 + (new_last_y - old_first_y)**2)
+                    if dist > 100:
+                        QMessageBox.warning(self, lan.get("merge_gap_warning_title", "Warning"), lan.get("merge_gap_warning_desc", "Gap > 100m"))
+
+        station_map = {
+            "cant": "stationCant",
+            "stationCant": "stationCant",
+            "stationHorizontal": "stationHorizontal",
+            "geometryType": "stationHorizontal",
+            "radius": "stationHorizontal",
+            "curvature": "stationHorizontal",
+            "curvatureSign": "stationHorizontal",
+            "stationVertical": "stationVertical",
+            "elevation": "stationVertical"
+        }
+
+        def merge_arrays(key):
+            if key not in oldData or key not in newData:
+                return oldData.get(key, newData.get(key, []))
+            
+            old_arr = oldData[key]
+            new_arr = newData[key]
+
+            if key == "denseAlignment":
+                if is_append:
+                    new_arr_cropped = [p for p in new_arr if p[0] > crop_station]
+                    return old_arr + new_arr_cropped
+                else:
+                    new_arr_cropped = [p for p in new_arr if p[0] < crop_station]
+                    return new_arr_cropped + old_arr
+
+            if key in ["keyStations", "keyTypes", "keyX", "keyY", "keyLat", "keyLon"]:
+                new_stations = np.array(newData["keyStations"])
+                mask = new_stations > crop_station if is_append else new_stations < crop_station
+            elif key in station_map:
+                s_key = station_map[key]
+                new_stations = np.array(newData[s_key])
+                
+                if s_key == "stationHorizontal":
+                    mask = np.zeros(len(new_stations), dtype=bool)
+                    # Zpracování polí definovaných v párech (počátek-konec segmentu)
+                    for i in range(0, len(new_stations), 2):
+                        if is_append: keep = new_stations[i+1] > crop_station
+                        else: keep = new_stations[i] < crop_station
+                        mask[i] = keep
+                        if i+1 < len(new_stations): mask[i+1] = keep
+                            
+                    if key == "stationHorizontal":
+                        if isinstance(new_arr, np.ndarray): new_arr = np.copy(new_arr)
+                        else: new_arr = list(new_arr)
+                            
+                        for i in range(0, len(new_stations), 2):
+                            if mask[i]:
+                                if is_append and new_arr[i] < crop_station: new_arr[i] = crop_station
+                                elif not is_append and (i+1) < len(new_arr) and new_arr[i+1] > crop_station: new_arr[i+1] = crop_station
+                else:
+                    mask = new_stations > crop_station if is_append else new_stations < crop_station
+            elif key in ["alignmentCoordinates", "alignmentCoordsOriginal"]:
+                if is_append: return old_arr + new_arr
+                else: return new_arr + old_arr
+            else:
+                if isinstance(old_arr, np.ndarray) and isinstance(new_arr, np.ndarray):
+                    if is_append: return np.concatenate((old_arr, new_arr))
+                    else: return np.concatenate((new_arr, old_arr))
+                elif isinstance(old_arr, list) and isinstance(new_arr, list):
+                    if is_append: return old_arr + new_arr
+                    else: return new_arr + old_arr
+                return old_arr
+
+            if isinstance(new_arr, np.ndarray):
+                new_arr_cropped = new_arr[mask]
+                if is_append:
+                    return np.concatenate((old_arr, new_arr_cropped))
+                else:
+                    return np.concatenate((new_arr_cropped, old_arr))
+            elif isinstance(new_arr, list):
+                new_arr_cropped = [item for i, item in enumerate(new_arr) if mask[i]]
+                if is_append:
+                    return old_arr + new_arr_cropped
+                else:
+                    return new_arr_cropped + old_arr
+            return old_arr
+
+        mergedData = {}
+        all_keys = set(list(oldData.keys()) + list(newData.keys()))
+        for k in all_keys:
+            mergedData[k] = merge_arrays(k)
+
+        if "stationVertical" in mergedData and "elevation" in mergedData:
+            deltaZ = np.diff(np.array(mergedData["elevation"], dtype=float))
+            deltaX = np.diff(np.array(mergedData["stationVertical"], dtype=float))
+            mergedData["slope"] = np.zeros_like(deltaX)
+            valid = deltaX != 0
+            mergedData["slope"][valid] = deltaZ[valid] / deltaX[valid]
+
+        self.dataStorage["LandXML"] = mergedData
+        self.updateTableLandXML(mergedData)
+
+        self.cleanCalculatedCants()
+        self.cleanCalculatedSpeeds()
+        
+        self.plotCant()
+        self.plotCurvature()
+        self.plotProfile()
+        self.mapWidget.drawAlignment(mergedData.get("alignmentCoordinates",[]), mergedData)
 
     def parseLandXML(self, file_content):
         if file_content is not None:

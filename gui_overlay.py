@@ -161,6 +161,16 @@ class GeometrySettingsDialog(QDialog):
         self.setMinimumSize(600,400)
 
         layout = QVBoxLayout(self)
+
+        formLayout = QFormLayout()
+        current_max_d = self.settingsData.get("maxD", 150.0)
+        if isinstance(current_max_d, list):
+            current_max_d = current_max_d[0]
+            
+        self.inputMaxD = QLineEdit(str(current_max_d))
+        formLayout.addRow(QLabel(lan.get("max_cant", "Maximum cant D_max [mm]:")), self.inputMaxD)
+        layout.addLayout(formLayout)
+
         labelI = QLabel(lan["cant_def"])
         layout.addWidget(labelI)
         
@@ -368,6 +378,11 @@ class GeometrySettingsDialog(QDialog):
             "nLin": [],
             "nILin": [],
         }
+
+        try:
+            settingsData["maxD"] = float(self.inputMaxD.text())
+        except ValueError:
+            settingsData["maxD"] = 150.0
 
         # Table I
         for row in range(self.tableI.rowCount()):
