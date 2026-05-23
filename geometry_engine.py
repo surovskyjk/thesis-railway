@@ -87,6 +87,27 @@ class GeometryCalculator:
         self.speed150 = self.data["speedLimits150"]
         self.speedK = self.data["speedLimitsK"]
 
+        # Time derivative arrays
+        lxml["dDdt100"] = np.zeros(lenStationPos)
+        lxml["dDdt130"] = np.zeros(lenStationPos)
+        lxml["dDdt150"] = np.zeros(lenStationPos)
+        lxml["dDdtK"] = np.zeros(lenStationPos)
+
+        lxml["dIdt100"] = np.zeros(lenStationPos)
+        lxml["dIdt130"] = np.zeros(lenStationPos)
+        lxml["dIdt150"] = np.zeros(lenStationPos)
+        lxml["dIdtK"] = np.zeros(lenStationPos)
+
+        self.dDdt100 = lxml["dDdt100"]
+        self.dDdt130 = lxml["dDdt130"]
+        self.dDdt150 = lxml["dDdt150"]
+        self.dDdtK = lxml["dDdtK"]
+
+        self.dIdt100 = lxml["dIdt100"]
+        self.dIdt130 = lxml["dIdt130"]
+        self.dIdt150 = lxml["dIdt150"]
+        self.dIdtK = lxml["dIdtK"]
+
     def sumCantDef(self):
         lxml = self.data.get("LandXML",{})
         lxml["cantDef100"] = lxml["cantPossible"] + lxml["cDef100"]
@@ -110,18 +131,28 @@ class GeometryCalculator:
         # Switch for profile (V_cDef profile)
         if profile == "I100":
             self.cantDef = self.cDef100
+            self.dDdt = self.dDdt100
+            self.dIdt = self.dIdt100
             profileI = 100
         elif profile == "I130":
             self.cantDef = self.cDef130
+            self.dDdt = self.dDdt130
+            self.dIdt = self.dIdt130
             profileI = 130
         elif profile == "I150":
             self.cantDef = self.cDef150
+            self.dDdt = self.dDdt150
+            self.dIdt = self.dIdt150
             profileI = 150
         elif profile == "K":
             self.cantDef = self.cDefK
+            self.dDdt = self.dDdtK
+            self.dIdt = self.dIdtK
             profileI = 240
         else:
             self.cantDef = self.cDef100
+            self.dDdt = self.dDdt100
+            self.dIdt = self.dIdt100
             profileI = 100
 
         # Iterative solver
@@ -180,9 +211,9 @@ class GeometryCalculator:
                     )
 
                     if self.curvSign[i] > 0:
-                        cantBWD[i] = max(0, cantFWD[i])
+                        cantBWD[i] = max(0, cantBWD[i])
                     elif self.curvSign[i] < 0:
-                        cantBWD[i] = min(0, cantFWD[i])
+                        cantBWD[i] = min(0, cantBWD[i])
 
             self.cantNew[:] = np.where(np.abs(cantFWD) < np.abs(cantBWD), cantFWD, cantBWD)
 
@@ -207,7 +238,9 @@ class GeometryCalculator:
                     if self.geometryType[i] != "Spiral" and self.geometryType[i-1] != "Spiral" and self.kappa[i] != self.kappa[i-1]:
                         dI = self.getNormLimit("dI", self.vInit[i], approach)[0]
                 elif self.geometryType[i] == "Spiral":
-                    dI = self.calculateCantDefNi(self.vInit[i], self.getNormLimit("nILin", self.vInit[i], approach), length)
+                    dI_nI = self.calculateCantDefNi(self.vInit[i], self.getNormLimit("nILin", self.vInit[i], approach), length)
+                    dI_delta = self.getNormLimit("dI", self.vInit[i], approach)[0]
+                    dI = max(dI_nI, dI_delta)
                 if self.geometryType[i] == "Line":
                     cantDefFWD[i] = 0
                 else:
@@ -230,14 +263,16 @@ class GeometryCalculator:
                     if self.geometryType[i] != "Spiral" and self.geometryType[i+1] != "Spiral" and self.kappa[i] != self.kappa[i+1]:
                         dI = self.getNormLimit("dI", self.vInit[i], approach)[0]
                 elif self.geometryType[i+1] == "Spiral":
-                    dI = self.calculateCantDefNi(self.vInit[i], self.getNormLimit("nILin", self.vInit[i], approach), length)
+                    dI_nI = self.calculateCantDefNi(self.vInit[i], self.getNormLimit("nILin", self.vInit[i], approach), length)
+                    dI_delta = self.getNormLimit("dI", self.vInit[i], approach)[0]
+                    dI = max(dI_nI, dI_delta)
                 if self.geometryType[i] == "Line":
                     cantDefBWD[i] = 0
                 else:
                     cantDefBWD[i] = np.clip(
                         cantDefBWD[i],
-                        cantDefFWD[i+1] - dI,
-                        cantDefFWD[i+1] + dI
+                        cantDefBWD[i+1] - dI,
+                        cantDefBWD[i+1] + dI
                     )
 
                     if self.curvSign[i] > 0:
@@ -247,19 +282,13 @@ class GeometryCalculator:
 
             self.cantDef[:] = np.where(np.abs(cantDefFWD) < np.abs(cantDefBWD), cantDefFWD, cantDefBWD)
 
-            # Stage 3 - Ensure continuous D and I (exception of delta I for connecting lines and curves but not spirals)
+            # Stage 3 - Ensure continuous D
             for i in range(1, len(self.stationsNew)):
                 if self.stationsNew[i] == self.stationsNew[i-1]:
                     minD = min(np.abs(self.cantNew[i-1]), np.abs(self.cantNew[i]))
                     signD = np.sign(self.cantNew[i]) if self.cantNew[i] != 0 else np.sign(self.cantNew[i-1])
                     self.cantNew[i] = signD * minD
                     self.cantNew[i-1] = signD * minD
-             
-                    if self.geometryType[i] == "Spiral" or self.geometryType[i-1] == "Spiral":
-                        minI = min(np.abs(self.cantDef[i-1]), np.abs(self.cantDef[i]))
-                        signI = np.sign(self.cantDef[i]) if self.cantDef[i] != 0 else np.sign(self.cantDef[i-1])
-                        self.cantDef[i] = signI * minI
-                        self.cantDef[i-1] = signI * minI
 
             # Stage 4 - Calculate speed in respective section
             for i in range(0, len(self.cantNew), 2):
@@ -287,8 +316,27 @@ class GeometryCalculator:
 
         for i in range(0, len(self.cantNew)):        
             self.cantNew[i] = np.floor(np.abs(self.cantNew[i]))
-            # self.cantDef[i] = self.calculateCantDef(self.vMax[i], self.cantDef[i], self.kappa[i])
-            self.cantDef[i] = np.ceil(np.abs(self.cantDef[i]))
+            self.cantDef[i] = np.abs(self.calculateCantDef(self.vMax[i], self.cantNew[i], np.abs(self.kappa[i])))
+
+        for i in range(1, len(self.stationsNew), 2):
+            length = (self.stationsNew[i] - self.stationsNew[i-1]) * 1000
+            if length > 0:
+                v_mps = self.vMax[i] / 3.6
+                if v_mps > 0:
+                    dt = length / v_mps
+                    dD_dt = abs(self.cantNew[i] - self.cantNew[i-1]) / dt
+                    dI_dt = abs(self.cantDef[i] - self.cantDef[i-1]) / dt
+                else:
+                    dD_dt = 0
+                    dI_dt = 0
+            else:
+                dD_dt = 0
+                dI_dt = 0
+                
+            self.dDdt[i-1] = dD_dt
+            self.dDdt[i] = dD_dt
+            self.dIdt[i-1] = dI_dt
+            self.dIdt[i] = dI_dt
 
         if profile == "I100":
             self.speed100[:] = self.vMax
@@ -316,18 +364,28 @@ class GeometryCalculator:
         # Switch for profile (V_cDef profile)
         if profile == "I100":
             self.cantDef = self.cDef100
+            self.dDdt = self.dDdt100
+            self.dIdt = self.dIdt100
             profileI = 100
         elif profile == "I130":
             self.cantDef = self.cDef130
+            self.dDdt = self.dDdt130
+            self.dIdt = self.dIdt130
             profileI = 130
         elif profile == "I150":
             self.cantDef = self.cDef150
+            self.dDdt = self.dDdt150
+            self.dIdt = self.dIdt150
             profileI = 150
         elif profile == "K":
             self.cantDef = self.cDefK
+            self.dDdt = self.dDdtK
+            self.dIdt = self.dIdtK
             profileI = 240
         else:
             self.cantDef = self.cDef100
+            self.dDdt = self.dDdt100
+            self.dIdt = self.dIdt100
             profileI = 100
 
         # Iterative solver
@@ -373,7 +431,9 @@ class GeometryCalculator:
                     if self.geometryType[i] != "Spiral" and self.geometryType[i-1] != "Spiral" and self.kappa[i] != self.kappa[i-1]:
                         dI = self.getNormLimit("dI", self.vInit[i], approach)[0]
                 elif self.geometryType[i] == "Spiral":
-                    dI = self.calculateCantDefNi(self.vInit[i], self.getNormLimit("nILin", self.vInit[i], approach), length)
+                    dI_nI = self.calculateCantDefNi(self.vInit[i], self.getNormLimit("nILin", self.vInit[i], approach), length)
+                    dI_delta = self.getNormLimit("dI", self.vInit[i], approach)[0]
+                    dI = max(dI_nI, dI_delta)
                 if self.geometryType[i] == "Line":
                     cantDefFWD[i] = 0
                 else:
@@ -396,14 +456,16 @@ class GeometryCalculator:
                     if self.geometryType[i] != "Spiral" and self.geometryType[i+1] != "Spiral" and self.kappa[i] != self.kappa[i+1]:
                         dI = self.getNormLimit("dI", self.vInit[i], approach)[0]
                 elif self.geometryType[i+1] == "Spiral":
-                    dI = self.calculateCantDefNi(self.vInit[i], self.getNormLimit("nILin", self.vInit[i], approach), length)
+                    dI_nI = self.calculateCantDefNi(self.vInit[i], self.getNormLimit("nILin", self.vInit[i], approach), length)
+                    dI_delta = self.getNormLimit("dI", self.vInit[i], approach)[0]
+                    dI = max(dI_nI, dI_delta)
                 if self.geometryType[i] == "Line":
                     cantDefBWD[i] = 0
                 else:
                     cantDefBWD[i] = np.clip(
                         cantDefBWD[i],
-                        cantDefFWD[i+1] - dI,
-                        cantDefFWD[i+1] + dI
+                        cantDefBWD[i+1] - dI,
+                        cantDefBWD[i+1] + dI
                     )
 
                     if self.curvSign[i] > 0:
@@ -412,15 +474,6 @@ class GeometryCalculator:
                         cantDefBWD[i] = min(0, cantDefBWD[i])
 
             self.cantDef[:] = np.where(np.abs(cantDefFWD) < np.abs(cantDefBWD), cantDefFWD, cantDefBWD)
-
-            # Stage 3 - Ensure continuous I (exception of delta I for connecting lines and curves but not spirals)
-            for i in range(1, len(self.stationsNew)):
-                if self.stationsNew[i] == self.stationsNew[i-1]:
-                    if self.geometryType[i] == "Spiral" or self.geometryType[i-1] == "Spiral":
-                        minI = min(np.abs(self.cantDef[i-1]), np.abs(self.cantDef[i]))
-                        signI = np.sign(self.cantDef[i]) if self.cantDef[i] != 0 else np.sign(self.cantDef[i-1])
-                        self.cantDef[i] = signI * minI
-                        self.cantDef[i-1] = signI * minI
 
             # Stage 4 - Calculate speed in respective section
             for i in range(0, len(self.cantNew), 2):
@@ -447,8 +500,27 @@ class GeometryCalculator:
         # print(f"Convergation reached after {iterationN} iterations.")
 
         for i in range(0, len(self.cantNew)):
-            # self.cantDef[i] = self.calculateCantDef(self.vMax[i], self.cantNew[i], self.kappa[i])
-            self.cantDef[i] = np.ceil(np.abs(self.cantDef[i]))
+            self.cantDef[i] = np.abs(self.calculateCantDef(self.vMax[i], np.abs(self.cantNew[i]), np.abs(self.kappa[i])))
+
+        for i in range(1, len(self.stationsNew), 2):
+            length = (self.stationsNew[i] - self.stationsNew[i-1]) * 1000
+            if length > 0:
+                v_mps = self.vMax[i] / 3.6
+                if v_mps > 0:
+                    dt = length / v_mps
+                    dD_dt = abs(np.abs(self.cantNew[i]) - np.abs(self.cantNew[i-1])) / dt
+                    dI_dt = abs(self.cantDef[i] - self.cantDef[i-1]) / dt
+                else:
+                    dD_dt = 0
+                    dI_dt = 0
+            else:
+                dD_dt = 0
+                dI_dt = 0
+                
+            self.dDdt[i-1] = dD_dt
+            self.dDdt[i] = dD_dt
+            self.dIdt[i-1] = dI_dt
+            self.dIdt[i] = dI_dt
 
         if profile == "I100":
             self.speed100[:] = self.vMax

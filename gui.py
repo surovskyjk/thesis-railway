@@ -1846,6 +1846,15 @@ class MainWindow(QMainWindow):
         v130 = self.dataStorage.get("speedLimits130", np.zeros_like(stations))
         v150 = self.dataStorage.get("speedLimits150", np.zeros_like(stations))
         vK = self.dataStorage.get("speedLimitsK", np.zeros_like(stations))
+
+        dDdt100 = lxml.get("dDdt100", np.zeros_like(stations))
+        dIdt100 = lxml.get("dIdt100", np.zeros_like(stations))
+        dDdt130 = lxml.get("dDdt130", np.zeros_like(stations))
+        dIdt130 = lxml.get("dIdt130", np.zeros_like(stations))
+        dDdt150 = lxml.get("dDdt150", np.zeros_like(stations))
+        dIdt150 = lxml.get("dIdt150", np.zeros_like(stations))
+        dDdtK = lxml.get("dDdtK", np.zeros_like(stations))
+        dIdtK = lxml.get("dIdtK", np.zeros_like(stations))
         
         radius = lxml.get("radius", np.full_like(stations, np.inf))
 
@@ -1876,16 +1885,18 @@ class MainWindow(QMainWindow):
             report_lines.append(header_line)
 
             profiles = [
-                ("V100", v100, cDef100),
-                ("V130", v130, cDef130),
-                ("V150", v150, cDef150),
-                ("VK", vK, cDefK),
+                ("V100", v100, cDef100, dDdt100, dIdt100),
+                ("V130", v130, cDef130, dDdt130, dIdt130),
+                ("V150", v150, cDef150, dDdt150, dIdt150),
+                ("VK", vK, cDefK, dDdtK, dIdtK),
             ]
 
-            for p_name, v_arr, i_arr in profiles:
+            for p_name, v_arr, i_arr, dD_arr, dI_arr in profiles:
                 v_start, v_end = v_arr[i], v_arr[i+1]
                 d_start, d_end = cant[i], cant[i+1]
                 i_start, i_end = i_arr[i], i_arr[i+1]
+                dd_dt = dD_arr[i]
+                di_dt = dI_arr[i]
 
                 line_str = f"  [{p_name}] V: {v_start:.0f} -> {v_end:.0f} km/h"
                 if g_type == "Curve":
@@ -1895,7 +1906,7 @@ class MainWindow(QMainWindow):
                     dI = abs(i_end - i_start)
                     n_val = calc_n(L, dD, v_start)
                     nI_val = calc_n(L, dI, v_start)
-                    line_str += f" | D: {d_start:.0f} -> {d_end:.0f} mm | I: {i_start:.0f} -> {i_end:.0f} mm | n: {n_val} | nI: {nI_val}"
+                    line_str += f" | D: {d_start:.0f} -> {d_end:.0f} mm | I: {i_start:.0f} -> {i_end:.0f} mm | n: {n_val} | nI: {nI_val} | dD/dt: {dd_dt:.2f} mm/s | dI/dt: {di_dt:.2f} mm/s"
                 
                 report_lines.append(line_str)
             report_lines.append("")
