@@ -159,7 +159,7 @@ class GeometryCalculator:
 
         convergenceReached = False
         iterationN = 0
-        maxIterations = 50
+        SaxIterations = int(self.data.get("settingsData", {}).get("maxIterations", 50))
 
         while not convergenceReached and iterationN < maxIterations:
             convergenceReached = True
@@ -292,21 +292,16 @@ class GeometryCalculator:
 
             # Stage 4 - Calculate speed in respective section
             for i in range(0, len(self.cantNew), 2):
-                v1 = self.calculateSpeed(np.abs(self.cantNew[i]), np.abs(self.cantDef[i]), np.abs(self.kappa[i]), 5, self.vInit[i])
-                v2 = self.calculateSpeed(np.abs(self.cantNew[i+1]), np.abs(self.cantDef[i+1]), np.abs(self.kappa[i+1]), 5, self.vInit[i+1])
-
-                minVmax = min(v1, v2)
+                v1 = self.calculateSpeed(np.abs(self.cantNew[i]), np.abs(self.cantDef[i]), np.abs(self.kappa[i]), iterationStep, self.vInit[i])
+                v2 = self.calculateSpeed(np.abs(self.cantNew[i+1]), np.abs(self.cantDef[i+1]), np.abs(self.kappa[iti
 
                 self.vMax[i] = min(self.vInit[i], minVmax)
                 self.vMax[i+1] = min(self.vInit[i+1], minVmax)
 
                 if self.vMax[i] < self.vInit[i] or self.vMax[i+1] < self.vInit[i+1]:
-                    if self.vInit[i] > 20:
-                        self.vInit[i] -= 5
-                        self.vInit[i+1] -= 5
-                        convergenceReached = False
-
-                self.vMax[i] = min(self.vMax[i], self.vInit[i])
+                    if self.vInit[i] > iterationStep:
+                        self.vInit[i] -= iterationStep
+                        self.vInit[i+1] -= iterationStep[i], self.vInit[i])
 
         # # Debugging print
         # for i in range(0,len(self.cantNew)):
@@ -314,9 +309,22 @@ class GeometryCalculator:
         # print(self.getNormLimit("nLin", 120, approach))
         # print(f"Convergation reached after {iterationN} iterations.")
 
-        for i in range(0, len(self.cantNew)):        
-            self.cantNew[i] = np.floor(np.abs(self.cantNew[i]))
-            self.cantDef[i] = np.abs(self.calculateCantDef(self.vMax[i], self.cantNew[i], np.abs(self.kappa[i])))
+        for i in range(0, len(self.cantNew)):
+            signD = np.sign(self.cantNew[i]) if self.cantNew[i] != 0 else 1.0
+            self.cantNew[i] = signD * np.floor(np.abs(self.cantNew[i]))
+            
+            temp_I = np.ceil(np.abs(self.calculateCantDef(self.vMax[i], np.abs(self.cantNew[i]), np.abs(self.kappa[i]))))
+
+            # Finální kontrola matematického vztahu - V = sqrt((D+I)*R/11.8)
+            if np.abs(self.kappa[i]) > 0:
+                v_check = np.sqrt((np.abs(self.cantNew[i]) + temp_I) / (11.8 * np.abs(self.kappa[i])))
+                self.vMax[i] = min(self.vMax[i], v_check)
+                
+            # Zaokrouhlení výsledné rychlosti na krok iterace dolů
+            self.vMax[i] = np.floor(self.vMax[i] / iterationStep) * iterationStep
+
+            # Skutečný přepočet nedostatku převýšení pro finální rychlost
+            self.cantDef[i] = np.ceil(np.abs(self.calcula
 
         for i in range(1, len(self.stationsNew), 2):
             length = (self.stationsNew[i] - self.stationsNew[i-1]) * 1000
@@ -391,15 +399,15 @@ class GeometryCalculator:
         # Iterative solver
         convergenceReached = False
         iterationN = 0
-        maxIterations = 50
+        iterationStep = float(self.data.get("settingsData", {}).get("iterationStep", 5.0))
+        maxIterations = int(self.data.get("settingsData", {}).get("maxIterations", 50))
 
         while not convergenceReached and iterationN < maxIterations:
             convergenceReached = True
             iterationN += 1
 
             # Stage 1 - based on cant provided in each element, calculate D in stationCantPossible and maximum speed for respective dD
-            if currentCant:
-                self.cantNew[:] = np.interp(self.stationsNew, self.stationsCant, self.cant)
+        r       self.cantNew[:] = np.interp(self.stationsNew, self.stationsCant, self.cant)
             cantSpeed = np.zeros_like(self.stationsNew)
 
             for i in range(1, len(self.cantNew)):
@@ -477,8 +485,8 @@ class GeometryCalculator:
 
             # Stage 4 - Calculate speed in respective section
             for i in range(0, len(self.cantNew), 2):
-                v1 = self.calculateSpeed(np.abs(self.cantNew[i]), np.abs(self.cantDef[i]), np.abs(self.kappa[i]), 5, self.vInit[i])
-                v2 = self.calculateSpeed(np.abs(self.cantNew[i+1]), np.abs(self.cantDef[i+1]), np.abs(self.kappa[i+1]), 5, self.vInit[i+1])
+                v1 = self.calculateSpeed(np.abs(self.cantNew[i]), np.abs(self.cantDef[i]), np.abs(self.kappa[i]), iterationStep, self.vInit[i])
+                v2 = self.calculateSpeed(np.abs(self.cantNew[i+1]), np.abs(self.cantDef[i+1]), np.abs(self.kappa[i+1]), iterationStep, self.vInit[i+1])
 
                 minVmax = min(v1, v2)
 
@@ -486,9 +494,7 @@ class GeometryCalculator:
                 self.vMax[i+1] = min(self.vInit[i+1], minVmax)
 
                 if self.vMax[i] < self.vInit[i] or self.vMax[i+1] < self.vInit[i+1] or self.vMax[i] > cantSpeed[i]:
-                    if self.vInit[i] > 20:
-                        self.vInit[i] -= 5
-                        self.vInit[i+1] -= 5
+                    if self.vInit[i] > iterationStep:
                         convergenceReached = False
 
                 self.vMax[i] = min(self.vMax[i], self.vInit[i])
@@ -496,20 +502,31 @@ class GeometryCalculator:
         # # Debugging print
         # for i in range(0,len(self.cantNew)):
         #     print(self.stationsNew[i], self.cantNew[i], self.cantDef[i], self.vMax[i], self.vInit[i], self.geometryType[i], self.kappa[i])
-        # print(self.getNormLimit("nLin", 120, approach))
-        # print(f"Convergation reached after {iterationN} iterations.")
+        # print(self.getNormLimit("nLin", 120, approach)):
+            signD = np.sign(self.cantNew[i]) if self.cantNew[i] != 0 else 1.0
+            self.cantNew[i] = signD * np.floor(np.abs(self.cantNew[i]))
+            
+            temp_I = np.ceil(np.abs(self.calculateCantDef(self.vMax[i], np.abs(self.cantNew[i]), np.abs(self.kappa[i]))))
 
-        for i in range(0, len(self.cantNew)):
-            self.cantDef[i] = np.abs(self.calculateCantDef(self.vMax[i], np.abs(self.cantNew[i]), np.abs(self.kappa[i])))
+            # Finální kontrola matematického vztahu - V = sqrt((D+I)*R/11.8)
+            if np.abs(self.kappa[i]) > 0:
+                v_check = np.sqrt((np.abs(self.cantNew[i]) + temp_I) / (11.8 * np.abs(self.kappa[i])))
+                self.vMax[i] = min(self.vMax[i], v_check)
+                
+            # Zaokrouhlení výsledné rychlosti na krok iterace dolů
+            self.vMax[i] = np.floor(self.vMax[i] / iterationStep) * iterationStep
+
+            # Skutečný přepočet nedostatku převýšení pro finální rychlost
+            self.cantDef[i] = np.ceil(np.abs(self.calculateCantDef(self.vMax[i], np.abs(self.cantNew[i]), np.abs(self.kappa[i]))))
+
+        self.determineLimitReasons(profile, approach, profileI)
 
         for i in range(1, len(self.stationsNew), 2):
             length = (self.stationsNew[i] - self.stationsNew[i-1]) * 1000
             if length > 0:
                 v_mps = self.vMax[i] / 3.6
-                if v_mps > 0:
-                    dt = length / v_mps
-                    dD_dt = abs(np.abs(self.cantNew[i]) - np.abs(self.cantNew[i-1])) / dt
-                    dI_dt = abs(self.cantDef[i] - self.cantDef[i-1]) / dt
+                if v_mps > 0: / dt
+            t=-sf[i-1]) / dt
                 else:
                     dD_dt = 0
                     dI_dt = 0
@@ -532,6 +549,65 @@ class GeometryCalculator:
             self.speedK[:] = self.vMax
         else:
             self.speed100[:] = self.vMax 
+
+    def determineLimitReasons(self, profile, approach, profileI):
+        limitReasons = np.full(len(self.stationsNew), "-", dtype=object)
+        for i in range(len(self.stationsNew)):
+            if self.geometryType[i] == "Line":
+                limitReasons[i] = "Line"
+                continue
+                
+            if np.isclose(self.vMax[i], self.vInit[i]):
+                limitReasons[i] = "V_init"
+                continue
+                
+            v_check = self.vMax[i]
+            if v_check <= 0:
+                limitReasons[i] = "V=0"
+                continue
+
+            I_val = self.cantDef[i]
+            D_val = np.abs(self.cantNew[i])
+            kappa_val = np.abs(self.kappa[i])
+
+            I_lim = min(self.getNormLimit("I", v_check, approach)[0], profileI)
+            D_lim = min(self.maxD, self.geometryMaxD(kappa_val))
+
+            util_I = I_val / I_lim if I_lim > 0 else 0
+            util_D = D_val / D_lim if D_lim > 0 else 0
+
+            max_util = max(util_I, util_D)
+            reason = "I" if util_I >= util_D else "D"
+
+            if self.geometryType[i] == "Spiral":
+                L = (self.stationsNew[i] - self.stationsNew[i-1]) * 1000
+                if L > 0:
+                    dD = abs(self.cantNew[i] - self.cantNew[i-1])
+                    dI = abs(self.cantDef[i] - self.cantDef[i-1])
+
+                    dD_lim = self.calculateCantN(v_check, self.getNormLimit("nLin", v_check, approach), L)
+                    dI_nI_lim = self.calculateCantDefNi(v_check, self.getNormLimit("nILin", v_check, approach), L)
+                    dI_delta_lim = self.getNormLimit("dI", v_check, approach)[0]
+
+                    util_n = dD / dD_lim if dD_lim > 0 else 0
+                    util_nI = dI / dI_nI_lim if dI_nI_lim > 0 else 0
+                    util_deltaI = dI / dI_delta_lim if dI_delta_lim > 0 else 0
+
+                    if util_n > max_util: max_util = util_n; reason = "n"
+                    if util_nI > max_util: max_util = util_nI; reason = "nI"
+                    if util_deltaI > max_util: max_util = util_deltaI; reason = "deltaI"
+
+            elif self.geometryType[i] == "Curve":
+                dI_delta_lim = self.getNormLimit("dI", v_check, approach)[0]
+                for adj in [i-1, i+1]:
+                    if 0 <= adj < len(self.stationsNew) and self.geometryType[adj] != "Spiral" and self.kappa[i] != self.kappa[adj]:
+                        util_deltaI = abs(self.cantDef[i] - self.cantDef[adj]) / dI_delta_lim if dI_delta_lim > 0 else 0
+                        if util_deltaI > max_util: max_util = util_deltaI; reason = "deltaI"
+
+            if max_util < 0.85: reason = "Adjacent"
+            limitReasons[i] = reason
+            
+        self.data["LandXML"][f"limitReason_{profile}"] = limitReasons
 
     def calculateCantN(self, v, n, length):
         if n[0] == 0 or v == 0:

@@ -87,6 +87,9 @@ DIC = {
          "max_cant": "Maximální převýšení D_max [mm]:",
          "geometrySettings": "Nastavení pro GPK",
          "vehicleSettings": "Nastavení parametrů vozidla",
+         "vInitLabel": "Výchozí rychlost v_init [km/h]:",
+         "iterationStepLabel": "Krok snížení rychlosti v iteraci [km/h]:",
+         "maxIterationsLabel": "Maximální počet iterací [-]:",
          "Vbottom": "V_od [km/h]",
          "Vtop": "V_do [km/h]",
          "I_std": "I_std [mm]",
@@ -177,7 +180,19 @@ DIC = {
          "reportVehicleTitle": "Report jízdy vozidla",
          "no_data": "Žádná data nejsou k dispozici. Proveďte nejprve výpočet.",
          "exportGeometryReport": "Exportovat report geometrie",
-         "exportVehicleReport": "Exportovat report vozidla"
+         "exportVehicleReport": "Exportovat report vozidla",
+         "reportStatisticsTitle": "=== Statistika limitních faktorů ===",
+         "totalElements": "Celkový počet hodnocených prvků (oblouk/přechodnice)",
+         "lim_D": "D (Převýšení)",
+         "lim_I": "I (Nedostatek převýšení)",
+         "lim_n": "n (Sklon vzestupnice)",
+         "lim_nI": "nI (Změna nedostatku převýšení)",
+         "lim_deltaI": "deltaI (Náhlá změna nedostatku)",
+         "lim_V_init": "V_init (Neomezeno / Původní traťová)",
+         "lim_V=0": "V = 0 (Zastavení)",
+         "lim_Adjacent": "Omezeno sousedním prvkem",
+         "lim_Line": "Přímá",
+         "lim_-": "-"
          
          
         },
@@ -267,6 +282,9 @@ DIC = {
          "max_cant": "Maximum cant D_max [mm]:",
          "geometrySettings": "Track Geometry Settings",
          "vehicleSettings": "Vehicle Settings",
+         "vInitLabel": "Initial Speed v_init [km/h]:",
+         "iterationStepLabel": "Iteration speed reduction step [km/h]:",
+         "maxIterationsLabel": "Maximum number of iterations [-]:",
          "Vbottom": "V_from [km/h]",
          "Vtop": "V_to [km/h]",
          "I_std": "I_std [mm]",
@@ -357,7 +375,19 @@ DIC = {
          "reportVehicleTitle": "=== Vehicle Kinematics Report ===",
          "no_data": "No data available. Calculate values first.",
          "exportGeometryReport": "Export Geometry Report",
-         "exportVehicleReport": "Export Vehicle Report"
+         "exportVehicleReport": "Export Vehicle Report",
+         "reportStatisticsTitle": "=== Limiting Factors Statistics ===",
+         "totalElements": "Total evaluated elements (Curve/Spiral)",
+         "lim_D": "D (Cant)",
+         "lim_I": "I (Cant Deficiency)",
+         "lim_n": "n (Cant Ramp Gradient)",
+         "lim_nI": "nI (Cant Def Change)",
+         "lim_deltaI": "deltaI (Abrupt Change)",
+         "lim_V_init": "V_init (Unlimited / Track Speed)",
+         "lim_V=0": "V = 0 (Stop)",
+         "lim_Adjacent": "Adjacent Element",
+         "lim_Line": "Line",
+         "lim_-": "-"
          
          
          
@@ -449,6 +479,9 @@ DIC = {
          "max_cant": "Maximale Überhöhung D_max [mm]:",
          "geometrySettings": "Einstellungen der Gleislage",
          "vehicleSettings": "Fahrzeug-Einstellungen",
+         "vInitLabel": "Anfangsgeschwindigkeit v_init [km/h]:",
+         "iterationStepLabel": "Geschwindigkeitsreduzierung pro Iteration [km/h]:",
+         "maxIterationsLabel": "Maximale Anzahl an Iterationen [-]:",
          "Vbottom": "V_von [km/h]",
          "Vtop": "V_bis [km/h]",
          "I_std": "I_std [mm]",
@@ -539,7 +572,19 @@ DIC = {
          "reportVehicleTitle": "Fahrzeugkinematikbericht",
          "no_data": "Keine Daten verfügbar. Bitte berechnen Sie die Werte zuerst.",
          "exportGeometryReport": "Geometriebericht exportieren",
-         "exportVehicleReport": "Fahrzeugbericht exportieren"
+         "exportVehicleReport": "Fahrzeugbericht exportieren",
+         "reportStatisticsTitle": "=== Statistik der begrenzenden Faktoren ===",
+         "totalElements": "Gesamtzahl der bewerteten Elemente (Bogen/Übergangsbogen)",
+         "lim_D": "D (Überhöhung)",
+         "lim_I": "I (Überhöhungsfehlbetrag)",
+         "lim_n": "n (Überhöhungsrampe)",
+         "lim_nI": "nI (Änderung Überhöhungsfehlbetrag)",
+         "lim_deltaI": "deltaI (Abrupte Änderung)",
+         "lim_V_init": "V_init (Unbegrenzt)",
+         "lim_V=0": "V = 0 (Halt)",
+         "lim_Adjacent": "Benachbartes Element",
+         "lim_Line": "Gerade",
+         "lim_-": "-"
          
         
         }

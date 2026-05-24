@@ -1855,6 +1855,11 @@ class MainWindow(QMainWindow):
         dIdt150 = lxml.get("dIdt150", np.zeros_like(stations))
         dDdtK = lxml.get("dDdtK", np.zeros_like(stations))
         dIdtK = lxml.get("dIdtK", np.zeros_like(stations))
+
+        lr100 = lxml.get("limitReason_I100", np.full_like(stations, "-"))
+        lr130 = lxml.get("limitReason_I130", np.full_like(stations, "-"))
+        lr150 = lxml.get("limitReason_I150", np.full_like(stations, "-"))
+        lrK = lxml.get("limitReason_K", np.full_like(stations, "-"))
         
         radius = lxml.get("radius", np.full_like(stations, np.inf))
 
@@ -1868,11 +1873,17 @@ class MainWindow(QMainWindow):
             if np.isinf(r_val) or np.isnan(r_val): return "INF"
             return f"{r_val:.0f}"
 
+        stats = {"V100": {}, "V130": {}, "V150": {}, "VK": {}}
+        total_elements = 0
+
         for i in range(len(stations) - 1):
             L = (stations[i+1] - stations[i]) * 1000
             if L <= 0: continue
             
             g_type = geomType[i]
+            if g_type in ["Curve", "Spiral"]:
+                total_elements += 1
+
             r_start = radius[i] if i < len(radius) else float('inf')
             r_end = radius[i+1] if i+1 < len(radius) else float('inf')
             
@@ -1885,16 +1896,19 @@ class MainWindow(QMainWindow):
             report_lines.append(header_line)
 
             profiles = [
-                ("V100", v100, cDef100, dDdt100, dIdt100),
-                ("V130", v130, cDef130, dDdt130, dIdt130),
-                ("V150", v150, cDef150, dDdt150, dIdt150),
-                ("VK", vK, cDefK, dDdtK, dIdtK),
+                ("V100", v100, cDef100, dDdt100, dIdt100, lr100),
+                ("V130", v130, cDef130, dDdt130, dIdt130, lr130),
+                ("V150", v150, cDef150, dDdt150, dIdt150, lr150),
+                ("VK", vK, cDefK, dDdtK, dIdtK, lrK),
             ]
 
-            for p_name, v_arr, i_arr, dD_arr, dI_arr in profiles:
+            for p_name, v_arr, i_arr, dD_arr, dI_arr, lr_arr in profiles:
                 v_start, v_end = v_arr[i], v_arr[i+1]
-                d_start, d_end = cant[i], cant[i+1]
-                i_start, i_end = i_arr[i], i_arr[i+1]
+                sign_d_start = np.sign(cant[i]) if cant[i] != 0 else 1.0
+                sign_d_end = np.sign(cant[i+1]) if cant[i+1] != 0 else 1.0
+                d_start = sign_d_start * np.floor(np.abs(cant[i]))
+                d_end = sign_d_end * np.floor(np.abs(cant[i+1]))
+                i_start, i_end = np.ceil(np.abs(i_arr[i])), np.ceil(np.abs(i_arr[i+1]))
                 dd_dt = dD_arr[i]
                 di_dt = dI_arr[i]
 
@@ -1908,7 +1922,25 @@ class MainWindow(QMainWindow):
                     nI_val = calc_n(L, dI, v_start)
                     line_str += f" | D: {d_start:.0f} -> {d_end:.0f} mm | I: {i_start:.0f} -> {i_end:.0f} mm | n: {n_val} | nI: {nI_val} | dD/dt: {dd_dt:.2f} mm/s | dI/dt: {di_dt:.2f} mm/s"
                 
+                reason = lr_arr[i]
+                line_str += f" | Limit: {lan.get('lim_'+reason, reason)}"
+
+                if g_type in ["Curve", "Spiral"]:
+                    stats[p_name][reason] = stats[p_name].get(reason, 0) + 1
+
                 report_lines.append(line_str)
+            report_lines.append("")
+
+        report_lines.append(lan.get("reportStatisticsTitle", "=== Limiting Factors Statistics ==="))
+        report_lines.append(f"{lan.get('totalElements', 'Total evaluated elements (Curve/Spiral)')}: {total_elements}")
+        report_lines.append("")
+
+        for p_name in ["V100", "V130", "V150", "VK"]:
+            report_lines.append(f"--- {p_name} ---")
+            for reason, count in sorted(stats[p_name].items(), key=lambda item: item[1], reverse=True):
+                pct = count / total_elements * 100 if total_elements > 0 else 0
+                translated_reason = lan.get(f"lim_{reason}", reason)
+                report_lines.append(f"  {translated_reason}: {count}x ({pct:.1f} %)")
             report_lines.append("")
 
         self.reportGeometryWidget.setPlainText("\n".join(report_lines))

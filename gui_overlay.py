@@ -169,6 +169,20 @@ class GeometrySettingsDialog(QDialog):
             
         self.inputMaxD = QLineEdit(str(current_max_d))
         formLayout.addRow(QLabel(lan.get("max_cant", "Maximum cant D_max [mm]:")), self.inputMaxD)
+        
+        current_v_init = self.settingsData.get("vInit", [120.0])
+        if isinstance(current_v_init, list): current_v_init = current_v_init[0]
+        self.inputVInit = QLineEdit(str(current_v_init))
+        formLayout.addRow(QLabel(lan.get("vInitLabel", "Initial Speed v_init [km/h]:")), self.inputVInit)
+
+        current_iter_step = self.settingsData.get("iterationStep", 5.0)
+        self.inputIterStep = QLineEdit(str(current_iter_step))
+        formLayout.addRow(QLabel(lan.get("iterationStepLabel", "Iteration speed reduction step [km/h]:")), self.inputIterStep)
+
+        current_max_iter = self.settingsData.get("maxIterations", 50)
+        self.inputMaxIter = QLineEdit(str(current_max_iter))
+        formLayout.addRow(QLabel(lan.get("maxIterationsLabel", "Maximum number of iterations [-]:")), self.inputMaxIter)
+
         layout.addLayout(formLayout)
 
         labelI = QLabel(lan["cant_def"])
@@ -383,6 +397,21 @@ class GeometrySettingsDialog(QDialog):
             settingsData["maxD"] = float(self.inputMaxD.text())
         except ValueError:
             settingsData["maxD"] = 150.0
+            
+        try:
+            settingsData["vInit"] = [float(self.inputVInit.text())]
+        except ValueError:
+            settingsData["vInit"] = [120.0]
+
+        try:
+            settingsData["iterationStep"] = max(0.1, float(self.inputIterStep.text()))
+        except ValueError:
+            settingsData["iterationStep"] = 5.0
+
+        try:
+            settingsData["maxIterations"] = max(1, int(self.inputMaxIter.text()))
+        except ValueError:
+            settingsData["maxIterations"] = 50
 
         # Table I
         for row in range(self.tableI.rowCount()):

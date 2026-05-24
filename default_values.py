@@ -27,6 +27,8 @@ defVal = {
             [200,360,10,9,6]
             ],
 "vInit":    [120],
+"iterationStep": 5.0,
+"maxIterations": 50,
 "profileDefault": ["I150"],
 "maxD":     [150],
 "designApproach": "standard",
