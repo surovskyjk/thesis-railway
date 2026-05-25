@@ -192,9 +192,15 @@ DIC = {
          "lim_V=0": "V = 0 (Zastavení)",
          "lim_Adjacent": "Omezeno sousedním prvkem",
          "lim_Line": "Přímá",
-         "lim_-": "-"
-         
-         
+         "lim_-": "-",
+         "reportExtremesTitle": "=== Extrémní hodnoty geometrických parametrů ===",
+         "stat_min_n": "Minimální n [-]",
+         "stat_min_nI": "Minimální nI [-]",
+         "stat_max_dDdt": "Maximální dD/dt [mm/s]",
+         "stat_max_dIdt": "Maximální dI/dt [mm/s]",
+         "stat_max_D": "Maximální D [mm]",
+         "stat_max_I": "Maximální I [mm]",
+         "stat_max_deltaI": "Maximální deltaI (náhlá změna) [mm]"
         },
 
      "en": {
@@ -387,11 +393,15 @@ DIC = {
          "lim_V=0": "V = 0 (Stop)",
          "lim_Adjacent": "Adjacent Element",
          "lim_Line": "Line",
-         "lim_-": "-"
-         
-         
-         
-         
+         "lim_-": "-",
+         "reportExtremesTitle": "=== Extremes of Geometric Parameters ===",
+         "stat_min_n": "Minimum n [-]",
+         "stat_min_nI": "Minimum nI [-]",
+         "stat_max_dDdt": "Maximum dD/dt [mm/s]",
+         "stat_max_dIdt": "Maximum dI/dt [mm/s]",
+         "stat_max_D": "Maximum D [mm]",
+         "stat_max_I": "Maximum I [mm]",
+         "stat_max_deltaI": "Maximum deltaI (abrupt change) [mm]"
         },  
 
      "de": {
@@ -584,8 +594,14 @@ DIC = {
          "lim_V=0": "V = 0 (Halt)",
          "lim_Adjacent": "Benachbartes Element",
          "lim_Line": "Gerade",
-         "lim_-": "-"
-         
-        
+         "lim_-": "-",
+         "reportExtremesTitle": "=== Extreme der geometrischen Parameter ===",
+         "stat_min_n": "Minimales n [-]",
+         "stat_min_nI": "Minimales nI [-]",
+         "stat_max_dDdt": "Maximales dD/dt [mm/s]",
+         "stat_max_dIdt": "Maximales dI/dt [mm/s]",
+         "stat_max_D": "Maximale Überhöhung D [mm]",
+         "stat_max_I": "Maximaler Fehlbetrag I [mm]",
+         "stat_max_deltaI": "Maximale deltaI (abrupte Änderung) [mm]"
         }
     }

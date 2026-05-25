@@ -1829,39 +1829,51 @@ class MainWindow(QMainWindow):
     def generateGeometryReport(self):
         lan = lang.DIC[self.current_language]
         lxml = self.dataStorage.get("LandXML", {})
-        if not lxml or len(lxml.get("stationCantPossible", [])) < 2:
+        if not lxml or "stationCantPossible" not in lxml or len(lxml.get("stationCantPossible", [])) < 2:
             self.reportGeometryWidget.setPlainText(lan.get("no_data", "No data available. Calculate values first."))
             self.layoutTabsPlots.setCurrentWidget(self.layoutTabsPlotsReport_container)
             return
 
         stations = lxml["stationCantPossible"]
-        geomType = lxml["geometryType"]
-        cant = lxml.get("cantPossible", np.zeros_like(stations))
-        cDef100 = lxml.get("cDef100", np.zeros_like(stations))
-        cDef130 = lxml.get("cDef130", np.zeros_like(stations))
-        cDef150 = lxml.get("cDef150", np.zeros_like(stations))
-        cDefK = lxml.get("cDefK", np.zeros_like(stations))
-
-        v100 = self.dataStorage.get("speedLimits100", np.zeros_like(stations))
-        v130 = self.dataStorage.get("speedLimits130", np.zeros_like(stations))
-        v150 = self.dataStorage.get("speedLimits150", np.zeros_like(stations))
-        vK = self.dataStorage.get("speedLimitsK", np.zeros_like(stations))
-
-        dDdt100 = lxml.get("dDdt100", np.zeros_like(stations))
-        dIdt100 = lxml.get("dIdt100", np.zeros_like(stations))
-        dDdt130 = lxml.get("dDdt130", np.zeros_like(stations))
-        dIdt130 = lxml.get("dIdt130", np.zeros_like(stations))
-        dDdt150 = lxml.get("dDdt150", np.zeros_like(stations))
-        dIdt150 = lxml.get("dIdt150", np.zeros_like(stations))
-        dDdtK = lxml.get("dDdtK", np.zeros_like(stations))
-        dIdtK = lxml.get("dIdtK", np.zeros_like(stations))
-
-        lr100 = lxml.get("limitReason_I100", np.full_like(stations, "-"))
-        lr130 = lxml.get("limitReason_I130", np.full_like(stations, "-"))
-        lr150 = lxml.get("limitReason_I150", np.full_like(stations, "-"))
-        lrK = lxml.get("limitReason_K", np.full_like(stations, "-"))
+        geomType = lxml.get("geometryType", [])
         
-        radius = lxml.get("radius", np.full_like(stations, np.inf))
+        if len(geomType) != len(stations):
+            self.reportGeometryWidget.setPlainText(lan.get("error", "Error") + ": Data lengths do not match. Please recalculate.")
+            self.layoutTabsPlots.setCurrentWidget(self.layoutTabsPlotsReport_container)
+            return
+
+        def safe_get(d, key, fallback):
+            val = d.get(key)
+            if val is None or len(val) != len(stations):
+                return fallback
+            return val
+
+        cant = safe_get(lxml, "cantPossible", np.zeros_like(stations))
+        cDef100 = safe_get(lxml, "cDef100", np.zeros_like(stations))
+        cDef130 = safe_get(lxml, "cDef130", np.zeros_like(stations))
+        cDef150 = safe_get(lxml, "cDef150", np.zeros_like(stations))
+        cDefK = safe_get(lxml, "cDefK", np.zeros_like(stations))
+
+        v100 = safe_get(self.dataStorage, "speedLimits100", np.zeros_like(stations))
+        v130 = safe_get(self.dataStorage, "speedLimits130", np.zeros_like(stations))
+        v150 = safe_get(self.dataStorage, "speedLimits150", np.zeros_like(stations))
+        vK = safe_get(self.dataStorage, "speedLimitsK", np.zeros_like(stations))
+
+        dDdt100 = safe_get(lxml, "dDdt100", np.zeros_like(stations))
+        dIdt100 = safe_get(lxml, "dIdt100", np.zeros_like(stations))
+        dDdt130 = safe_get(lxml, "dDdt130", np.zeros_like(stations))
+        dIdt130 = safe_get(lxml, "dIdt130", np.zeros_like(stations))
+        dDdt150 = safe_get(lxml, "dDdt150", np.zeros_like(stations))
+        dIdt150 = safe_get(lxml, "dIdt150", np.zeros_like(stations))
+        dDdtK = safe_get(lxml, "dDdtK", np.zeros_like(stations))
+        dIdtK = safe_get(lxml, "dIdtK", np.zeros_like(stations))
+
+        lr100 = safe_get(lxml, "limitReason_I100", np.full(len(stations), "-", dtype=object))
+        lr130 = safe_get(lxml, "limitReason_I130", np.full(len(stations), "-", dtype=object))
+        lr150 = safe_get(lxml, "limitReason_I150", np.full(len(stations), "-", dtype=object))
+        lrK = safe_get(lxml, "limitReason_K", np.full(len(stations), "-", dtype=object))
+        
+        radius = safe_get(lxml, "radius", np.full(len(stations), np.inf))
 
         report_lines = [lan.get("reportGeometryTitle", "=== Geometry Report ==="), ""]
 
@@ -1874,11 +1886,29 @@ class MainWindow(QMainWindow):
             return f"{r_val:.0f}"
 
         stats = {"V100": {}, "V130": {}, "V150": {}, "VK": {}}
+        profile_stats = {
+            "V100": {"min_n": float('inf'), "min_nI": float('inf'), "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0},
+            "V130": {"min_n": float('inf'), "min_nI": float('inf'), "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0},
+            "V150": {"min_n": float('inf'), "min_nI": float('inf'), "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0},
+            "VK":   {"min_n": float('inf'), "min_nI": float('inf'), "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0}
+        }
         total_elements = 0
 
         for i in range(len(stations) - 1):
             L = (stations[i+1] - stations[i]) * 1000
-            if L <= 0: continue
+
+            profiles = [
+                ("V100", v100, cDef100, dDdt100, dIdt100, lr100),
+                ("V130", v130, cDef130, dDdt130, dIdt130, lr130),
+                ("V150", v150, cDef150, dDdt150, dIdt150, lr150),
+                ("VK", vK, cDefK, dDdtK, dIdtK, lrK),
+            ]
+
+            if L <= 0: 
+                for p_name, v_arr, i_arr, dD_arr, dI_arr, lr_arr in profiles:
+                    deltaI = abs(i_arr[i+1] - i_arr[i])
+                    profile_stats[p_name]["max_deltaI"] = max(profile_stats[p_name]["max_deltaI"], deltaI)
+                continue
             
             g_type = geomType[i]
             if g_type in ["Curve", "Spiral"]:
@@ -1895,13 +1925,6 @@ class MainWindow(QMainWindow):
             header_line += " ---"
             report_lines.append(header_line)
 
-            profiles = [
-                ("V100", v100, cDef100, dDdt100, dIdt100, lr100),
-                ("V130", v130, cDef130, dDdt130, dIdt130, lr130),
-                ("V150", v150, cDef150, dDdt150, dIdt150, lr150),
-                ("VK", vK, cDefK, dDdtK, dIdtK, lrK),
-            ]
-
             for p_name, v_arr, i_arr, dD_arr, dI_arr, lr_arr in profiles:
                 v_start, v_end = v_arr[i], v_arr[i+1]
                 sign_d_start = np.sign(cant[i]) if cant[i] != 0 else 1.0
@@ -1912,21 +1935,34 @@ class MainWindow(QMainWindow):
                 dd_dt = dD_arr[i]
                 di_dt = dI_arr[i]
 
+                profile_stats[p_name]["max_D"] = max(profile_stats[p_name]["max_D"], abs(d_start), abs(d_end))
+                profile_stats[p_name]["max_I"] = max(profile_stats[p_name]["max_I"], abs(i_start), abs(i_end))
+                profile_stats[p_name]["max_dd_dt"] = max(profile_stats[p_name]["max_dd_dt"], abs(dd_dt))
+                profile_stats[p_name]["max_di_dt"] = max(profile_stats[p_name]["max_di_dt"], abs(di_dt))
+
                 line_str = f"  [{p_name}] V: {v_start:.0f} -> {v_end:.0f} km/h"
                 if g_type == "Curve":
                     line_str += f" | D: {d_start:.0f} mm | I: {i_start:.0f} mm"
                 elif g_type == "Spiral":
                     dD = abs(d_end - d_start)
                     dI = abs(i_end - i_start)
+                    
+                    if dD > 1e-3 and v_start > 1e-3:
+                        n_val_f = L * 1000 / (dD * v_start)
+                        profile_stats[p_name]["min_n"] = min(profile_stats[p_name]["min_n"], n_val_f)
+                    if dI > 1e-3 and v_start > 1e-3:
+                        nI_val_f = L * 1000 / (dI * v_start)
+                        profile_stats[p_name]["min_nI"] = min(profile_stats[p_name]["min_nI"], nI_val_f)
+                        
                     n_val = calc_n(L, dD, v_start)
                     nI_val = calc_n(L, dI, v_start)
                     line_str += f" | D: {d_start:.0f} -> {d_end:.0f} mm | I: {i_start:.0f} -> {i_end:.0f} mm | n: {n_val} | nI: {nI_val} | dD/dt: {dd_dt:.2f} mm/s | dI/dt: {di_dt:.2f} mm/s"
                 
-                reason = lr_arr[i]
-                line_str += f" | Limit: {lan.get('lim_'+reason, reason)}"
+                reason_str = str(lr_arr[i])
+                line_str += f" | Limit: {lan.get('lim_' + reason_str, reason_str)}"
 
                 if g_type in ["Curve", "Spiral"]:
-                    stats[p_name][reason] = stats[p_name].get(reason, 0) + 1
+                    stats[p_name][reason_str] = stats[p_name].get(reason_str, 0) + 1
 
                 report_lines.append(line_str)
             report_lines.append("")
@@ -1937,10 +1973,29 @@ class MainWindow(QMainWindow):
 
         for p_name in ["V100", "V130", "V150", "VK"]:
             report_lines.append(f"--- {p_name} ---")
-            for reason, count in sorted(stats[p_name].items(), key=lambda item: item[1], reverse=True):
+            for reason_str, count in sorted(stats[p_name].items(), key=lambda item: item[1], reverse=True):
                 pct = count / total_elements * 100 if total_elements > 0 else 0
-                translated_reason = lan.get(f"lim_{reason}", reason)
+                translated_reason = lan.get(f"lim_{reason_str}", reason_str)
                 report_lines.append(f"  {translated_reason}: {count}x ({pct:.1f} %)")
+            report_lines.append("")
+
+        report_lines.append(lan.get("reportExtremesTitle", "=== Extremes of Geometric Parameters ==="))
+        report_lines.append("")
+
+        for p_name in ["V100", "V130", "V150", "VK"]:
+            report_lines.append(f"--- {p_name} ---")
+            p_stats = profile_stats[p_name]
+            
+            str_n = f"{p_stats['min_n']:.2f}" if p_stats['min_n'] != float('inf') else "-"
+            str_nI = f"{p_stats['min_nI']:.2f}" if p_stats['min_nI'] != float('inf') else "-"
+            
+            report_lines.append(f"  {lan.get('stat_min_n', 'Min n [-]')}: {str_n}")
+            report_lines.append(f"  {lan.get('stat_min_nI', 'Min nI [-]')}: {str_nI}")
+            report_lines.append(f"  {lan.get('stat_max_dDdt', 'Max dD/dt [mm/s]')}: {p_stats['max_dd_dt']:.2f}")
+            report_lines.append(f"  {lan.get('stat_max_dIdt', 'Max dI/dt [mm/s]')}: {p_stats['max_di_dt']:.2f}")
+            report_lines.append(f"  {lan.get('stat_max_D', 'Max D [mm]')}: {p_stats['max_D']:.0f}")
+            report_lines.append(f"  {lan.get('stat_max_I', 'Max I [mm]')}: {p_stats['max_I']:.0f}")
+            report_lines.append(f"  {lan.get('stat_max_deltaI', 'Max deltaI [mm]')}: {p_stats['max_deltaI']:.0f}")
             report_lines.append("")
 
         self.reportGeometryWidget.setPlainText("\n".join(report_lines))
