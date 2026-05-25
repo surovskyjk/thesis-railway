@@ -1549,6 +1549,36 @@ class MainWindow(QMainWindow):
                 self.plotKinematicsData[f"forceRes_{v_idx}"] = line5
                 line5.set_visible(self.toggleKinematicsForcesAction.isChecked())
 
+        # Add train stops markers
+        trainStops = self.dataStorage.get("settingsData", {}).get("trainStops", [])
+        if trainStops:
+            for stop in trainStops:
+                try:
+                    s_m = float(stop[0]) * 1000.0
+                    name = str(stop[2]) if len(stop) > 2 else ""
+                except (IndexError, ValueError):
+                    continue
+                
+                # Track-speed vertical line
+                self.canvasKinematics.ax_tacho_track.axvline(x=s_m / d_factor, color='gray', linestyle='--', alpha=0.7)
+                if name:
+                    self.canvasKinematics.ax_tacho_track.text(s_m / d_factor, 0, f" {name}", rotation=90, verticalalignment='bottom', color='black', fontsize=8, alpha=0.7)
+                
+                # Distance-time horizontal line
+                self.canvasKinematics.ax_dist_time.axhline(y=s_m / d_factor, color='gray', linestyle='--', alpha=0.7)
+                if name:
+                    self.canvasKinematics.ax_dist_time.text(0, s_m / d_factor, f" {name}", verticalalignment='bottom', color='black', fontsize=8, alpha=0.7)
+                
+                # Time-speed vertical line (individual per vehicle due to different arrival times)
+                for v_idx in range(num_vehicles):
+                    kinematicsStation = self.dataStorage.get(f"kinematicsStationM_{v_idx}")
+                    kinematicsTime = self.dataStorage.get(f"kinematicsTimeS_{v_idx}")
+                    if kinematicsStation is not None and len(kinematicsStation) > 0:
+                        stop_time = np.interp(s_m, kinematicsStation, kinematicsTime)
+                        self.canvasKinematics.ax_tacho_time.axvline(x=stop_time / t_factor, color=limit_colors[v_idx], linestyle=':', alpha=0.5)
+                        if name:
+                            self.canvasKinematics.ax_tacho_time.text(stop_time / t_factor, 0, f" {name} (V{v_idx+1})", rotation=90, verticalalignment='bottom', color=limit_colors[v_idx], fontsize=7, alpha=0.7)
+
         self.canvasKinematics.ax_tacho_track.grid(True)
         self.canvasKinematics.ax_tacho_track.autoscale(enable=True, axis='x', tight=True)
         self.canvasKinematics.ax_tacho_track.set_xlabel(dist_lbl)
@@ -2016,6 +2046,57 @@ class MainWindow(QMainWindow):
         f_res = self.dataStorage.get(f"kinematicsForceResistanceKN_{v_idx}", np.zeros_like(stations))
 
         tableData = []
+
+        # Energy calculation
+        dx = np.diff(stations)
+        dx = np.append(dx, 0)
+        energy_kwh = np.sum(f_trac * dx) / 3600.0
+        brake_energy_kwh = np.sum(f_brake * dx) / 3600.0
+        
+        # Insert energy summary block at the beginning
+        tableData.append({
+            lan.get("station", "Station [km]"): f"=== {lan.get('energy_title', 'ENERGY')} ===",
+            lan.get("speed", "Speed [km/h]"): f"{lan.get('energyTraction', 'Traction [kWh]')}:",
+            "Accel [m/s2]": f"{energy_kwh:.2f}",
+            lan.get("forceTraction", "Tractive Force [kN]"): f"{lan.get('energyBraking', 'Braking [kWh]')}:",
+            lan.get("forceBraking", "Braking Force [kN]"): f"{brake_energy_kwh:.2f}",
+            lan.get("forceResistance", "Resistance [kN]"): ""
+        })
+        tableData.append({k: "---" for k in tableData[0].keys()})
+
+        # Insert train stops summary block at the beginning
+        trainStops = self.dataStorage.get("settingsData", {}).get("trainStops", [])
+        if trainStops:
+            tableData.append({
+                lan.get("station", "Station [km]"): "=== ZASTÁVKY / STOPS ===",
+                lan.get("speed", "Speed [km/h]"): "",
+                "Accel [m/s2]": "",
+                lan.get("forceTraction", "Tractive Force [kN]"): "",
+                lan.get("forceBraking", "Braking Force [kN]"): "",
+                lan.get("forceResistance", "Resistance [kN]"): ""
+            })
+            for stop in trainStops:
+                try:
+                    s_km = float(stop[0])
+                    dwell = float(stop[1])
+                    name = str(stop[2]) if len(stop) > 2 else ""
+                    s_m = s_km * 1000.0
+                    idx = np.argmin(np.abs(stations - s_m))
+                    if np.abs(stations[idx] - s_m) < 2.0:
+                        dep_time = self.dataStorage.get(f"kinematicsTimeS_{v_idx}")[idx]
+                        arr_time = max(0, dep_time - dwell)
+                        tableData.append({
+                            lan.get("station", "Station [km]"): f"{s_km:.3f} {name}",
+                            lan.get("speed", "Speed [km/h]"): f"Arr: {arr_time:.1f} s",
+                            "Accel [m/s2]": f"Dep: {dep_time:.1f} s",
+                            lan.get("forceTraction", "Tractive Force [kN]"): f"Dwell: {dwell} s",
+                            lan.get("forceBraking", "Braking Force [kN]"): "-",
+                            lan.get("forceResistance", "Resistance [kN]"): "-"
+                        })
+                except Exception:
+                    continue
+            tableData.append({k: "---" for k in tableData[0].keys()})
+
         for i in range(0, len(stations), 10):
             s_km = stations[i] / 1000.0
             tableData.append({
@@ -2072,6 +2153,16 @@ class MainWindow(QMainWindow):
                     f_trac = self.dataStorage.get(f"kinematicsForceTractionKN_{v_idx}", np.zeros_like(stations))
                     f_brake = self.dataStorage.get(f"kinematicsForceBrakingKN_{v_idx}", np.zeros_like(stations))
                     f_res = self.dataStorage.get(f"kinematicsForceResistanceKN_{v_idx}", np.zeros_like(stations))
+
+                    dx = np.diff(stations)
+                    dx = np.append(dx, 0)
+                    energy_kwh = np.sum(f_trac * dx) / 3600.0
+                    brake_energy_kwh = np.sum(f_brake * dx) / 3600.0
+                    
+                    writer.writerow([f"=== {lan.get('energy_title', 'ENERGY')} ==="])
+                    writer.writerow([lan.get('energyTraction', 'Traction [kWh]'), f"{energy_kwh:.2f}"])
+                    writer.writerow([lan.get('energyBraking', 'Braking [kWh]'), f"{brake_energy_kwh:.2f}"])
+                    writer.writerow([])
 
                     for i in range(len(stations)):
                         s_km = stations[i] / 1000.0

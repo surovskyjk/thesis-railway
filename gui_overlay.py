@@ -561,10 +561,11 @@ class StopsSettingsDialog(QDialog):
         labelStops = QLabel(lan.get("trainStops", "Train Stops"))
         layout.addWidget(labelStops)
 
-        self.tableStops = QTableWidget(0, 2)
+        self.tableStops = QTableWidget(0, 3)
         self.tableStops.setHorizontalHeaderLabels([
             lan["station"],
-            lan.get("dwellTimeTable", "Dwell Time [s]")
+            lan.get("dwellTimeTable", "Dwell Time [s]"),
+            lan.get("stopName", "Stop Name")
         ])
         headerStops = self.tableStops.horizontalHeader()
         headerStops.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -604,8 +605,10 @@ class StopsSettingsDialog(QDialog):
         itemStation = QTableWidgetItem("")
         defaultDwell = self.inputDwellTime.text()
         itemDwell = QTableWidgetItem(defaultDwell)
+        itemName = QTableWidgetItem("")
         self.tableStops.setItem(row, 0, itemStation)
         self.tableStops.setItem(row, 1, itemDwell)
+        self.tableStops.setItem(row, 2, itemName)
 
     def removeStopRow(self):
         currentRow = self.tableStops.currentRow()
@@ -639,7 +642,7 @@ class StopsSettingsDialog(QDialog):
             if table == "tableStops":
                 with open(filepath, "w", newline="") as file:
                     writer = csv.writer(file)
-                    writer.writerow(["Station", "Dwell Time"])
+                    writer.writerow(["Station", "Dwell Time", "Name"])
                     for row in range(self.tableStops.rowCount()):
                         writer.writerow([self.tableStops.item(row, col).text() for col in range(self.tableStops.columnCount())])
         except Exception as e:
@@ -650,8 +653,14 @@ class StopsSettingsDialog(QDialog):
         try: settingsData["defaultDwellTime"] = float(self.inputDwellTime.text())
         except ValueError: pass
         for row in range(self.tableStops.rowCount()):
-            try: settingsData["trainStops"].append([float(self.tableStops.item(row, 0).text()), float(self.tableStops.item(row, 1).text())])
-            except (ValueError, AttributeError): continue
+            try: 
+                station = float(self.tableStops.item(row, 0).text())
+                dwell = float(self.tableStops.item(row, 1).text())
+                name_item = self.tableStops.item(row, 2)
+                name = name_item.text() if name_item else ""
+                settingsData["trainStops"].append([station, dwell, name])
+            except (ValueError, AttributeError): 
+                continue
         return settingsData
 
 class VehicleTab(QWidget):
@@ -692,8 +701,8 @@ class VehicleTab(QWidget):
 
         formLayout.addRow(QLabel(lan.get("max_train_speed", "Max Train Speed [km/h]:")), self.inputMaxSpeed)
         
-        self.inputBrakeMech = QLineEdit(str(self.v_data.get("trainBrakeMech", default_values.defVal.get("trainBrakeMech", 150.0))))
-        formLayout.addRow(QLabel(lan.get("vehicleBrakeMech", "Mechanical Braking [kN]:")), self.inputBrakeMech)
+        self.inputBrakeDecel = QLineEdit(str(self.v_data.get("trainBrakeDecel", default_values.defVal.get("trainBrakeDecel", 1.0))))
+        formLayout.addRow(QLabel(lan.get("vehicleBrakeDecel", "Braking Deceleration [m/s2]:")), self.inputBrakeDecel)
 
         formLayout.addRow(QLabel(lan.get("speed_profile", "Speed Profile:")), self.comboProfile)
         
@@ -754,26 +763,6 @@ class VehicleTab(QWidget):
 
         self.populateTable(self.tableTrac, defaultTrac)
 
-        labelBrake = QLabel(lan.get("vehicleBrakeDyn", "Vehicle Dynamic Braking"))
-        layout.addWidget(labelBrake)
-
-        # Table for editing dynamic brake coefficients
-        self.tableBrake = QTableWidget(0, 6)
-        self.tableBrake.setHorizontalHeaderLabels([
-            lan["vehicle"],
-            lan["Vbottom"],
-            lan["Vtop"],
-            lan["coef_b0"],
-            lan["coef_b1"],
-            lan["coef_b2"]
-        ])
-        headerBrake = self.tableBrake.horizontalHeader()
-        headerBrake.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        layout.addWidget(self.tableBrake)
-
-        defaultBrake = self.v_data.get("trainBrake", default_values.defVal.get("trainBrake", []))
-        self.populateTable(self.tableBrake, defaultBrake)
-
         labelParam = QLabel(lan["vehicleParam"])
         layout.addWidget(labelParam)
 
@@ -826,7 +815,6 @@ class VehicleTab(QWidget):
 
             res_data = []
             trac_data = []
-            brake_data = []
             param_data = []
 
             for row in reader:
@@ -837,14 +825,11 @@ class VehicleTab(QWidget):
                     res_data.append(row[1:5])
                 elif section == "Trac" and len(row) >= 7:
                     trac_data.append(row[1:7])
-                elif section == "Brake" and len(row) >= 7:
-                    brake_data.append(row[1:7])
                 elif section == "Param" and len(row) >= 5:
                     param_data.append(row[1:5])
 
             if res_data: self.populateTable(self.tableRes, res_data)
             if trac_data: self.populateTable(self.tableTrac, trac_data)
-            if brake_data: self.populateTable(self.tableBrake, brake_data)
             if param_data: self.populateTable(self.tableParam, param_data)
 
         except Exception as e:
@@ -874,10 +859,6 @@ class VehicleTab(QWidget):
                     rowData = ["Trac"] + [self.tableTrac.item(row, col).text() if self.tableTrac.item(row, col) else "" for col in range(self.tableTrac.columnCount())]
                     writer.writerow(rowData)
 
-                for row in range(self.tableBrake.rowCount()):
-                    rowData = ["Brake"] + [self.tableBrake.item(row, col).text() if self.tableBrake.item(row, col) else "" for col in range(self.tableBrake.columnCount())]
-                    writer.writerow(rowData)
-
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
             return
@@ -885,7 +866,6 @@ class VehicleTab(QWidget):
         settingsData = {
             "trainRes": [],
             "trainTrac": [],
-            "trainBrake": [],
             "trainParam": [],
             "speedLimitPlot": self.comboProfile.currentData()
         }
@@ -906,7 +886,7 @@ class VehicleTab(QWidget):
             pass
 
         try:
-            settingsData["trainBrakeMech"] = float(self.inputBrakeMech.text())
+            settingsData["trainBrakeDecel"] = float(self.inputBrakeDecel.text())
         except ValueError:
             pass
 
@@ -935,20 +915,6 @@ class VehicleTab(QWidget):
                     float(self.tableTrac.item(row, 5).text())
                 ])
 
-            except(ValueError, AttributeError):
-                continue
-
-        # Table Dynamic Brake
-        for row in range(self.tableBrake.rowCount()):
-            try:
-                settingsData["trainBrake"].append([
-                    self.tableBrake.item(row, 0).text(),
-                    float(self.tableBrake.item(row, 1).text()),
-                    float(self.tableBrake.item(row, 2).text()),
-                    float(self.tableBrake.item(row, 3).text()),
-                    float(self.tableBrake.item(row, 4).text()),
-                    float(self.tableBrake.item(row, 5).text())
-                ])
             except(ValueError, AttributeError):
                 continue
 
@@ -996,10 +962,9 @@ class VehicleSettingsDialog(QDialog):
                 "trainInitialSpeed": self.settingsData.get("trainInitialSpeed", 0.0),
                 "trainFinalSpeed": self.settingsData.get("trainFinalSpeed", 0.0),
                 "trainMaxSpeed": self.settingsData.get("trainMaxSpeed", self.settingsData.get("vInit", [120])[0]),
-                "trainBrakeMech": self.settingsData.get("trainBrakeMech", default_values.defVal.get("trainBrakeMech", 150.0)),
+                "trainBrakeDecel": self.settingsData.get("trainBrakeDecel", default_values.defVal.get("trainBrakeDecel", 1.0)),
                 "trainRes": self.settingsData.get("trainRes", default_values.defVal.get("trainRes", [])),
                 "trainTrac": self.settingsData.get("trainTrac", default_values.defVal.get("trainTrac", [])),
-                "trainBrake": self.settingsData.get("trainBrake", default_values.defVal.get("trainBrake", [])),
                 "trainParam": self.settingsData.get("trainParam", default_values.defVal.get("trainParam", [])),
                 "speedLimitPlot": self.settingsData.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"])
             }

@@ -128,7 +128,7 @@ DIC = {
          "coef_b1": "Koeficient b1",
          "coef_b2": "Koeficient b2",
          "vehicleBrakeDyn": "Dynamická brzda vozidla",
-         "vehicleBrakeMech": "Mechanická brzda vozidla [kN]:",
+         "vehicleBrakeDecel": "Brzdné zpomalení [m/s2]:",
          "trainLength": "Délka vlaku [m]",
          "train_too_long": "Délka vlaku je větší než celková délka úseku!",
          "vehicleParam": "Parametry vozidla",
@@ -168,6 +168,7 @@ DIC = {
          "dwellTimeTable": "Doba stání [s]",
          "addRow": "Přidat řádek",
          "removeRow": "Odebrat řádek",
+         "stopName": "Název zastávky",
          "mapBase": "Mapový podklad:",
          "mapPositron": "CartoDB Positron",
          "mapOSM": "OpenStreetMap",
@@ -200,7 +201,10 @@ DIC = {
          "stat_max_dIdt": "Maximální dI/dt [mm/s]",
          "stat_max_D": "Maximální D [mm]",
          "stat_max_I": "Maximální I [mm]",
-         "stat_max_deltaI": "Maximální deltaI (náhlá změna) [mm]"
+         "stat_max_deltaI": "Maximální deltaI (náhlá změna) [mm]",
+         "energy_title": "SOUHRN ENERGIE",
+         "energyTraction": "Trakce [kWh]",
+         "energyBraking": "Brzda [kWh]"
         },
 
      "en": {
@@ -329,7 +333,7 @@ DIC = {
          "coef_b1": "Coefficient b1",
          "coef_b2": "Coefficient b2",
          "vehicleBrakeDyn": "Vehicle Dynamic Braking",
-         "vehicleBrakeMech": "Mechanical Braking [kN]:",
+         "vehicleBrakeDecel": "Braking Deceleration [m/s2]:",
          "trainLength": "Train Length [m]",
          "train_too_long": "Train length is greater than the total section length!",
          "vehicleParam": "Vehicle Parameters",
@@ -369,6 +373,7 @@ DIC = {
          "dwellTimeTable": "Dwell Time [s]",
          "addRow": "Add Row",
          "removeRow": "Remove Row",
+         "stopName": "Stop Name",
          "mapBase": "Base Map:",
          "mapPositron": "CartoDB Positron",
          "mapOSM": "OpenStreetMap",
@@ -401,7 +406,10 @@ DIC = {
          "stat_max_dIdt": "Maximum dI/dt [mm/s]",
          "stat_max_D": "Maximum D [mm]",
          "stat_max_I": "Maximum I [mm]",
-         "stat_max_deltaI": "Maximum deltaI (abrupt change) [mm]"
+         "stat_max_deltaI": "Maximum deltaI (abrupt change) [mm]",
+         "energy_title": "ENERGY SUMMARY",
+         "energyTraction": "Traction [kWh]",
+         "energyBraking": "Braking [kWh]"
         },  
 
      "de": {
@@ -530,7 +538,7 @@ DIC = {
          "coef_b1": "Koeffizient b1",
          "coef_b2": "Koeffizient b2",
          "vehicleBrakeDyn": "Dynamische Bremse",
-         "vehicleBrakeMech": "Mechanische Bremse [kN]:",
+         "vehicleBrakeDecel": "Bremsverzögerung [m/s2]:",
          "trainLength": "Zuglänge [m]",
          "train_too_long": "Zuglänge ist größer als die Gesamtlänge des Abschnitts!",
          "vehicleParam": "Fahrzeugparameter",
@@ -570,6 +578,7 @@ DIC = {
          "dwellTimeTable": "Haltezeit [s]",
          "addRow": "Zeile hinzufügen",
          "removeRow": "Zeile entfernen",
+         "stopName": "Haltestellenname",
          "mapBase": "Kartengrundlage:",
          "mapPositron": "CartoDB Positron",
          "mapOSM": "OpenStreetMap",
@@ -602,6 +611,9 @@ DIC = {
          "stat_max_dIdt": "Maximales dI/dt [mm/s]",
          "stat_max_D": "Maximale Überhöhung D [mm]",
          "stat_max_I": "Maximaler Fehlbetrag I [mm]",
-         "stat_max_deltaI": "Maximale deltaI (abrupte Änderung) [mm]"
+         "stat_max_deltaI": "Maximale deltaI (abrupte Änderung) [mm]",
+         "energy_title": "ENERGIEZUSAMMENFASSUNG",
+         "energyTraction": "Traktion [kWh]",
+         "energyBraking": "Bremse [kWh]"
         }
     }

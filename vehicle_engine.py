@@ -76,10 +76,9 @@ class VehicleCalculator:
                 "trainInitialSpeed": settings.get("trainInitialSpeed", 0.0),
                 "trainFinalSpeed": settings.get("trainFinalSpeed", 0.0),
                 "trainMaxSpeed": settings.get("trainMaxSpeed", settings.get("vInit", [120])[0]),
-                "trainBrakeMech": settings.get("trainBrakeMech", 150.0),
+                "trainBrakeDecel": settings.get("trainBrakeDecel", 1.0),
                 "trainRes": settings.get("trainRes", []),
                 "trainTrac": settings.get("trainTrac", []),
-                "trainBrake": settings.get("trainBrake", []),
                 "trainParam": settings.get("trainParam", []),
                 "speedLimitPlot": settings.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"])
             }
@@ -164,15 +163,11 @@ class VehicleCalculator:
                 vNext = vBwd[i+1]
                 vNextKmh = vNext * 3.6
                 
-                forceDyn = self.getDynamicBrakingForce(vNextKmh)
-                forceMech = self.mechBrakeN
-                forceBrake = forceDyn + forceMech
-                
                 forceRes = self.getVehicleResistance(vNextKmh)
                 forceTrack = self.getTrackResistance(slopeArr[i], curvArr[i])
                 
-                # Braking deceleration (positive value) = total retarding forces / mass
-                aDecel = (forceBrake + forceRes + forceTrack) / self.effectiveMass
+                aNat = (forceRes + forceTrack) / self.effectiveMass
+                aDecel = max(self.trainBrakeDecel, aNat)
                 
                 # Calculate required entry speed solving backwards
                 vNewSq = vNext**2 + 2 * aDecel * ds
@@ -308,14 +303,7 @@ class VehicleCalculator:
             tracData = [tracData]
         self.trainTrac = tracData
 
-        # Brake coefficients
-        brakeData = v_data.get("trainBrake", [["Placeholder BEMU", 0, 160, 0, 0, 0]])
-        if brakeData and not isinstance(brakeData[0], list):
-            brakeData = [brakeData]
-        self.trainBrake = brakeData
-
-        # Mechanical brake in N (input was in kN)
-        self.mechBrakeN = float(v_data.get("trainBrakeMech", 150.0)) * 1000.0
+        self.trainBrakeDecel = float(v_data.get("trainBrakeDecel", 1.0))
         
         self.trainInitialSpeed = float(v_data.get("trainInitialSpeed", 0.0))
         self.trainFinalSpeed = float(v_data.get("trainFinalSpeed", 0.0))
@@ -396,19 +384,6 @@ class VehicleCalculator:
                 
                 if vMin <= vKmh <= vMax:
                     # Evaluates to Newtons: T = g * (b0 + b1*v + b2*v^2)
-                    return 9.81 * (b0 + b1 * vKmh + b2 * (vKmh ** 2))
-            except (IndexError, ValueError):
-                continue
-        return 0.0
-
-    def getDynamicBrakingForce(self, vKmh):
-        """ Evaluates dynamic braking force based on speed band. """
-        for brk in self.trainBrake:
-            try:
-                vMin, vMax = float(brk[1]), float(brk[2])
-                b0, b1, b2 = float(brk[3]), float(brk[4]), float(brk[5])
-                
-                if vMin <= vKmh <= vMax:
                     return 9.81 * (b0 + b1 * vKmh + b2 * (vKmh ** 2))
             except (IndexError, ValueError):
                 continue
