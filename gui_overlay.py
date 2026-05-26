@@ -98,9 +98,9 @@ class AlignmentSelectDialog(QDialog):
         return 0
 
 class MapSettingsDialog(QDialog):
-    def __init__(self, currentEPSG, currentMap, lan, parent=None):
+    def __init__(self, currentEPSG, currentMap, currentDrawMode, currentSpeedProfile, lan, parent=None):
         super().__init__(parent)
-
+        self.lan = lan
         self.setWindowTitle(lan["mapSettings"])
 
         layout = QVBoxLayout(self)
@@ -108,39 +108,58 @@ class MapSettingsDialog(QDialog):
 
         displayValue = currentEPSG
         self.inputEPSG = QLineEdit(displayValue)
-
         formLayout.addRow(QLabel(lan["currentEPSG"]), self.inputEPSG)
-        layout.addLayout(formLayout)
         
         self.comboMap = QComboBox()
         self.comboMap.addItem(lan.get("mapPositron", "CartoDB Positron"), "positron")
         self.comboMap.addItem(lan.get("mapOSM", "OpenStreetMap"), "osm")
         self.comboMap.addItem(lan.get("mapORM", "OpenRailwayMap"), "orm")
         self.comboMap.addItem(lan.get("mapCUZK", "ČÚZK Ortofoto"), "cuzk")
-        
         index = self.comboMap.findData(currentMap)
-        if index >= 0:
-            self.comboMap.setCurrentIndex(index)
-            
+        if index >= 0: self.comboMap.setCurrentIndex(index)
         formLayout.addRow(QLabel(lan.get("mapBase", "Map Base:")), self.comboMap)
 
+        self.comboDrawMode = QComboBox()
+        self.comboDrawMode.addItem(lan.get("mapDrawSingleColor", "Single Color"), "single")
+        self.comboDrawMode.addItem(lan.get("mapDrawByType", "By Element Type"), "type")
+        self.comboDrawMode.addItem(lan.get("mapDrawBySpeed", "By Speed Limit"), "speed")
+        index = self.comboDrawMode.findData(currentDrawMode)
+        if index >= 0: self.comboDrawMode.setCurrentIndex(index)
+        formLayout.addRow(QLabel(lan.get("mapDrawMode", "Draw Mode:")), self.comboDrawMode)
+
+        self.labelSpeedProfile = QLabel(lan.get("mapSpeedProfile", "Speed Profile for Map:"))
+        self.comboSpeedProfile = QComboBox()
+        self.profiles = [("V100", "100"), ("V130", "130"), ("V150", "150"), ("VK", "K")]
+        for text, data in self.profiles:
+            self.comboSpeedProfile.addItem(text, data)
+        index = self.comboSpeedProfile.findData(currentSpeedProfile)
+        if index >= 0: self.comboSpeedProfile.setCurrentIndex(index)
+        formLayout.addRow(self.labelSpeedProfile, self.comboSpeedProfile)
+        
+        self.comboDrawMode.currentTextChanged.connect(self.updateSpeedProfileVisibility)
+        self.updateSpeedProfileVisibility()
+
+        layout.addLayout(formLayout)
         label = QLabel(lan["EPSGinfo"])
         layout.addWidget(label)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         
-    def getMapSettings(self):
+    def updateSpeedProfileVisibility(self):
+        is_speed_mode = self.comboDrawMode.currentData() == "speed"
+        self.labelSpeedProfile.setVisible(is_speed_mode)
+        self.comboSpeedProfile.setVisible(is_speed_mode)
 
+    def getMapSettings(self):
         epsg = self.inputEPSG.text().strip().upper()
 
         if not epsg.startswith("EPSG:"):
             epsg = f"EPSG:{epsg}"
             
-        return epsg, self.comboMap.currentData()
+        return epsg, self.comboMap.currentData(), self.comboDrawMode.currentData(), self.comboSpeedProfile.currentData()
         
 class HelpDialog(QDialog):
     def __init__(self, lan, parent=None):

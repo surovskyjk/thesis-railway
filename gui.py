@@ -1854,10 +1854,11 @@ class MainWindow(QMainWindow):
     # Map settings
     def openMapSettings(self):
         lan = lang.DIC[self.current_language]
-        dialog = gui_overlay.MapSettingsDialog(self.epsgInput, self.mapWidget.currentBaseMap, lan, self)
+        dialog = gui_overlay.MapSettingsDialog(self.epsgInput, self.mapWidget.currentBaseMap, self.mapWidget.drawMode, self.mapWidget.speedProfile, lan, self)
         if dialog.exec():
-            self.epsgInput, selected_map = dialog.getMapSettings()
+            self.epsgInput, selected_map, draw_mode, speed_profile = dialog.getMapSettings()
             self.mapWidget.setBaseMap(selected_map)
+            self.mapWidget.setDrawOptions(draw_mode, speed_profile)
 
     # Geometry settings
     def openGeometrySettings(self):
@@ -1939,12 +1940,25 @@ class MainWindow(QMainWindow):
         dDdtK = safe_get(lxml, "dDdtK", np.zeros_like(stations))
         dIdtK = safe_get(lxml, "dIdtK", np.zeros_like(stations))
 
-        lr100 = safe_get(lxml, "limitReason_I100", np.full(len(stations), "-", dtype=object))
-        lr130 = safe_get(lxml, "limitReason_I130", np.full(len(stations), "-", dtype=object))
-        lr150 = safe_get(lxml, "limitReason_I150", np.full(len(stations), "-", dtype=object))
-        lrK = safe_get(lxml, "limitReason_K", np.full(len(stations), "-", dtype=object))
+        limD100 = safe_get(lxml, "limitReachedD_I100", np.zeros(len(stations), dtype=bool))
+        limI100 = safe_get(lxml, "limitReachedI_I100", np.zeros(len(stations), dtype=bool))
+        limD130 = safe_get(lxml, "limitReachedD_I130", np.zeros(len(stations), dtype=bool))
+        limI130 = safe_get(lxml, "limitReachedI_I130", np.zeros(len(stations), dtype=bool))
+        limD150 = safe_get(lxml, "limitReachedD_I150", np.zeros(len(stations), dtype=bool))
+        limI150 = safe_get(lxml, "limitReachedI_I150", np.zeros(len(stations), dtype=bool))
+        limDK = safe_get(lxml, "limitReachedD_K", np.zeros(len(stations), dtype=bool))
+        limIK = safe_get(lxml, "limitReachedI_K", np.zeros(len(stations), dtype=bool))
         
         radius = safe_get(lxml, "radius", np.full(len(stations), np.inf))
+
+        util_D_100 = safe_get(lxml, "util_D_I100", np.zeros_like(stations))
+        util_I_100 = safe_get(lxml, "util_I_I100", np.zeros_like(stations))
+        util_D_130 = safe_get(lxml, "util_D_I130", np.zeros_like(stations))
+        util_I_130 = safe_get(lxml, "util_I_I130", np.zeros_like(stations))
+        util_D_150 = safe_get(lxml, "util_D_I150", np.zeros_like(stations))
+        util_I_150 = safe_get(lxml, "util_I_I150", np.zeros_like(stations))
+        util_D_K = safe_get(lxml, "util_D_K", np.zeros_like(stations))
+        util_I_K = safe_get(lxml, "util_I_K", np.zeros_like(stations))
 
         report_lines = [lan.get("reportGeometryTitle", "=== Geometry Report ==="), ""]
 
@@ -1956,12 +1970,17 @@ class MainWindow(QMainWindow):
             if np.isinf(r_val) or np.isnan(r_val): return "INF"
             return f"{r_val:.0f}"
 
-        stats = {"V100": {}, "V130": {}, "V150": {}, "VK": {}}
+        stats = {
+            "V100": {"limit_D": 0, "limit_I": 0},
+            "V130": {"limit_D": 0, "limit_I": 0},
+            "V150": {"limit_D": 0, "limit_I": 0},
+            "VK":   {"limit_D": 0, "limit_I": 0}
+        }
         profile_stats = {
-            "V100": {"min_n": float('inf'), "min_nI": float('inf'), "min_nI_all": float('inf'), "min_nI_all_dI": 0.0, "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0},
-            "V130": {"min_n": float('inf'), "min_nI": float('inf'), "min_nI_all": float('inf'), "min_nI_all_dI": 0.0, "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0},
-            "V150": {"min_n": float('inf'), "min_nI": float('inf'), "min_nI_all": float('inf'), "min_nI_all_dI": 0.0, "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0},
-            "VK":   {"min_n": float('inf'), "min_nI": float('inf'), "min_nI_all": float('inf'), "min_nI_all_dI": 0.0, "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0}
+            "V100": {"min_n": float('inf'), "min_nI": float('inf'), "min_nI_all": float('inf'), "min_nI_all_dI": 0.0, "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0, "weighted_util_sum_D": 0.0, "weighted_util_sum_I": 0.0, "total_length": 0.0},
+            "V130": {"min_n": float('inf'), "min_nI": float('inf'), "min_nI_all": float('inf'), "min_nI_all_dI": 0.0, "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0, "weighted_util_sum_D": 0.0, "weighted_util_sum_I": 0.0, "total_length": 0.0},
+            "V150": {"min_n": float('inf'), "min_nI": float('inf'), "min_nI_all": float('inf'), "min_nI_all_dI": 0.0, "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0, "weighted_util_sum_D": 0.0, "weighted_util_sum_I": 0.0, "total_length": 0.0},
+            "VK":   {"min_n": float('inf'), "min_nI": float('inf'), "min_nI_all": float('inf'), "min_nI_all_dI": 0.0, "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0, "weighted_util_sum_D": 0.0, "weighted_util_sum_I": 0.0, "total_length": 0.0}
         }
         total_elements = 0
         
@@ -1979,19 +1998,19 @@ class MainWindow(QMainWindow):
             L = (stations[i+1] - stations[i]) * 1000
 
             profiles = [
-                ("V100", v100, cDef100, dDdt100, dIdt100, lr100),
-                ("V130", v130, cDef130, dDdt130, dIdt130, lr130),
-                ("V150", v150, cDef150, dDdt150, dIdt150, lr150),
-                ("VK", vK, cDefK, dDdtK, dIdtK, lrK),
+                ("V100", v100, cDef100, dDdt100, dIdt100, limD100, limI100, util_D_100, util_I_100),
+                ("V130", v130, cDef130, dDdt130, dIdt130, limD130, limI130, util_D_130, util_I_130),
+                ("V150", v150, cDef150, dDdt150, dIdt150, limD150, limI150, util_D_150, util_I_150),
+                ("VK", vK, cDefK, dDdtK, dIdtK, limDK, limIK, util_D_K, util_I_K),
             ]
 
             if L <= 0:
                 transition_data = []
                 any_deltaI = False
-                for p_name, v_arr, i_arr, dD_arr, dI_arr, lr_arr in profiles:
+                for p_name, v_arr, i_arr, dD_arr, dI_arr, lD_arr, lI_arr, util_D_arr, util_I_arr in profiles:
                     deltaI = abs(i_arr[i+1] - i_arr[i])
                     profile_stats[p_name]["max_deltaI"] = max(profile_stats[p_name]["max_deltaI"], deltaI)
-                    transition_data.append((p_name, deltaI, max(v_arr[i], v_arr[i+1]), lr_arr[i+1]))
+                    transition_data.append((p_name, deltaI, max(v_arr[i], v_arr[i+1])))
                     if deltaI > 1e-3:
                         any_deltaI = True
                 
@@ -1999,9 +2018,8 @@ class MainWindow(QMainWindow):
                 g_type_to = geomType[i+1] if i+1 < len(geomType) else "-"
                 if any_deltaI and g_type_from != "Spiral" and g_type_to != "Spiral":
                     report_lines.append(f"--- {lan.get('reportTransition', 'Transition')} | {lan['station']}: {stations[i]:.3f} | {g_type_from} -> {g_type_to} ---")
-                    for p_name, dI_val, v_val, reason_raw in transition_data:
-                        reason_str = str(reason_raw)
-                        line_str = f"  [{p_name}] V: {v_val:.0f} km/h | deltaI: {dI_val:.0f} mm | Limit: {lan.get('lim_' + reason_str, reason_str)}"
+                    for p_name, dI_val, v_val in transition_data:
+                        line_str = f"  [{p_name}] V: {v_val:.0f} km/h | deltaI: {dI_val:.0f} mm"
                         report_lines.append(line_str)
                     report_lines.append("")
                 continue
@@ -2025,7 +2043,7 @@ class MainWindow(QMainWindow):
             header_line += " ---"
             report_lines.append(header_line)
 
-            for p_name, v_arr, i_arr, dD_arr, dI_arr, lr_arr in profiles:
+            for p_name, v_arr, i_arr, dD_arr, dI_arr, lD_arr, lI_arr, util_D_arr, util_I_arr in profiles:
                 v_start, v_end = v_arr[i], v_arr[i+1]
                 sign_d_start = np.sign(cant[i]) if cant[i] != 0 else 1.0
                 sign_d_end = np.sign(cant[i+1]) if cant[i+1] != 0 else 1.0
@@ -2065,11 +2083,18 @@ class MainWindow(QMainWindow):
                     nI_val = calc_n(L, dI, v_start)
                     line_str += f" | D: {d_start:.0f} -> {d_end:.0f} mm | I: {i_start:.0f} -> {i_end:.0f} mm | n: {n_val} | nI: {nI_val} | deltaI: {dI:.0f} mm | dD/dt: {dd_dt:.2f} mm/s | dI/dt: {di_dt:.2f} mm/s"
 
-                reason_str = str(lr_arr[i+1]) if g_type == "Spiral" else str(lr_arr[i])
-                line_str += f" | Limit: {lan.get('lim_' + reason_str, reason_str)}"
+                util_D_val = max(util_D_arr[i], util_D_arr[i+1])
+                util_I_val = max(util_I_arr[i], util_I_arr[i+1])
+                line_str += f" | Util D: {util_D_val*100:.1f}% | Util I: {util_I_val*100:.1f}%"
 
                 if g_type in ["Curve", "Spiral"]:
-                    stats[p_name][reason_str] = stats[p_name].get(reason_str, 0) + 1
+                    profile_stats[p_name]["weighted_util_sum_D"] += util_D_val * L
+                    profile_stats[p_name]["weighted_util_sum_I"] += util_I_val * L
+                    profile_stats[p_name]["total_length"] += L
+
+                if g_type in ["Curve", "Spiral"]:
+                    if lD_arr[i] or lD_arr[i+1]: stats[p_name]["limit_D"] += 1
+                    if lI_arr[i] or lI_arr[i+1]: stats[p_name]["limit_I"] += 1
 
                 report_lines.append(line_str)
             report_lines.append("")
@@ -2080,10 +2105,8 @@ class MainWindow(QMainWindow):
 
         for p_name in ["V100", "V130", "V150", "VK"]:
             report_lines.append(f"--- {p_name} ---")
-            for reason_str, count in sorted(stats[p_name].items(), key=lambda item: item[1], reverse=True):
-                pct = count / total_elements * 100 if total_elements > 0 else 0
-                translated_reason = lan.get(f"lim_{reason_str}", reason_str)
-                report_lines.append(f"  {translated_reason}: {count}x ({pct:.1f} %)")
+            report_lines.append(f"  {lan.get('lim_D', 'D (Cant)')} limit: {stats[p_name]['limit_D']}x")
+            report_lines.append(f"  {lan.get('lim_I', 'I (Cant Deficiency)')} limit: {stats[p_name]['limit_I']}x")
             report_lines.append("")
 
         report_lines.append(lan.get("reportExtremesTitle", "=== Extremes of Geometric Parameters ==="))
@@ -2097,6 +2120,11 @@ class MainWindow(QMainWindow):
             str_nI = f"{p_stats['min_nI']:.2f}" if p_stats['min_nI'] != float('inf') else "-"
             str_nI_all = f"{p_stats['min_nI_all']:.2f} (deltaI = {p_stats['min_nI_all_dI']:.0f} mm)" if p_stats['min_nI_all'] != float('inf') else "-"
             
+            weighted_avg_util_D = p_stats["weighted_util_sum_D"] / p_stats["total_length"] if p_stats["total_length"] > 0 else 0.0
+            weighted_avg_util_I = p_stats["weighted_util_sum_I"] / p_stats["total_length"] if p_stats["total_length"] > 0 else 0.0
+            report_lines.append(f"  {lan.get('stat_weighted_avg_util_D', 'Weighted Avg Util D [-]')}: {weighted_avg_util_D*100:.2f}%")
+            report_lines.append(f"  {lan.get('stat_weighted_avg_util_I', 'Weighted Avg Util I [-]')}: {weighted_avg_util_I*100:.2f}%")
+
             report_lines.append(f"  {lan.get('stat_min_n', 'Min n [-]')}: {str_n}")
             report_lines.append(f"  {lan.get('stat_min_nI', 'Min nI [-]')}: {str_nI}")
             report_lines.append(f"  {lan.get('stat_min_nI_all', 'Min nI (all) [-]')}: {str_nI_all}")
@@ -2337,6 +2365,7 @@ class MainWindow(QMainWindow):
         calculate = geometry_engine.GeometryCalculator(self.dataStorage)
         calculate.runCalculationLoop()
 
+        self.update_map_with_speeds()
         self.plotCant()
         self.plotSpeedLimits()
 
@@ -2348,13 +2377,11 @@ class MainWindow(QMainWindow):
         calculate = geometry_engine.GeometryCalculator(self.dataStorage)
         calculate.runCalculationLoopI()
 
+        self.update_map_with_speeds()
         self.plotCant()
         self.plotSpeedLimits()
 
     def calculateTrainSpeed(self):
-
-        # TO DO - Edit this line - changeable via dialogue window
-
         vehicle = vehicle_engine.VehicleCalculator(self.dataStorage)
         vehicle.calculateKinematics()
         
@@ -2371,4 +2398,14 @@ class MainWindow(QMainWindow):
         vehicle.speedLimitsToTime()
 
         self.plotKinematics()
+
+    def update_map_with_speeds(self):
+        lxml = self.dataStorage.get("LandXML", {})
+        if not lxml: return
+        
+        for profile in ["100", "130", "150", "K"]:
+            lxml[f"speedLimits{profile}"] = self.dataStorage.get(f"speedLimits{profile}")
+            lxml[f"stationSpeed{profile}"] = self.dataStorage.get(f"stationSpeed{profile}")
+        
+        self.mapWidget.drawAlignment(lxml.get("alignmentCoordinates", []), lxml)
         

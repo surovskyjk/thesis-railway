@@ -598,21 +598,17 @@ class GeometryCalculator:
             self.speed100[:] = self.vMax 
 
     def determineLimitReasons(self, profile, approach, profileI):
-        limitReasons = np.full(len(self.stationsNew), "-", dtype=object)
-        vInitOrig = self.data.get("settingsData", {}).get("vInit", [120])[0]
+        limitReachedD = np.zeros(len(self.stationsNew), dtype=bool)
+        limitReachedI = np.zeros(len(self.stationsNew), dtype=bool)
+        
+        util_D = np.zeros(len(self.stationsNew))
+        util_I = np.zeros(len(self.stationsNew))
+
         for i in range(len(self.stationsNew)):
             if self.geometryType[i] == "Line":
-                limitReasons[i] = "Line"
                 continue
 
-            if np.isclose(self.vMax[i], vInitOrig):
-                limitReasons[i] = "V_init"
-                continue
-                
             v_check = self.vMax[i]
-            if v_check <= 0:
-                limitReasons[i] = "V=0"
-                continue
 
             I_val = np.abs(self.cantDef[i])
             D_val = np.abs(self.cantNew[i])
@@ -621,41 +617,16 @@ class GeometryCalculator:
             I_lim = min(self.getNormLimit("I", v_check, approach)[0], profileI)
             D_lim = min(self.maxD, self.geometryMaxD(kappa_val))
 
-            util_I = I_val / I_lim if I_lim > 0 else 0
-            util_D = D_val / D_lim if D_lim > 0 else 0
-
-            max_util = max(util_I, util_D)
-            reason = "I" if util_I >= util_D else "D"
-
-            if self.geometryType[i] == "Spiral":
-                L = (self.stationsNew[i] - self.stationsNew[i-1]) * 1000
-                if L > 0:
-                    dD = abs(self.cantNew[i] - self.cantNew[i-1])
-                    dI = abs(self.cantDef[i] - self.cantDef[i-1])
-
-                    dD_lim = self.calculateCantN(v_check, self.getNormLimit("nLin", v_check, approach), L)
-                    dI_nI_lim = self.calculateCantDefNi(v_check, self.getNormLimit("nILin", v_check, approach), L)
-                    dI_delta_lim = self.getNormLimit("dI", v_check, approach)[0]
-
-                    util_n = dD / dD_lim if dD_lim > 0 else 0
-                    util_nI = dI / dI_nI_lim if dI_nI_lim > 0 else 0
-                    util_deltaI = dI / dI_delta_lim if dI_delta_lim > 0 else 0
-
-                    if util_n > max_util: max_util = util_n; reason = "n"
-                    if util_nI > max_util: max_util = util_nI; reason = "nI"
-                    if util_deltaI > max_util: max_util = util_deltaI; reason = "deltaI"
-
-            elif self.geometryType[i] == "Curve":
-                dI_delta_lim = self.getNormLimit("dI", v_check, approach)[0]
-                for adj in [i-1, i+1]:
-                    if 0 <= adj < len(self.stationsNew) and self.geometryType[adj] != "Spiral" and self.kappa[i] != self.kappa[adj]:
-                        util_deltaI = abs(self.cantDef[i] - self.cantDef[adj]) / dI_delta_lim if dI_delta_lim > 0 else 0
-                        if util_deltaI > max_util: max_util = util_deltaI; reason = "deltaI"
-
-            if max_util < 0.85: reason = "Adjacent"
-            limitReasons[i] = reason
+            util_I[i] = I_val / I_lim if I_lim > 0 else 0
+            util_D[i] = D_val / D_lim if D_lim > 0 else 0
             
-        self.data["LandXML"][f"limitReason_{profile}"] = limitReasons
+            if util_D[i] >= 0.99: limitReachedD[i] = True
+            if util_I[i] >= 0.99: limitReachedI[i] = True
+
+        self.data["LandXML"][f"util_D_{profile}"] = util_D
+        self.data["LandXML"][f"util_I_{profile}"] = util_I
+        self.data["LandXML"][f"limitReachedD_{profile}"] = limitReachedD
+        self.data["LandXML"][f"limitReachedI_{profile}"] = limitReachedI
 
     def calculateCantN(self, v, n, length):
         if n[0] == 0 or v == 0:

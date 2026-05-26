@@ -509,15 +509,14 @@ class ReadFile:
 
         # Universal add segment method
 
-        def addSegment(x, y, s=None):
+        def addSegment(x, y, geom_type, s=None):
 
             originalCoords = np.column_stack((x, y)).tolist()
-            alignmentCoordsOriginal.append(originalCoords)
+            alignmentCoordsOriginal.append((originalCoords, geom_type))
 
             if epsgInput == "EPSG:5514":
                 easting = -np.array(y)
                 northing = -np.array(x)
-
             else:
                 easting = np.array(x)
                 northing = np.array(y)
@@ -525,7 +524,7 @@ class ReadFile:
             lon, lat = transformer.transform(easting, northing)
 
             transformedCoords = np.column_stack((lat, lon)).tolist()
-            alignmentCoords.append(transformedCoords)
+            alignmentCoords.append((transformedCoords, geom_type))
 
             if s is not None:
                 for sta, la, lo in zip(s, lat, lon):
@@ -539,8 +538,8 @@ class ReadFile:
                 dy = parsedXML["lineEndY"][i] - parsedXML["lineStartY"][i]
                 length = np.sqrt(dx**2 + dy**2) / 1000.0
                 staEnd = staStart + length
-                addSegment([parsedXML["lineStartX"][i], parsedXML["lineEndX"][i]], 
-                           [parsedXML["lineStartY"][i], parsedXML["lineEndY"][i]], [staStart, staEnd])
+                addSegment([parsedXML["lineStartX"][i], parsedXML["lineEndX"][i]],
+                           [parsedXML["lineStartY"][i], parsedXML["lineEndY"][i]], "Line", [staStart, staEnd])
 
         # Spiral
         if "spiralStartX" in parsedXML:
@@ -562,7 +561,7 @@ class ReadFile:
                 length = parsedXML["spiralLength"][i] / 1000.0
                 staEnd = staStart + length
                 s = np.linspace(staStart, staEnd, len(x)).tolist()
-                addSegment(x, y, s)   
+                addSegment(x, y, "Spiral", s)
 
         # Curve
         if "curveStartX" in parsedXML:
@@ -590,7 +589,7 @@ class ReadFile:
                     staEnd = staStart + length
                 
                 s = np.linspace(staStart, staEnd, len(x)).tolist()
-                addSegment(x, y, s)
+                addSegment(x, y, "Curve", s)
 
         dense_points.sort(key=lambda p: p[0])
         parsedXML["denseAlignment"] = dense_points
