@@ -324,15 +324,43 @@ class GeometryCalculator:
             #                         if self.geometryType[i+2] == "Curve":
             #                             self.cantNew[i+3] = self.cantNew[i+2]
 
+            # cantDefSpeed — speed limit from I change in spiral
+            # Higher of: nI-based speed  OR  virtual-deltaI-based speed
+            # Uses physical I (computed from geometry) to avoid circular dependency with Stage 2 clipping
+            cantDefSpeed = np.full(len(self.stationsNew), np.inf)
+            for i in range(1, len(self.stationsNew)):
+                length = (self.stationsNew[i] - self.stationsNew[i-1]) * 1000
+                if length > 0 and self.geometryType[i] == "Spiral":
+                    # Physical I at each end of the spiral segment (from geometry, not designed cantDef)
+                    I_i    = self.calculateCantDef(self.vInit[i], abs(self.cantNew[i]),   abs(self.kappa[i]))
+                    I_prev = self.calculateCantDef(self.vInit[i], abs(self.cantNew[i-1]), abs(self.kappa[i-1]))
+                    dI_actual  = abs(I_i - I_prev)
+                    dD_actual  = abs(self.cantNew[i] - self.cantNew[i-1])
+                    dKappa     = abs(self.kappa[i] - self.kappa[i-1])
+                    nI_lim     = self.getNormLimit("nILin", self.vInit[i], approach)
+                    v_nI       = length * 1000 / (nI_lim[0] * dI_actual) if (nI_lim[0] > 0 and dI_actual > 0) else np.inf
+                    deltaI_lim = self.getNormLimit("dI", self.vInit[i], approach)[0]
+                    v_deltaI   = np.sqrt((dD_actual + deltaI_lim) / (11.8 * dKappa)) if dKappa > 1e-10 else np.inf
+                    # More lenient of the two; fall back gracefully when one is not applicable (inf)
+                    if np.isinf(v_nI) and np.isinf(v_deltaI):
+                        cantDefSpeed[i] = np.inf
+                    elif np.isinf(v_deltaI):
+                        cantDefSpeed[i] = v_nI
+                    elif np.isinf(v_nI):
+                        cantDefSpeed[i] = v_deltaI
+                    else:
+                        cantDefSpeed[i] = max(v_nI, v_deltaI)
+
             # Stage 4 - Calculate speed in respective section
             for i in range(0, len(self.cantNew), 2):
                 v1 = self.calculateSpeed(np.abs(self.cantNew[i]), np.abs(self.cantDef[i]), np.abs(self.kappa[i]), iterationStep, self.vInit[i])
                 v2 = self.calculateSpeed(np.abs(self.cantNew[i+1]), np.abs(self.cantDef[i+1]), np.abs(self.kappa[i+1]), iterationStep, self.vInit[i+1])
 
-                minVmax = min(v1, v2)
+                minVmax         = min(v1, v2)
+                minCantDefSpeed = min(cantDefSpeed[i], cantDefSpeed[i+1])
 
-                self.vMax[i] = min(self.vInit[i], minVmax)
-                self.vMax[i+1] = min(self.vInit[i+1], minVmax)
+                self.vMax[i] = min(self.vInit[i], minVmax, minCantDefSpeed)
+                self.vMax[i+1] = min(self.vInit[i+1], minVmax, minCantDefSpeed)
 
                 if self.vMax[i] < self.vInit[i] or self.vMax[i+1] < self.vInit[i+1]:
                     if self.vInit[i] > iterationStep:
@@ -345,6 +373,11 @@ class GeometryCalculator:
         #     print(self.stationsNew[i], self.cantNew[i], self.cantDef[i], self.vMax[i], self.vInit[i], self.geometryType[i], self.kappa[i])
         # print(self.getNormLimit("nLin", 120, approach))
         # print(f"Convergation reached after {iterationN} iterations.")
+
+        # Debugging print - cantDefSpeed (calculationLoop)
+        # for i in range(len(self.stationsNew)):
+        #     if cantDefSpeed[i] < np.inf:
+        #         print(f"  cantDefSpeed[{i}] sta={self.stationsNew[i]:.3f} {self.geometryType[i]}: {cantDefSpeed[i]:.1f} km/h")
 
         for i in range(0, len(self.cantNew)):
             signD = np.sign(self.cantNew[i]) if self.cantNew[i] != 0 else 1.0
@@ -524,16 +557,44 @@ class GeometryCalculator:
 
             self.cantDef[:] = np.where(np.abs(cantDefFWD) < np.abs(cantDefBWD), cantDefFWD, cantDefBWD)
 
+            # cantDefSpeed — speed limit from I change in spiral
+            # Higher of: nI-based speed  OR  virtual-deltaI-based speed
+            # Uses physical I (computed from geometry) to avoid circular dependency with Stage 2 clipping
+            cantDefSpeed = np.full(len(self.stationsNew), np.inf)
+            for i in range(1, len(self.stationsNew)):
+                length = (self.stationsNew[i] - self.stationsNew[i-1]) * 1000
+                if length > 0 and self.geometryType[i] == "Spiral":
+                    # Physical I at each end of the spiral segment (from geometry, not designed cantDef)
+                    I_i    = self.calculateCantDef(self.vInit[i], abs(self.cantNew[i]),   abs(self.kappa[i]))
+                    I_prev = self.calculateCantDef(self.vInit[i], abs(self.cantNew[i-1]), abs(self.kappa[i-1]))
+                    dI_actual  = abs(I_i - I_prev)
+                    dD_actual  = abs(self.cantNew[i] - self.cantNew[i-1])
+                    dKappa     = abs(self.kappa[i] - self.kappa[i-1])
+                    nI_lim     = self.getNormLimit("nILin", self.vInit[i], approach)
+                    v_nI       = length * 1000 / (nI_lim[0] * dI_actual) if (nI_lim[0] > 0 and dI_actual > 0) else np.inf
+                    deltaI_lim = self.getNormLimit("dI", self.vInit[i], approach)[0]
+                    v_deltaI   = np.sqrt((dD_actual + deltaI_lim) / (11.8 * dKappa)) if dKappa > 1e-10 else np.inf
+                    # More lenient of the two; fall back gracefully when one is not applicable (inf)
+                    if np.isinf(v_nI) and np.isinf(v_deltaI):
+                        cantDefSpeed[i] = np.inf
+                    elif np.isinf(v_deltaI):
+                        cantDefSpeed[i] = v_nI
+                    elif np.isinf(v_nI):
+                        cantDefSpeed[i] = v_deltaI
+                    else:
+                        cantDefSpeed[i] = max(v_nI, v_deltaI)
+
             # Stage 4 - Calculate speed in respective section
             for i in range(0, len(self.cantNew), 2):
                 v1 = self.calculateSpeed(np.abs(self.cantNew[i]), np.abs(self.cantDef[i]), np.abs(self.kappa[i]), iterationStep, self.vInit[i])
                 v2 = self.calculateSpeed(np.abs(self.cantNew[i+1]), np.abs(self.cantDef[i+1]), np.abs(self.kappa[i+1]), iterationStep, self.vInit[i+1])
 
-                minVmax = min(v1, v2)
-                minCantSpeed = min(cantSpeed[i], cantSpeed[i+1])
+                minVmax         = min(v1, v2)
+                minCantSpeed    = min(cantSpeed[i], cantSpeed[i+1])
+                minCantDefSpeed = min(cantDefSpeed[i], cantDefSpeed[i+1])
 
-                self.vMax[i] = min(self.vInit[i], minVmax, minCantSpeed)
-                self.vMax[i+1] = min(self.vInit[i+1], minVmax, minCantSpeed)
+                self.vMax[i] = min(self.vInit[i], minVmax, minCantSpeed, minCantDefSpeed)
+                self.vMax[i+1] = min(self.vInit[i+1], minVmax, minCantSpeed, minCantDefSpeed)
 
                 if self.vMax[i] < self.vInit[i] or self.vMax[i+1] < self.vInit[i+1]:
                     if self.vInit[i] > iterationStep:
@@ -545,6 +606,11 @@ class GeometryCalculator:
         # for i in range(0,len(self.cantNew)):
         #     print(self.stationsNew[i], self.cantNew[i], self.cantDef[i], self.vMax[i], self.vInit[i], self.geometryType[i], self.kappa[i])
         # print(self.getNormLimit("nLin", 120, approach))
+
+        # Debugging print - cantDefSpeed (calculationLoopI)
+        # for i in range(len(self.stationsNew)):
+        #     if cantDefSpeed[i] < np.inf:
+        #         print(f"  cantDefSpeed[{i}] sta={self.stationsNew[i]:.3f} {self.geometryType[i]}: {cantDefSpeed[i]:.1f} km/h")
 
         for i in range(0, len(self.cantNew)):
             signD = np.sign(self.cantNew[i]) if self.cantNew[i] != 0 else 1.0

@@ -384,8 +384,8 @@ class VehicleCalculator:
                 b0, b1, b2 = float(trac[3]), float(trac[4]), float(trac[5])
                 
                 if vMin <= vKmh <= vMax:
-                    # Evaluates to Newtons: T = g * (b0 + b1*v + b2*v^2)
-                    return 9.81 * (b0 + b1 * vKmh + b2 * (vKmh ** 2))
+                    # Evaluates to Newtons: T = (b0 + b1*v + b2*v^2)*1000
+                    return 1000 * (b0 + b1 * vKmh + b2 * (vKmh ** 2))
             except (IndexError, ValueError):
                 continue
         return 0.0
@@ -401,7 +401,7 @@ class VehicleCalculator:
         # Force of gradient = m * g * (slope / 1000)
         forceGrad = self.massKg * g * (slopePermille / 1000.0)
         
-        # Force of curvature based on typical empirical formula (e.g., Röckl approx 600/R)
+        # Force of curvature based on Röckl approx 600/R
         # Using F_curve (N) = mass_kg * g * 0.6 * |curvature|
         forceCurve = self.massKg * g * 0.6 * abs(curvature)
         
