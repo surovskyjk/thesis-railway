@@ -23,9 +23,7 @@ class GeometryCalculator:
         self.resetInitialSpeed()
         self.calculationLoop(self.designApproach, self.defaultProfile)
 
-        otherProfiles = [p for p in profiles if p != self.defaultProfile]
-
-        for profile in otherProfiles:
+        for profile in profiles:
             self.resetInitialSpeed()
             self.calculationLoopI(self.designApproach, profile, currentCant=False)
 
@@ -52,7 +50,7 @@ class GeometryCalculator:
 
         lenStationPos = len(lxml["stationCantPossible"])
 
-        self.kappa = lxml.get("curvature",np.zeros(lenStationPos)) * lxml.get("curvatureSign",np.zeros(lenStationPos))
+        self.kappa = lxml.get("curvature",np.zeros(lenStationPos))
         self.curvSign = lxml.get("curvatureSign",np.zeros(lenStationPos))
 
         # Cant arrays
@@ -290,6 +288,42 @@ class GeometryCalculator:
                     self.cantNew[i] = signD * minD
                     self.cantNew[i-1] = signD * minD
 
+            # # Stage 3.5 - Inflection points D1/D2 = L1/L2
+            # for i in range(1, len(self.stationsNew)):
+            #     if self.stationsNew[i] == self.stationsNew[i-1]:
+            #         if self.geometryType[i-1] == "Spiral" and self.geometryType[i] == "Spiral":
+            #             if self.curvSign[i-1] != self.curvSign[i] and self.curvSign[i-1] != 0 and self.curvSign[i] != 0:
+            #                 L1 = abs(self.stationsNew[i-1] - self.stationsNew[i-2])
+            #                 L2 = abs(self.stationsNew[i+1] - self.stationsNew[i])
+            #                 if L1 > 0 and L2 > 0:
+            #                     D1 = np.abs(self.cantNew[i-2])
+            #                     D2 = np.abs(self.cantNew[i+1])
+                                
+            #                     # Ponížení převýšení pro dodržení poměru (vždy se přizpůsobí strmější rampa)
+            #                     if D1 * L2 > D2 * L1:
+            #                         D1 = D2 * L1 / L2
+            #                     else:
+            #                         D2 = D1 * L2 / L1
+                                
+            #                     signD1 = np.sign(self.cantNew[i-2]) if self.cantNew[i-2] != 0 else self.curvSign[i-2]
+            #                     signD2 = np.sign(self.cantNew[i+1]) if self.cantNew[i+1] != 0 else self.curvSign[i+1]
+                                
+            #                     self.cantNew[i-2] = signD1 * D1
+            #                     self.cantNew[i+1] = signD2 * D2
+            #                     self.cantNew[i-1] = 0
+            #                     self.cantNew[i] = 0
+                                
+            #                     # Okamžité propsání upraveného převýšení do přilehlých kružnicových oblouků
+            #                     if i-3 >= 0 and self.stationsNew[i-2] == self.stationsNew[i-3]:
+            #                         self.cantNew[i-3] = self.cantNew[i-2]
+            #                         if self.geometryType[i-3] == "Curve":
+            #                             self.cantNew[i-4] = self.cantNew[i-3]
+                                        
+            #                     if i+2 < len(self.stationsNew) and self.stationsNew[i+1] == self.stationsNew[i+2]:
+            #                         self.cantNew[i+2] = self.cantNew[i+1]
+            #                         if self.geometryType[i+2] == "Curve":
+            #                             self.cantNew[i+3] = self.cantNew[i+2]
+
             # Stage 4 - Calculate speed in respective section
             for i in range(0, len(self.cantNew), 2):
                 v1 = self.calculateSpeed(np.abs(self.cantNew[i]), np.abs(self.cantDef[i]), np.abs(self.kappa[i]), iterationStep, self.vInit[i])
@@ -327,7 +361,8 @@ class GeometryCalculator:
             self.vMax[i] = np.floor(self.vMax[i] / iterationStep) * iterationStep
 
             # Skutečný přepočet nedostatku převýšení pro finální rychlost
-            self.cantDef[i] = np.ceil(np.abs(self.calculateCantDef(self.vMax[i], np.abs(self.cantNew[i]), np.abs(self.kappa[i]))))
+            signKappa = np.sign(self.kappa[i]) if self.kappa[i] != 0 else 1.0
+            self.cantDef[i] = signKappa * np.ceil(np.abs(self.calculateCantDef(self.vMax[i], np.abs(self.cantNew[i]), np.abs(self.kappa[i]))))
 
         self.determineLimitReasons(profile, approach, profileI)
 
@@ -412,8 +447,9 @@ class GeometryCalculator:
             iterationN += 1
 
             # Stage 1 - based on cant provided in each element, calculate D in stationCantPossible and maximum speed for respective dD
-            self.cantNew[:] = np.interp(self.stationsNew, self.stationsCant, self.cant)
-            cantSpeed = np.zeros_like(self.stationsNew)
+            if currentCant:
+                self.cantNew[:] = np.interp(self.stationsNew, self.stationsCant, self.cant)
+            cantSpeed = np.full_like(self.stationsNew, np.inf)
 
             for i in range(1, len(self.cantNew)):
                 length = (self.stationsNew[i] - self.stationsNew[i-1])*1000
@@ -494,15 +530,16 @@ class GeometryCalculator:
                 v2 = self.calculateSpeed(np.abs(self.cantNew[i+1]), np.abs(self.cantDef[i+1]), np.abs(self.kappa[i+1]), iterationStep, self.vInit[i+1])
 
                 minVmax = min(v1, v2)
+                minCantSpeed = min(cantSpeed[i], cantSpeed[i+1])
 
-                self.vMax[i] = min(self.vInit[i], minVmax)
-                self.vMax[i+1] = min(self.vInit[i+1], minVmax)
+                self.vMax[i] = min(self.vInit[i], minVmax, minCantSpeed)
+                self.vMax[i+1] = min(self.vInit[i+1], minVmax, minCantSpeed)
 
-                if self.vMax[i] < self.vInit[i] or self.vMax[i+1] < self.vInit[i+1] or self.vMax[i] > cantSpeed[i]:
+                if self.vMax[i] < self.vInit[i] or self.vMax[i+1] < self.vInit[i+1]:
                     if self.vInit[i] > iterationStep:
+                        self.vInit[i] -= iterationStep
+                        self.vInit[i+1] -= iterationStep
                         convergenceReached = False
-
-                self.vMax[i] = min(self.vMax[i], self.vInit[i])
 
         # # Debugging print
         # for i in range(0,len(self.cantNew)):
@@ -524,7 +561,8 @@ class GeometryCalculator:
             self.vMax[i] = np.floor(self.vMax[i] / iterationStep) * iterationStep
 
             # Skutečný přepočet nedostatku převýšení pro finální rychlost
-            self.cantDef[i] = np.ceil(np.abs(self.calculateCantDef(self.vMax[i], np.abs(self.cantNew[i]), np.abs(self.kappa[i]))))
+            signKappa = np.sign(self.kappa[i]) if self.kappa[i] != 0 else 1.0
+            self.cantDef[i] = signKappa * np.ceil(np.abs(self.calculateCantDef(self.vMax[i], np.abs(self.cantNew[i]), np.abs(self.kappa[i]))))
 
         self.determineLimitReasons(profile, approach, profileI)
 
@@ -561,12 +599,13 @@ class GeometryCalculator:
 
     def determineLimitReasons(self, profile, approach, profileI):
         limitReasons = np.full(len(self.stationsNew), "-", dtype=object)
+        vInitOrig = self.data.get("settingsData", {}).get("vInit", [120])[0]
         for i in range(len(self.stationsNew)):
             if self.geometryType[i] == "Line":
                 limitReasons[i] = "Line"
                 continue
-                
-            if np.isclose(self.vMax[i], self.vInit[i]):
+
+            if np.isclose(self.vMax[i], vInitOrig):
                 limitReasons[i] = "V_init"
                 continue
                 
@@ -575,7 +614,7 @@ class GeometryCalculator:
                 limitReasons[i] = "V=0"
                 continue
 
-            I_val = self.cantDef[i]
+            I_val = np.abs(self.cantDef[i])
             D_val = np.abs(self.cantNew[i])
             kappa_val = np.abs(self.kappa[i])
 

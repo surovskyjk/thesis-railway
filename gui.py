@@ -1322,6 +1322,12 @@ class MainWindow(QMainWindow):
 
         self.canvasAlignment.ax_cant.grid(True)
         self.canvasAlignment.ax_cant.autoscale(enable=True, axis='x', tight=True)
+        
+        # Srovnání osy y tak, aby 0 byla přesně uprostřed grafu
+        ymin, ymax = self.canvasAlignment.ax_cant.get_ylim()
+        y_limit = 500
+        self.canvasAlignment.ax_cant.set_ylim(-y_limit, y_limit)
+
         self.canvasAlignment.ax_cant.set_xlabel(lan["station"])
         self.canvasAlignment.ax_cant.set_ylabel(lan["cant"])
         self.canvasAlignment.ax_cant.set_title(f'{lan["cant"]} vs {lan["station"]}', loc = 'left')
@@ -1348,7 +1354,8 @@ class MainWindow(QMainWindow):
             if np.isclose(x, 0, atol=1e-6):
                 return "0"
             else:
-                return f"1/{int(round(1/x))}"
+                sign = "-" if x < 0 else ""
+                return f"{sign}1/{abs(int(round(1/x)))}"
 
         curvature = lxml.get("curvature")
         if (curvature is not None and len(curvature) > 0) and (stationHorizontal is not None and len(stationHorizontal) > 0):
@@ -1364,8 +1371,14 @@ class MainWindow(QMainWindow):
         
         self.canvasAlignment.ax_curvature.yaxis.set_label_position("right")
         self.canvasAlignment.ax_curvature.yaxis.tick_right()
-        self.canvasAlignment.ax_curvature.grid(True)
+        self.canvasAlignment.ax_curvature.grid(False)
         self.canvasAlignment.ax_curvature.autoscale(enable=True, axis='x', tight=True)
+        
+        # Srovnání osy y tak, aby 0 byla přesně uprostřed grafu (sladění s ax_cant)
+        ymin, ymax = self.canvasAlignment.ax_curvature.get_ylim()
+        y_limit = max(abs(ymin), abs(ymax))
+        self.canvasAlignment.ax_curvature.set_ylim(-y_limit, y_limit)
+
         self.canvasAlignment.ax_curvature.set_xlabel(lan["station"])
         self.canvasAlignment.ax_curvature.set_ylabel(lan["curvature"])
         self.canvasAlignment.ax_curvature.set_title(f'{lan["curvature"]} vs {lan["station"]}', loc ='right')
@@ -1514,19 +1527,47 @@ class MainWindow(QMainWindow):
             kinematicsStation = self.dataStorage.get(f"kinematicsStationM_{v_idx}")
             kinematicsSpeed = self.dataStorage.get(f"kinematicsSpeedM_{v_idx}")
             kinematicsTime = self.dataStorage.get(f"kinematicsTimeS_{v_idx}")
+            kinematicsDwells = self.dataStorage.get(f"kinematicsDwellTimesS_{v_idx}")
 
-            if (kinematicsStation is not None and len(kinematicsStation) > 0) and (kinematicsSpeed is not None and len(kinematicsSpeed) > 0):
+            if kinematicsStation is None or len(kinematicsStation) == 0:
+                continue
+
+            # Create copies for plotting time-based graphs, inserting arrival points for stops
+            plot_times = list(kinematicsTime)
+            plot_speeds = list(kinematicsSpeed)
+            plot_stations = list(kinematicsStation)
+            
+            if kinematicsDwells is not None:
+                stop_indices = np.where(kinematicsDwells > 0)[0]
+                offset = 0
+                for idx in stop_indices:
+                    actual_idx = idx + offset
+                    departure_time = plot_times[actual_idx]
+                    dwell_time = kinematicsDwells[idx]
+                    arrival_time = departure_time - dwell_time
+                    
+                    # Insert arrival point (arrival_time, 0 speed)
+                    plot_times.insert(actual_idx, arrival_time)
+                    plot_speeds.insert(actual_idx, 0.0)
+                    plot_stations.insert(actual_idx, plot_stations[actual_idx])
+                    offset += 1
+
+            plot_times_arr = np.array(plot_times)
+            plot_speeds_arr = np.array(plot_speeds)
+            plot_stations_arr = np.array(plot_stations)
+
+            if kinematicsSpeed is not None and len(kinematicsSpeed) > 0:
                 line2, = self.canvasKinematics.ax_tacho_track.plot(kinematicsStation / d_factor, kinematicsSpeed * v_factor, linestyle='-', color=colors_speed[v_idx], label=speed_lbl + lbl_v)
                 self.plotKinematicsData[f"simTrack_{v_idx}"] = line2
                 line2.set_visible(self.toggleKinematicsSpeedLimitTrackAction.isChecked())
 
-            if (kinematicsTime is not None and len(kinematicsTime) > 0) and (kinematicsSpeed is not None and len(kinematicsSpeed) > 0):
-                line2, = self.canvasKinematics.ax_tacho_time.plot(kinematicsTime / t_factor, kinematicsSpeed * v_factor, linestyle='-', color=colors_speed[v_idx], label=speed_lbl + lbl_v)
+            if len(plot_times_arr) > 0 and len(plot_speeds_arr) > 0:
+                line2, = self.canvasKinematics.ax_tacho_time.plot(plot_times_arr / t_factor, plot_speeds_arr * v_factor, linestyle='-', color=colors_speed[v_idx], label=speed_lbl + lbl_v)
                 self.plotKinematicsData[f"simTime_{v_idx}"] = line2
                 line2.set_visible(self.toggleKinematicsSpeedLimitTimeAction.isChecked())
 
-            if (kinematicsTime is not None and len(kinematicsTime) > 0) and (kinematicsStation is not None and len(kinematicsStation) > 0):
-                line2, = self.canvasKinematics.ax_dist_time.plot(kinematicsTime / t_factor, kinematicsStation / d_factor, linestyle='-', color=colors_speed[v_idx], label=dist_lbl + lbl_v)
+            if len(plot_times_arr) > 0 and len(plot_stations_arr) > 0:
+                line2, = self.canvasKinematics.ax_dist_time.plot(plot_times_arr / t_factor, plot_stations_arr / d_factor, linestyle='-', color=colors_speed[v_idx], label=dist_lbl + lbl_v)
                 self.plotKinematicsData[f"distTimeSim_{v_idx}"] = line2
                 line2.set_visible(self.toggleKinematicsDistanceTimeAction.isChecked())
 
@@ -1917,12 +1958,22 @@ class MainWindow(QMainWindow):
 
         stats = {"V100": {}, "V130": {}, "V150": {}, "VK": {}}
         profile_stats = {
-            "V100": {"min_n": float('inf'), "min_nI": float('inf'), "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0},
-            "V130": {"min_n": float('inf'), "min_nI": float('inf'), "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0},
-            "V150": {"min_n": float('inf'), "min_nI": float('inf'), "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0},
-            "VK":   {"min_n": float('inf'), "min_nI": float('inf'), "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0}
+            "V100": {"min_n": float('inf'), "min_nI": float('inf'), "min_nI_all": float('inf'), "min_nI_all_dI": 0.0, "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0},
+            "V130": {"min_n": float('inf'), "min_nI": float('inf'), "min_nI_all": float('inf'), "min_nI_all_dI": 0.0, "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0},
+            "V150": {"min_n": float('inf'), "min_nI": float('inf'), "min_nI_all": float('inf'), "min_nI_all_dI": 0.0, "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0},
+            "VK":   {"min_n": float('inf'), "min_nI": float('inf'), "min_nI_all": float('inf'), "min_nI_all_dI": 0.0, "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0}
         }
         total_elements = 0
+        
+        limits_dI = self.dataStorage.get("settingsData", {}).get("dI", [])
+        approach = self.dataStorage.get("settingsData", {}).get("designApproach", "standard")
+        curr_app_dI = approach.get("dI", "standard") if isinstance(approach, dict) else approach
+        col_dI = {"standard": 2, "limit": 3, "minmax": 4}.get(curr_app_dI, 3)
+
+        def get_dI_lim(v):
+            for row in limits_dI:
+                if row[0] < v <= row[1]: return row[col_dI]
+            return limits_dI[-1][col_dI] if limits_dI else 0
 
         for i in range(len(stations) - 1):
             L = (stations[i+1] - stations[i]) * 1000
@@ -1934,10 +1985,25 @@ class MainWindow(QMainWindow):
                 ("VK", vK, cDefK, dDdtK, dIdtK, lrK),
             ]
 
-            if L <= 0: 
+            if L <= 0:
+                transition_data = []
+                any_deltaI = False
                 for p_name, v_arr, i_arr, dD_arr, dI_arr, lr_arr in profiles:
                     deltaI = abs(i_arr[i+1] - i_arr[i])
                     profile_stats[p_name]["max_deltaI"] = max(profile_stats[p_name]["max_deltaI"], deltaI)
+                    transition_data.append((p_name, deltaI, max(v_arr[i], v_arr[i+1]), lr_arr[i+1]))
+                    if deltaI > 1e-3:
+                        any_deltaI = True
+                
+                g_type_from = geomType[i] if i < len(geomType) else "-"
+                g_type_to = geomType[i+1] if i+1 < len(geomType) else "-"
+                if any_deltaI and g_type_from != "Spiral" and g_type_to != "Spiral":
+                    report_lines.append(f"--- {lan.get('reportTransition', 'Transition')} | {lan['station']}: {stations[i]:.3f} | {g_type_from} -> {g_type_to} ---")
+                    for p_name, dI_val, v_val, reason_raw in transition_data:
+                        reason_str = str(reason_raw)
+                        line_str = f"  [{p_name}] V: {v_val:.0f} km/h | deltaI: {dI_val:.0f} mm | Limit: {lan.get('lim_' + reason_str, reason_str)}"
+                        report_lines.append(line_str)
+                    report_lines.append("")
                 continue
             
             g_type = geomType[i]
@@ -1947,7 +2013,11 @@ class MainWindow(QMainWindow):
             r_start = radius[i] if i < len(radius) else float('inf')
             r_end = radius[i+1] if i+1 < len(radius) else float('inf')
             
-            header_line = f"--- {g_type} | {lan['station']}: {stations[i]:.3f} - {stations[i+1]:.3f} | L = {L:.2f} m"
+            max_v_elem = max(v100[i], v100[i+1], v130[i], v130[i+1], v150[i], v150[i+1], vK[i], vK[i+1])
+            x_val = L / max_v_elem if max_v_elem > 0 else float('inf')
+            str_x = f"{x_val:.2f}" if max_v_elem > 0 else "INF"
+            
+            header_line = f"--- {g_type} | {lan['station']}: {stations[i]:.3f} - {stations[i+1]:.3f} | L = {L:.2f} m ({str_x}*V)"
             if g_type == "Curve":
                 header_line += f" | R: {format_r(r_start)} m"
             elif g_type == "Spiral":
@@ -1961,7 +2031,10 @@ class MainWindow(QMainWindow):
                 sign_d_end = np.sign(cant[i+1]) if cant[i+1] != 0 else 1.0
                 d_start = sign_d_start * np.floor(np.abs(cant[i]))
                 d_end = sign_d_end * np.floor(np.abs(cant[i+1]))
-                i_start, i_end = np.ceil(np.abs(i_arr[i])), np.ceil(np.abs(i_arr[i+1]))
+                sign_i_start = np.sign(i_arr[i]) if i_arr[i] != 0 else 1.0
+                sign_i_end = np.sign(i_arr[i+1]) if i_arr[i+1] != 0 else 1.0
+                i_start = sign_i_start * np.ceil(np.abs(i_arr[i]))
+                i_end = sign_i_end * np.ceil(np.abs(i_arr[i+1]))
                 dd_dt = dD_arr[i]
                 di_dt = dI_arr[i]
 
@@ -1982,13 +2055,17 @@ class MainWindow(QMainWindow):
                         profile_stats[p_name]["min_n"] = min(profile_stats[p_name]["min_n"], n_val_f)
                     if dI > 1e-3 and v_start > 1e-3:
                         nI_val_f = L * 1000 / (dI * v_start)
-                        profile_stats[p_name]["min_nI"] = min(profile_stats[p_name]["min_nI"], nI_val_f)
+                        if dI > get_dI_lim(v_start):
+                            profile_stats[p_name]["min_nI"] = min(profile_stats[p_name]["min_nI"], nI_val_f)
+                        if nI_val_f < profile_stats[p_name]["min_nI_all"]:
+                            profile_stats[p_name]["min_nI_all"] = nI_val_f
+                            profile_stats[p_name]["min_nI_all_dI"] = dI
                         
                     n_val = calc_n(L, dD, v_start)
                     nI_val = calc_n(L, dI, v_start)
-                    line_str += f" | D: {d_start:.0f} -> {d_end:.0f} mm | I: {i_start:.0f} -> {i_end:.0f} mm | n: {n_val} | nI: {nI_val} | dD/dt: {dd_dt:.2f} mm/s | dI/dt: {di_dt:.2f} mm/s"
-                
-                reason_str = str(lr_arr[i])
+                    line_str += f" | D: {d_start:.0f} -> {d_end:.0f} mm | I: {i_start:.0f} -> {i_end:.0f} mm | n: {n_val} | nI: {nI_val} | deltaI: {dI:.0f} mm | dD/dt: {dd_dt:.2f} mm/s | dI/dt: {di_dt:.2f} mm/s"
+
+                reason_str = str(lr_arr[i+1]) if g_type == "Spiral" else str(lr_arr[i])
                 line_str += f" | Limit: {lan.get('lim_' + reason_str, reason_str)}"
 
                 if g_type in ["Curve", "Spiral"]:
@@ -2018,9 +2095,11 @@ class MainWindow(QMainWindow):
             
             str_n = f"{p_stats['min_n']:.2f}" if p_stats['min_n'] != float('inf') else "-"
             str_nI = f"{p_stats['min_nI']:.2f}" if p_stats['min_nI'] != float('inf') else "-"
+            str_nI_all = f"{p_stats['min_nI_all']:.2f} (deltaI = {p_stats['min_nI_all_dI']:.0f} mm)" if p_stats['min_nI_all'] != float('inf') else "-"
             
             report_lines.append(f"  {lan.get('stat_min_n', 'Min n [-]')}: {str_n}")
             report_lines.append(f"  {lan.get('stat_min_nI', 'Min nI [-]')}: {str_nI}")
+            report_lines.append(f"  {lan.get('stat_min_nI_all', 'Min nI (all) [-]')}: {str_nI_all}")
             report_lines.append(f"  {lan.get('stat_max_dDdt', 'Max dD/dt [mm/s]')}: {p_stats['max_dd_dt']:.2f}")
             report_lines.append(f"  {lan.get('stat_max_dIdt', 'Max dI/dt [mm/s]')}: {p_stats['max_di_dt']:.2f}")
             report_lines.append(f"  {lan.get('stat_max_D', 'Max D [mm]')}: {p_stats['max_D']:.0f}")
@@ -2044,8 +2123,27 @@ class MainWindow(QMainWindow):
         f_trac = self.dataStorage.get(f"kinematicsForceTractionKN_{v_idx}", np.zeros_like(stations))
         f_brake = self.dataStorage.get(f"kinematicsForceBrakingKN_{v_idx}", np.zeros_like(stations))
         f_res = self.dataStorage.get(f"kinematicsForceResistanceKN_{v_idx}", np.zeros_like(stations))
+        times = self.dataStorage.get(f"kinematicsTimeS_{v_idx}", [])
 
         tableData = []
+
+        # Travel time and average speed calculation
+        if len(stations) > 1 and len(times) > 1:
+            total_distance_m = stations[-1] - stations[0]
+            total_time_s = times[-1]
+            avg_speed_ms = total_distance_m / total_time_s if total_time_s > 0 else 0
+            avg_speed_kmh = avg_speed_ms * 3.6
+            minutes, seconds = divmod(total_time_s, 60)
+
+            tableData.append({
+                lan.get("station", "Station [km]"): f"=== {lan.get('run_summary_title', 'SOUHRN JÍZDY')} ===",
+                lan.get("speed", "Speed [km/h]"): lan.get('total_travel_time', 'Celková jízdní doba:'),
+                "Accel [m/s2]": f"{int(minutes):02d} min {int(seconds):02d} s",
+                lan.get("forceTraction", "Tractive Force [kN]"): lan.get('average_speed', 'Průměrná rychlost:'),
+                lan.get("forceBraking", "Braking Force [kN]"): f"{avg_speed_kmh:.2f} km/h",
+                lan.get("forceResistance", "Resistance [kN]"): ""
+            })
+            tableData.append({k: "---" for k in tableData[0].keys()})
 
         # Energy calculation
         dx = np.diff(stations)

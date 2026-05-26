@@ -188,7 +188,8 @@ DIC = {
          "lim_I": "I (Nedostatek převýšení)",
          "lim_n": "n (Sklon vzestupnice)",
          "lim_nI": "nI (Změna nedostatku převýšení)",
-         "lim_deltaI": "deltaI (Náhlá změna nedostatku)",
+         "lim_deltaI": "deltaI (Náhlá změna nedostatku převýšení)",
+         "reportTransition": "Přechod (náhlá změna deltaI)",
          "lim_V_init": "V_init (Neomezeno / Původní traťová)",
          "lim_V=0": "V = 0 (Zastavení)",
          "lim_Adjacent": "Omezeno sousedním prvkem",
@@ -196,7 +197,8 @@ DIC = {
          "lim_-": "-",
          "reportExtremesTitle": "=== Extrémní hodnoty geometrických parametrů ===",
          "stat_min_n": "Minimální n [-]",
-         "stat_min_nI": "Minimální nI [-]",
+         "stat_min_nI": "Minimální nI (kde dI > lim) [-]",
+         "stat_min_nI_all": "Minimální nI (všeobecně) [-]",
          "stat_max_dDdt": "Maximální dD/dt [mm/s]",
          "stat_max_dIdt": "Maximální dI/dt [mm/s]",
          "stat_max_D": "Maximální D [mm]",
@@ -204,7 +206,10 @@ DIC = {
          "stat_max_deltaI": "Maximální deltaI (náhlá změna) [mm]",
          "energy_title": "SOUHRN ENERGIE",
          "energyTraction": "Trakce [kWh]",
-         "energyBraking": "Brzda [kWh]"
+         "energyBraking": "Brzda [kWh]",
+         "run_summary_title": "SOUHRN JÍZDY",
+         "total_travel_time": "Celková jízdní doba:",
+         "average_speed": "Průměrná rychlost:"
         },
 
      "en": {
@@ -394,6 +399,7 @@ DIC = {
          "lim_n": "n (Cant Ramp Gradient)",
          "lim_nI": "nI (Cant Def Change)",
          "lim_deltaI": "deltaI (Abrupt Change)",
+         "reportTransition": "Transition (abrupt deltaI)",
          "lim_V_init": "V_init (Unlimited / Track Speed)",
          "lim_V=0": "V = 0 (Stop)",
          "lim_Adjacent": "Adjacent Element",
@@ -401,7 +407,8 @@ DIC = {
          "lim_-": "-",
          "reportExtremesTitle": "=== Extremes of Geometric Parameters ===",
          "stat_min_n": "Minimum n [-]",
-         "stat_min_nI": "Minimum nI [-]",
+         "stat_min_nI": "Minimum nI (where dI > lim) [-]",
+         "stat_min_nI_all": "Minimum nI (generally) [-]",
          "stat_max_dDdt": "Maximum dD/dt [mm/s]",
          "stat_max_dIdt": "Maximum dI/dt [mm/s]",
          "stat_max_D": "Maximum D [mm]",
@@ -409,7 +416,10 @@ DIC = {
          "stat_max_deltaI": "Maximum deltaI (abrupt change) [mm]",
          "energy_title": "ENERGY SUMMARY",
          "energyTraction": "Traction [kWh]",
-         "energyBraking": "Braking [kWh]"
+         "energyBraking": "Braking [kWh]",
+         "run_summary_title": "RUN SUMMARY",
+         "total_travel_time": "Total travel time:",
+         "average_speed": "Average speed:"
         },  
 
      "de": {
@@ -599,6 +609,7 @@ DIC = {
          "lim_n": "n (Überhöhungsrampe)",
          "lim_nI": "nI (Änderung Überhöhungsfehlbetrag)",
          "lim_deltaI": "deltaI (Abrupte Änderung)",
+         "reportTransition": "Übergang (abrupte deltaI)",
          "lim_V_init": "V_init (Unbegrenzt)",
          "lim_V=0": "V = 0 (Halt)",
          "lim_Adjacent": "Benachbartes Element",
@@ -606,7 +617,8 @@ DIC = {
          "lim_-": "-",
          "reportExtremesTitle": "=== Extreme der geometrischen Parameter ===",
          "stat_min_n": "Minimales n [-]",
-         "stat_min_nI": "Minimales nI [-]",
+         "stat_min_nI": "Minimales nI (wo dI > lim) [-]",
+         "stat_min_nI_all": "Minimales nI (generell) [-]",
          "stat_max_dDdt": "Maximales dD/dt [mm/s]",
          "stat_max_dIdt": "Maximales dI/dt [mm/s]",
          "stat_max_D": "Maximale Überhöhung D [mm]",
@@ -614,6 +626,9 @@ DIC = {
          "stat_max_deltaI": "Maximale deltaI (abrupte Änderung) [mm]",
          "energy_title": "ENERGIEZUSAMMENFASSUNG",
          "energyTraction": "Traktion [kWh]",
-         "energyBraking": "Bremse [kWh]"
+         "energyBraking": "Bremse [kWh]",
+         "run_summary_title": "FAHRTZUSAMMENFASSUNG",
+         "total_travel_time": "Gesamtfahrzeit:",
+         "average_speed": "Durchschnittsgeschwindigkeit:"
         }
     }

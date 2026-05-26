@@ -258,6 +258,7 @@ class VehicleCalculator:
             self.data[f"kinematicsForceTractionKN_{v_idx}"] = forceTracArr / 1000.0
             self.data[f"kinematicsForceBrakingKN_{v_idx}"] = forceBrakeArr / 1000.0
             self.data[f"kinematicsForceResistanceKN_{v_idx}"] = forceResArr / 1000.0
+            self.data[f"kinematicsDwellTimesS_{v_idx}"] = dwell_times
 
     def loadVehicleParameters(self, v_data):
         settings = self.data.get("settingsData", {})

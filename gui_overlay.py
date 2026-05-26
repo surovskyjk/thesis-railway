@@ -631,7 +631,8 @@ class StopsSettingsDialog(QDialog):
         try:
             reader = csv.reader(io.StringIO(file_content), delimiter=',')
             next(reader, None)
-            if table == "tableStops": self.populateTable(self.tableStops, reader)
+            data_list = list(reader)
+            if table == "tableStops": self.populateTable(self.tableStops, data_list)
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
             

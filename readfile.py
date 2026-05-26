@@ -355,8 +355,18 @@ class ReadFile:
         stationHorizontal = np.array(stationHorizontal, dtype=float)/1000  # Convert from m to km
         geometryType = np.array(geometryType)
         radius = np.array(radius, dtype=float)
-        curvature = np.array(curvature, dtype=float)
         curvatureSign = np.array(curvatureSign, dtype=float)
+        curvature = np.array(curvature, dtype=float) * curvatureSign
+
+        # Aplikace znaménka na výchozí hodnoty převýšení podle směru oblouku
+        if len(stationHorizontal) > 0 and len(curvatureSign) > 0:
+            starts = stationHorizontal[::2]
+            signs = curvatureSign[::2]
+            indices = np.searchsorted(starts, stationCant, side='right') - 1
+            indices = np.clip(indices, 0, len(signs) - 1)
+            cant_signs = np.where(signs[indices] < 0, -1.0, 1.0)
+            cant = np.abs(cant) * cant_signs
+
         stationVertical = np.array(stationVertical, dtype=float)/1000  # Convert from m to km
         elevation = np.array(elevation, dtype=float)
         lineStartX = np.array(lineStartX, dtype=float)
