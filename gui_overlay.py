@@ -683,6 +683,115 @@ class StopsSettingsDialog(QDialog):
                 continue
         return settingsData
 
+class SpeedSettingsDialog(QDialog):
+    def __init__(self, settingsData, lan, parent=None):
+        super().__init__(parent)
+        self.settingsData = settingsData
+        
+        self.setWindowTitle(lan.get("speedSettings", "Speed Limits Settings"))
+        self.setMinimumSize(400, 400)
+
+        layout = QVBoxLayout(self)
+        
+        labelSpeeds = QLabel(lan.get("manualSpeedLimits", "Manual Speed Limits"))
+        layout.addWidget(labelSpeeds)
+
+        self.tableSpeeds = QTableWidget(0, 2)
+        self.tableSpeeds.setHorizontalHeaderLabels([
+            lan["station"],
+            lan.get("speed_lim", "Speed Limit [km/h]")
+        ])
+        headerSpeeds = self.tableSpeeds.horizontalHeader()
+        headerSpeeds.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.tableSpeeds)
+
+        defaultSpeeds = self.settingsData.get("manualSpeedLimits", [])
+        self.populateTable(self.tableSpeeds, defaultSpeeds)
+
+        toolbarLayoutSpeeds = QHBoxLayout()
+        
+        self.btnAddSpeed = QPushButton(lan.get("addRow", "Add Row"))
+        self.btnAddSpeed.clicked.connect(self.addSpeedRow)
+        toolbarLayoutSpeeds.addWidget(self.btnAddSpeed)
+
+        self.btnRemoveSpeed = QPushButton(lan.get("removeRow", "Remove Row"))
+        self.btnRemoveSpeed.clicked.connect(self.removeSpeedRow)
+        toolbarLayoutSpeeds.addWidget(self.btnRemoveSpeed)
+
+        self.btnImportSpeeds = QPushButton(lan["importCSV"])
+        self.btnImportSpeeds.clicked.connect(self.importSpeedsCSV)
+        toolbarLayoutSpeeds.addWidget(self.btnImportSpeeds)
+
+        self.btnExportSpeeds = QPushButton(lan["exportCSV"])
+        self.btnExportSpeeds.clicked.connect(self.exportSpeedsCSV)
+        toolbarLayoutSpeeds.addWidget(self.btnExportSpeeds)
+
+        layout.addLayout(toolbarLayoutSpeeds)
+
+        self.buttonBox = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.buttonBox.accepted.connect(self.accept)
+        self.buttonBox.rejected.connect(self.reject)
+        layout.addWidget(self.buttonBox)
+
+    def addSpeedRow(self):
+        row = self.tableSpeeds.rowCount()
+        self.tableSpeeds.insertRow(row)
+        itemStation = QTableWidgetItem("")
+        itemSpeed = QTableWidgetItem("")
+        self.tableSpeeds.setItem(row, 0, itemStation)
+        self.tableSpeeds.setItem(row, 1, itemSpeed)
+
+    def removeSpeedRow(self):
+        currentRow = self.tableSpeeds.currentRow()
+        if currentRow >= 0:
+            self.tableSpeeds.removeRow(currentRow)
+
+    def populateTable(self, tableWidget, data):
+        tableWidget.setRowCount(len(data))
+        for row, rowData in enumerate(data):
+            for col, value in enumerate(rowData):
+                item = QTableWidgetItem(str(value))
+                tableWidget.setItem(row, col, item)
+
+    def importSpeedsCSV(self):
+        filepath, _ = QFileDialog.getOpenFileName(self, "Open File", "", "CSV Files (*.csv)")
+        if not filepath: return
+        file_content = readfile.ReadFile().Read(filepath)
+        if file_content.startswith("Error"):
+            err = QMessageBox(); err.setWindowTitle("Error"); err.setIcon(QMessageBox.Icon.Warning); err.exec(); return
+        try:
+            reader = csv.reader(io.StringIO(file_content), delimiter=',')
+            next(reader, None) # Skip header
+            data_list = [row[:2] for row in reader] # Take only first two columns
+            self.populateTable(self.tableSpeeds, data_list)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
+            
+    def exportSpeedsCSV(self):
+        filepath, _ = QFileDialog.getSaveFileName(self, "Save File", "", "CSV Files (*.csv)")
+        if not filepath: return
+        try:
+            with open(filepath, "w", newline="", encoding="utf-8") as file:
+                writer = csv.writer(file)
+                writer.writerow(["Station", "Speed"])
+                for row in range(self.tableSpeeds.rowCount()):
+                    writer.writerow([self.tableSpeeds.item(row, col).text() for col in range(self.tableSpeeds.columnCount())])
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
+            
+    def getSettings(self):
+        settingsData = {"manualSpeedLimits": []}
+        for row in range(self.tableSpeeds.rowCount()):
+            try: 
+                station = float(self.tableSpeeds.item(row, 0).text())
+                speed = float(self.tableSpeeds.item(row, 1).text())
+                settingsData["manualSpeedLimits"].append([station, speed])
+            except (ValueError, AttributeError): 
+                continue
+        # Sort by station
+        settingsData["manualSpeedLimits"].sort(key=lambda x: x[0])
+        return settingsData
+
 class VehicleTab(QWidget):
     def __init__(self, v_data, lan, parent = None):
         super().__init__(parent)
@@ -697,6 +806,10 @@ class VehicleTab(QWidget):
 
         self.inputFinalSpeed = QLineEdit(str(self.v_data.get("trainFinalSpeed", 0.0)))
         formLayout.addRow(QLabel(lan.get("trainFinalSpeed", "Final Speed [km/h]:")), self.inputFinalSpeed)
+
+        self.checkReverse = QCheckBox(lan.get("runAgainstStationing", "Run against stationing"))
+        self.checkReverse.setChecked(self.v_data.get("runReversed", False))
+        formLayout.addRow(self.checkReverse)
         
         self.inputMaxSpeed = QLineEdit(str(self.v_data.get("trainMaxSpeed", 120.0)))
         
@@ -707,6 +820,7 @@ class VehicleTab(QWidget):
             (lan.get("speed_lim_130", "V130"), ["stationSpeed130", "speedLimits130"]),
             (lan.get("speed_lim_150", "V150"), ["stationSpeed150", "speedLimits150"]),
             (lan.get("speed_lim_K", "VK"), ["stationSpeedK", "speedLimitsK"]),
+            (lan.get("speed_lim_manual", "Manual Speed Limits"), ["manualSpeedLimits", "manualSpeedLimits"]),
             (lan.get("unlimited", "Unlimited"), ["unlimited", "unlimited"])
         ]
         
@@ -887,7 +1001,8 @@ class VehicleTab(QWidget):
             "trainRes": [],
             "trainTrac": [],
             "trainParam": [],
-            "speedLimitPlot": self.comboProfile.currentData()
+            "speedLimitPlot": self.comboProfile.currentData(),
+            "runReversed": self.checkReverse.isChecked()
         }
         
         try:
@@ -986,7 +1101,8 @@ class VehicleSettingsDialog(QDialog):
                 "trainRes": self.settingsData.get("trainRes", default_values.defVal.get("trainRes", [])),
                 "trainTrac": self.settingsData.get("trainTrac", default_values.defVal.get("trainTrac", [])),
                 "trainParam": self.settingsData.get("trainParam", default_values.defVal.get("trainParam", [])),
-                "speedLimitPlot": self.settingsData.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"])
+                "speedLimitPlot": self.settingsData.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"]),
+                "runReversed": self.settingsData.get("runReversed", False)
             }
             vehicles.append(old_v)
             

@@ -29,6 +29,19 @@ class VehicleCalculator:
                 else:
                     stationSpeedLimit = np.array([])
                     speedLimit = np.array([])
+            elif speedProfile[0] == "manualSpeedLimits":
+                manual_limits = settings.get("manualSpeedLimits", [])
+                if manual_limits:
+                    manual_limits_arr = np.array(manual_limits)
+                    stationSpeedLimit = manual_limits_arr[:, 0] * 1000
+                    speedLimit = manual_limits_arr[:, 1]
+
+                    sort_idx = np.argsort(stationSpeedLimit)
+                    stationSpeedLimit = stationSpeedLimit[sort_idx]
+                    speedLimit = speedLimit[sort_idx]
+                else:
+                    stationSpeedLimit = np.array([])
+                    speedLimit = np.array([])
             else:
                 stationSpeedLimit = np.copy(self.data.get(speedProfile[0], []))
                 speedLimit = np.copy(self.data.get(speedProfile[1], []))
@@ -80,7 +93,8 @@ class VehicleCalculator:
                 "trainRes": settings.get("trainRes", []),
                 "trainTrac": settings.get("trainTrac", []),
                 "trainParam": settings.get("trainParam", []),
-                "speedLimitPlot": settings.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"])
+                "speedLimitPlot": settings.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"]),
+                "runReversed": settings.get("runReversed", False)
             }
             vehicles = [old_v]
 
@@ -89,23 +103,32 @@ class VehicleCalculator:
         for v_idx, v_data in enumerate(vehicles):
             self.loadVehicleParameters(v_data)
             self.loadTrackData(v_data)
+            run_reversed = v_data.get("runReversed", False)
 
-            if len(self.stationHorizontal) == 0:
+            sStart, sEnd = 0, 0
+            # Determine simulation range
+            if len(self.stationHorizontal) > 0:
+                sStart = np.min(self.stationHorizontal) * 1000
+                sEnd = np.max(self.stationHorizontal) * 1000
+            elif len(self.stationSpeedLimits) > 0:
+                sStart = np.min(self.stationSpeedLimits) * 1000
+                sEnd = np.max(self.stationSpeedLimits) * 1000
+            else:
+                # No data to run simulation on
                 continue
 
             # Discretization step in meters
             ds = 1.0
-            
-            # Simulation range based on horizontal alignment
-            sStart = np.min(self.stationHorizontal) * 1000
-            sEnd = np.max(self.stationHorizontal) * 1000
-            
+
             if self.trainLength > (sEnd - sStart):
                 self.data[f"kinematicsWarning_{v_idx}"] = "train_too_long"
             else:
                 self.data.pop(f"kinematicsWarning_{v_idx}", None)
                 
-            stationsM = np.arange(sStart, sEnd + ds, ds)
+            if run_reversed:
+                stationsM = np.arange(sEnd, sStart - ds, -ds)
+            else:
+                stationsM = np.arange(sStart, sEnd + ds, ds)
 
             # Pre-calculate limits and track properties arrays for faster computing
             vLimitMps_raw = np.zeros_like(stationsM)
@@ -117,6 +140,9 @@ class VehicleCalculator:
                 vLimitMps_raw[i] = self.getSpeedLimitAt(stationKm) / 3.6
                 slopeArr[i] = self.getSlopeAt(stationKm)
                 curvArr[i] = self.getCurvatureAt(stationKm)
+
+            if run_reversed:
+                slopeArr = -slopeArr
 
             vLimitMps = np.copy(vLimitMps_raw)
             if self.trainLength > 0:
@@ -308,6 +334,11 @@ class VehicleCalculator:
         
         self.trainInitialSpeed = float(v_data.get("trainInitialSpeed", 0.0))
         self.trainFinalSpeed = float(v_data.get("trainFinalSpeed", 0.0))
+        
+        run_reversed = v_data.get("runReversed", False)
+        if run_reversed:
+            self.trainInitialSpeed, self.trainFinalSpeed = self.trainFinalSpeed, self.trainInitialSpeed
+
         self.defaultDwellTime = float(settings.get("defaultDwellTime", 30.0))
         self.trainStops = settings.get("trainStops", [])
 
@@ -340,6 +371,19 @@ class VehicleCalculator:
             if len(self.stationHorizontal) > 0:
                 self.stationSpeedLimits = np.array([np.min(self.stationHorizontal), np.max(self.stationHorizontal)])
                 self.speedLimits = np.array([self.trainMaxSpeed, self.trainMaxSpeed])
+            else:
+                self.stationSpeedLimits = np.array([])
+                self.speedLimits = np.array([])
+        elif speedProfile[0] == "manualSpeedLimits":
+            manual_limits = settings.get("manualSpeedLimits", [])
+            if manual_limits:
+                manual_limits_arr = np.array(manual_limits)
+                self.stationSpeedLimits = manual_limits_arr[:, 0]
+                self.speedLimits = manual_limits_arr[:, 1]
+
+                sort_idx = np.argsort(self.stationSpeedLimits)
+                self.stationSpeedLimits = self.stationSpeedLimits[sort_idx]
+                self.speedLimits = self.speedLimits[sort_idx]
             else:
                 self.stationSpeedLimits = np.array([])
                 self.speedLimits = np.array([])

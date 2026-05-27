@@ -227,6 +227,11 @@ class MainWindow(QMainWindow):
         self.settingsMenu.addAction(stopsSettingsAction)
         stopsSettingsAction.triggered.connect(self.openStopsSettings)
 
+        # Sub-submenu - Speed settings
+        speedSettingsAction = QAction(lan.get("speedSettings", "Speed Limits Settings"), self)
+        self.settingsMenu.addAction(speedSettingsAction)
+        speedSettingsAction.triggered.connect(self.openSpeedSettings)
+
         # Sub-submenu - Design approach selection
         designApproachAction = QAction(lan["designApproach"], self)
         self.settingsMenu.addAction(designApproachAction)
@@ -604,7 +609,8 @@ class MainWindow(QMainWindow):
         self.settingsMenu.actions()[3].setText(lan["geometrySettings"])
         self.settingsMenu.actions()[4].setText(lan.get("vehicleSettings", "Vehicle Settings"))
         self.settingsMenu.actions()[5].setText(lan.get("stopsSettings", "Stops Settings"))
-        self.settingsMenu.actions()[6].setText(lan["designApproach"])
+        self.settingsMenu.actions()[6].setText(lan.get("speedSettings", "Speed Limits Settings"))
+        self.settingsMenu.actions()[7].setText(lan["designApproach"])
 
         self.viewMenu.actions()[0].setText(lan["cant"])
         self.viewMenu.actions()[1].setText(lan["cant_possible"])
@@ -1880,6 +1886,13 @@ class MainWindow(QMainWindow):
     def openStopsSettings(self):
         lan = lang.DIC[self.current_language]
         dialog = gui_overlay.StopsSettingsDialog(self.dataStorage.get("settingsData", {}), lan, self)
+        if dialog.exec():
+            self.dataStorage["settingsData"].update(dialog.getSettings())
+
+    # Speed settings
+    def openSpeedSettings(self):
+        lan = lang.DIC[self.current_language]
+        dialog = gui_overlay.SpeedSettingsDialog(self.dataStorage.get("settingsData", {}), lan, self)
         if dialog.exec():
             self.dataStorage["settingsData"].update(dialog.getSettings())
 
