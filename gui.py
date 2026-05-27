@@ -823,6 +823,11 @@ class MainWindow(QMainWindow):
             stationsRaw = np.concatenate(tempStations)
             speedLimitsRaw = np.concatenate(tempSpeedLimits)
 
+            # Sort by station so the step plot is always monotonically increasing
+            sort_idx = np.argsort(stationsRaw, kind='stable')
+            stationsRaw    = stationsRaw[sort_idx]
+            speedLimitsRaw = speedLimitsRaw[sort_idx]
+
         if cropToLandXML and HasLandXML:
             LandXMLMin = np.nanmin(self.dataStorage.get("LandXML",{}).get("stationHorizontal"))
             LandXMLMax = np.nanmax(self.dataStorage.get("LandXML",{}).get("stationHorizontal"))
@@ -1171,6 +1176,13 @@ class MainWindow(QMainWindow):
 
                 stationsRaw = np.concatenate(tempStations)
                 speedLimitsRaw = np.concatenate(tempSpeedLimits)
+
+                # Sort by station so the step plot is always monotonically increasing.
+                # This acts as a safety net for any edge case the section detector may miss
+                # (e.g. non-standard TTP layouts or multiple selected sections).
+                sort_idx = np.argsort(stationsRaw, kind='stable')
+                stationsRaw    = stationsRaw[sort_idx]
+                speedLimitsRaw = speedLimitsRaw[sort_idx]
 
             if cropToLandXML and HasLandXML:
                 LandXMLMin = np.nanmin(self.dataStorage.get("LandXML",{}).get("stationHorizontal"))
@@ -2357,33 +2369,52 @@ class MainWindow(QMainWindow):
         self.tableLandXML.setData(tableData)
 
     def TTPSections(self, stations):
+        """Split TTP station array into monotone sections.
+
+        A new section starts whenever:
+          - The absolute jump between consecutive stations exceeds 20 km, OR
+          - The direction (sign) of the step reverses compared to the most recent
+            non-zero step.
+
+        Using *prev_nonzero_diff* instead of the immediately preceding diff means
+        that flat/duplicate stations (diff == 0) do not reset the direction tracker
+        and therefore do not mask a subsequent direction change.
+        """
         if len(stations) == 0:
             return []
-        
+
         sections = []
         startID = 0
+        prev_nonzero_diff = 0   # direction of the most recent non-zero step
 
         for i in range(1, len(stations)):
             diff = stations[i] - stations[i-1]
 
-            # Defining possible sections for further selection by the user
-            if abs(diff) > 20 or (i > 1 and np.sign(stations[i-1] - stations[i-2]) != np.sign(diff) and diff != 0 and (stations[i-1] - stations[i-2]) != 0):
+            is_boundary = abs(diff) > 20
+
+            if not is_boundary and diff != 0:
+                if prev_nonzero_diff != 0 and np.sign(diff) != np.sign(prev_nonzero_diff):
+                    is_boundary = True
+                prev_nonzero_diff = diff   # update only on non-zero steps
+
+            if is_boundary:
                 sections.append({
                     "startID": startID,
-                    "endID": i-1,
+                    "endID": i - 1,
                     "stationStart": stations[startID],
-                    "stationEnd": stations[i-1]
+                    "stationEnd": stations[i - 1]
                 })
-                
-                # Save for next iteration step
                 startID = i
-        
+                # Reset: direction of the new section is unknown until we see its
+                # first non-zero step; setting to 0 avoids a false split at i+1.
+                prev_nonzero_diff = 0
+
         # Add the last section
         sections.append({
             "startID": startID,
-            "endID": len(stations)-1,
+            "endID": len(stations) - 1,
             "stationStart": stations[startID],
-            "stationEnd": stations[len(stations)-1]
+            "stationEnd": stations[len(stations) - 1]
         })
 
         return sections

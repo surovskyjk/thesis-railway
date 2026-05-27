@@ -80,19 +80,22 @@ class ReadFile:
         length.append(target_alignment.get('staStart', "0"))
         length = np.array(length, dtype=float)
 
-        # Extract stations where cant is defined
+        # Extract cant stations and values in a single pass.
+        # If no CantStation elements exist (e.g. straight track, test file) default to D=0.
         stationCant = []
+        cant = []
         for km in target_alignment.iter():
             if km.tag.endswith('CantStation'):
-                stationCant.append(km.get('station'))
-        stationCant.append(length[0]+length[1])
+                stationCant.append(km.get('station', '0'))
+                cant.append(km.get('appliedCant', '0'))
 
-        # Extract cant values
-        cant = []
-        for mm in target_alignment.iter():
-            if mm.tag.endswith('CantStation'):
-                cant.append(mm.get('appliedCant'))
-        cant.append(cant[-1])
+        if cant:
+            stationCant.append(length[0] + length[1])
+            cant.append(cant[-1])
+        else:
+            # No cant data found — synthesise D=0 spanning the whole alignment
+            stationCant = [length[1], length[0] + length[1]]
+            cant = [0.0, 0.0]
 
         # Vertical alignment data
         stationVertical = []
@@ -115,10 +118,17 @@ class ReadFile:
                         except ValueError:
                             continue
 
-        # Calculate vertical and horizontal difference and slope in per mille
-        deltaZ = np.diff(np.array(elevation, dtype=float))
-        deltaX = np.diff(np.array(stationVertical, dtype=float))
-        slope = (deltaZ / deltaX) * 1000
+        # Calculate vertical and horizontal difference and slope in per mille.
+        # Guard: at least two points are required; fall back to level track otherwise.
+        if len(stationVertical) >= 2:
+            deltaZ = np.diff(np.array(elevation, dtype=float))
+            deltaX = np.diff(np.array(stationVertical, dtype=float))
+            slope = (deltaZ / deltaX) * 1000
+        else:
+            slope = np.array([0.0])
+            if not stationVertical:
+                stationVertical = [str(length[1]), str(length[0] + length[1])]
+                elevation = ['0', '0']
 
         # Extract start and end of elements coordinates
         lineStartX = []
@@ -174,7 +184,8 @@ class ReadFile:
         curveCenterY = []
 
         for curveCoordinates in target_alignment.iter():
-            if curveCoordinates.tag.endswith('Curve'):
+            base_cTag = curveCoordinates.tag.split('}')[-1] if '}' in curveCoordinates.tag else curveCoordinates.tag
+            if base_cTag == 'Curve':
                 for coordinate in curveCoordinates:
                     if coordinate.tag.endswith('Start'):
                         coordinatesTemp = coordinate.text.strip().split()
@@ -192,22 +203,59 @@ class ReadFile:
                             curveCenterX.append(coordinatesTemp[0])
                             curveCenterY.append(coordinatesTemp[1])
 
-        # Extract station, where horizontal alignment is being changed
+        # Extract station, where horizontal alignment is being changed.
+        # Elements without a staStart attribute (e.g. simple test files) receive an
+        # inferred station from the running position; their length is estimated from
+        # geometry if the next element also lacks staStart.
+
+        def _infer_elem_length(el):
+            """Estimate element length [m] from 'length' attribute or Start→End chord."""
+            try:
+                return float(el.get('length'))
+            except (TypeError, ValueError):
+                pass
+            sx = sy = ex = ey = None
+            for child in el:
+                text = (child.text or '').strip().split()
+                if child.tag.endswith('Start') and len(text) >= 2:
+                    try: sx, sy = float(text[0]), float(text[1])
+                    except ValueError: pass
+                elif child.tag.endswith('End') and len(text) >= 2:
+                    try: ex, ey = float(text[0]), float(text[1])
+                    except ValueError: pass
+            if None not in (sx, sy, ex, ey):
+                return np.sqrt((ex - sx) ** 2 + (ey - sy) ** 2)
+            return 0.0
+
         stationHorizontal = []
         elements = []
+        elem_sta_starts = []   # inferred staStart [m], parallel to elements
+        running_sta = length[1]
+
         for el in target_alignment.iter():
-            if el.tag.endswith('Line') or el.tag.endswith('Spiral') or el.tag.endswith('Curve'):
-                if el.get('staStart') is not None:
-                    elements.append(el)
+            base_tag = el.tag.split('}')[-1] if '}' in el.tag else el.tag
+            if base_tag in ('Line', 'Spiral', 'Curve'):
+                sta_str = el.get('staStart')
+                try:
+                    sta = float(sta_str) if sta_str is not None else running_sta
+                except ValueError:
+                    sta = running_sta
+                elements.append(el)
+                elem_sta_starts.append(sta)
+                running_sta = sta
+
+        # Map element object identity → inferred staStart [m] for use in attribute loops
+        elem_sta_map = {id(el): sta for el, sta in zip(elements, elem_sta_starts)}
 
         for i, km in enumerate(elements):
-            staStart = float(km.get('staStart',"0"))
-            
-            if i+1 < len(elements):
-                staEnd = float(elements[i+1].get('staStart',"0"))
+            staStart = elem_sta_starts[i]
+            if i + 1 < len(elements):
+                staEnd = elem_sta_starts[i + 1]
+                if staEnd <= staStart:
+                    # Next element shares the same station — estimate from geometry
+                    staEnd = staStart + _infer_elem_length(km)
             else:
-                staEnd = length[0]+length[1]
-            
+                staEnd = length[0] + length[1]
             stationHorizontal.append(staStart)
             stationHorizontal.append(staEnd)
 
@@ -217,7 +265,7 @@ class ReadFile:
         keyY = []
 
         for i, el in enumerate(elements):
-            sta = float(el.get('staStart', "0")) / 1000.0
+            sta = elem_sta_starts[i] / 1000.0
             ctype = "Změna"
             if i == 0:
                 ctype = "ZÚ"
@@ -300,11 +348,11 @@ class ReadFile:
                 curvatureSign.append(sign)
                 curvatureSign.append(sign)
 
-        # Parse line station
+        # Parse line station (use inferred station from elem_sta_map)
         lineStationStart = []
         for km in target_alignment.iter():
-            if km.tag.endswith('Line'):
-                lineStationStart.append(km.get('staStart'))
+            if km.tag.endswith('Line') and id(km) in elem_sta_map:
+                lineStationStart.append(elem_sta_map[id(km)])
 
         # Parse spiral attributes
         spiralStationStart = []
@@ -316,9 +364,9 @@ class ReadFile:
         spiralConst = []
 
         for spiral in target_alignment.iter():
-            if spiral.tag.endswith('Spiral') and spiral.get('staStart') is not None:
-                
-                spiralStationStart.append(spiral.get('staStart'))
+            if spiral.tag.endswith('Spiral') and id(spiral) in elem_sta_map:
+
+                spiralStationStart.append(elem_sta_map[id(spiral)])
                 
                 spiralLength.append(spiral.get('length'))
                 
@@ -339,9 +387,9 @@ class ReadFile:
         curveRadius = []
 
         for curve in target_alignment.iter():
-            if curve.tag.endswith('Curve') and curve.get('staStart') is not None:
-                
-                curveStationStart.append(curve.get('staStart'))
+            if curve.tag.endswith('Curve') and id(curve) in elem_sta_map:
+
+                curveStationStart.append(elem_sta_map[id(curve)])
 
                 curveRot.append(curve.get('rot'))
 
