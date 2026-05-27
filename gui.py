@@ -1974,6 +1974,7 @@ class MainWindow(QMainWindow):
         limIK = safe_get(lxml, "limitReachedI_K", np.zeros(len(stations), dtype=bool))
         
         radius = safe_get(lxml, "radius", np.full(len(stations), np.inf))
+        curvature = safe_get(lxml, "curvature", np.zeros_like(stations))
 
         util_D_100 = safe_get(lxml, "util_D_I100", np.zeros_like(stations))
         util_I_100 = safe_get(lxml, "util_I_I100", np.zeros_like(stations))
@@ -2031,10 +2032,15 @@ class MainWindow(QMainWindow):
             if L <= 0:
                 transition_data = []
                 any_deltaI = False
+                dKappa = abs(curvature[i+1] - curvature[i])
                 for p_name, v_arr, i_arr, dD_arr, dI_arr, lD_arr, lI_arr, util_D_arr, util_I_arr in profiles:
-                    deltaI = abs(i_arr[i+1] - i_arr[i])
+                    v_min = min(v_arr[i], v_arr[i+1])
+                    # Physical deltaI: D is continuous at L=0 boundary (Stage 3), so D cancels
+                    deltaI = 11.8 * v_min**2 * dKappa if v_min > 1e-3 else 0.0
+                    dI_lim = get_dI_lim(v_min)
+                    exceeded = deltaI > dI_lim + 1e-3
                     profile_stats[p_name]["max_deltaI"] = max(profile_stats[p_name]["max_deltaI"], deltaI)
-                    transition_data.append((p_name, deltaI, max(v_arr[i], v_arr[i+1])))
+                    transition_data.append((p_name, deltaI, v_min, dI_lim, exceeded))
                     if deltaI > 1e-3:
                         any_deltaI = True
                 
@@ -2042,8 +2048,9 @@ class MainWindow(QMainWindow):
                 g_type_to = geomType[i+1] if i+1 < len(geomType) else "-"
                 if any_deltaI and g_type_from != "Spiral" and g_type_to != "Spiral":
                     report_lines.append(f"--- {lan.get('reportTransition', 'Transition')} | {lan['station']}: {stations[i]:.3f} | {g_type_from} -> {g_type_to} ---")
-                    for p_name, dI_val, v_val in transition_data:
-                        line_str = f"  [{p_name}] V: {v_val:.0f} km/h | deltaI: {dI_val:.0f} mm"
+                    for p_name, dI_val, v_val, dI_lim_val, exceeded in transition_data:
+                        flag = " (!)" if exceeded else ""
+                        line_str = f"  [{p_name}] V: {v_val:.0f} km/h | deltaI: {dI_val:.0f} mm (limit {dI_lim_val:.0f} mm){flag}"
                         report_lines.append(line_str)
                     report_lines.append("")
                 continue

@@ -338,9 +338,9 @@ class GeometryCalculator:
                     dD_actual  = abs(self.cantNew[i] - self.cantNew[i-1])
                     dKappa     = abs(self.kappa[i] - self.kappa[i-1])
                     nI_lim     = self.getNormLimit("nILin", self.vInit[i], approach)
-                    v_nI       = length * 1000 / (nI_lim[0] * dI_actual) if (nI_lim[0] > 0 and dI_actual > 0) else np.inf
+                    v_nI       = self.calculateCantDefSpeedNI(length, nI_lim[0], dI_actual)
                     deltaI_lim = self.getNormLimit("dI", self.vInit[i], approach)[0]
-                    v_deltaI   = np.sqrt((dD_actual + deltaI_lim) / (11.8 * dKappa)) if dKappa > 1e-10 else np.inf
+                    v_deltaI   = self.calculateCantDefSpeedDeltaI(dD_actual, deltaI_lim, dKappa)
                     # More lenient of the two; fall back gracefully when one is not applicable (inf)
                     if np.isinf(v_nI) and np.isinf(v_deltaI):
                         cantDefSpeed[i] = np.inf
@@ -351,16 +351,31 @@ class GeometryCalculator:
                     else:
                         cantDefSpeed[i] = max(v_nI, v_deltaI)
 
+            # boundaryDeltaISpeed — speed limit from sudden deltaI at L=0 curve-curve boundaries
+            # Physical deltaI = 11.8·v²·|Δκ|; D cancels because Stage 3 enforces D-continuity
+            boundaryDeltaISpeed = np.full(len(self.stationsNew), np.inf)
+            for i in range(1, len(self.stationsNew)):
+                length = (self.stationsNew[i] - self.stationsNew[i-1]) * 1000
+                if length <= 0 and self.geometryType[i] == "Curve" and self.geometryType[i-1] == "Curve":
+                    dKappa = abs(self.kappa[i] - self.kappa[i-1])
+                    if dKappa > 1e-10:
+                        v_eval     = min(self.vInit[i], self.vInit[i-1])
+                        deltaI_lim = self.getNormLimit("dI", v_eval, approach)[0]
+                        v_lim      = self.calculateBoundarySpeed(deltaI_lim, dKappa)
+                        boundaryDeltaISpeed[i-1] = min(boundaryDeltaISpeed[i-1], v_lim)
+                        boundaryDeltaISpeed[i]   = min(boundaryDeltaISpeed[i],   v_lim)
+
             # Stage 4 - Calculate speed in respective section
             for i in range(0, len(self.cantNew), 2):
                 v1 = self.calculateSpeed(np.abs(self.cantNew[i]), np.abs(self.cantDef[i]), np.abs(self.kappa[i]), iterationStep, self.vInit[i])
                 v2 = self.calculateSpeed(np.abs(self.cantNew[i+1]), np.abs(self.cantDef[i+1]), np.abs(self.kappa[i+1]), iterationStep, self.vInit[i+1])
 
-                minVmax         = min(v1, v2)
-                minCantDefSpeed = min(cantDefSpeed[i], cantDefSpeed[i+1])
+                minVmax              = min(v1, v2)
+                minCantDefSpeed      = min(cantDefSpeed[i], cantDefSpeed[i+1])
+                minBoundaryDeltaI    = min(boundaryDeltaISpeed[i], boundaryDeltaISpeed[i+1])
 
-                self.vMax[i] = min(self.vInit[i], minVmax, minCantDefSpeed)
-                self.vMax[i+1] = min(self.vInit[i+1], minVmax, minCantDefSpeed)
+                self.vMax[i] = min(self.vInit[i], minVmax, minCantDefSpeed, minBoundaryDeltaI)
+                self.vMax[i+1] = min(self.vInit[i+1], minVmax, minCantDefSpeed, minBoundaryDeltaI)
 
                 if self.vMax[i] < self.vInit[i] or self.vMax[i+1] < self.vInit[i+1]:
                     if self.vInit[i] > iterationStep:
@@ -571,9 +586,9 @@ class GeometryCalculator:
                     dD_actual  = abs(self.cantNew[i] - self.cantNew[i-1])
                     dKappa     = abs(self.kappa[i] - self.kappa[i-1])
                     nI_lim     = self.getNormLimit("nILin", self.vInit[i], approach)
-                    v_nI       = length * 1000 / (nI_lim[0] * dI_actual) if (nI_lim[0] > 0 and dI_actual > 0) else np.inf
+                    v_nI       = self.calculateCantDefSpeedNI(length, nI_lim[0], dI_actual)
                     deltaI_lim = self.getNormLimit("dI", self.vInit[i], approach)[0]
-                    v_deltaI   = np.sqrt((dD_actual + deltaI_lim) / (11.8 * dKappa)) if dKappa > 1e-10 else np.inf
+                    v_deltaI   = self.calculateCantDefSpeedDeltaI(dD_actual, deltaI_lim, dKappa)
                     # More lenient of the two; fall back gracefully when one is not applicable (inf)
                     if np.isinf(v_nI) and np.isinf(v_deltaI):
                         cantDefSpeed[i] = np.inf
@@ -584,17 +599,32 @@ class GeometryCalculator:
                     else:
                         cantDefSpeed[i] = max(v_nI, v_deltaI)
 
+            # boundaryDeltaISpeed — speed limit from sudden deltaI at L=0 curve-curve boundaries
+            # Physical deltaI = 11.8·v²·|Δκ|; D cancels because Stage 3 enforces D-continuity
+            boundaryDeltaISpeed = np.full(len(self.stationsNew), np.inf)
+            for i in range(1, len(self.stationsNew)):
+                length = (self.stationsNew[i] - self.stationsNew[i-1]) * 1000
+                if length <= 0 and self.geometryType[i] == "Curve" and self.geometryType[i-1] == "Curve":
+                    dKappa = abs(self.kappa[i] - self.kappa[i-1])
+                    if dKappa > 1e-10:
+                        v_eval     = min(self.vInit[i], self.vInit[i-1])
+                        deltaI_lim = self.getNormLimit("dI", v_eval, approach)[0]
+                        v_lim      = self.calculateBoundarySpeed(deltaI_lim, dKappa)
+                        boundaryDeltaISpeed[i-1] = min(boundaryDeltaISpeed[i-1], v_lim)
+                        boundaryDeltaISpeed[i]   = min(boundaryDeltaISpeed[i],   v_lim)
+
             # Stage 4 - Calculate speed in respective section
             for i in range(0, len(self.cantNew), 2):
                 v1 = self.calculateSpeed(np.abs(self.cantNew[i]), np.abs(self.cantDef[i]), np.abs(self.kappa[i]), iterationStep, self.vInit[i])
                 v2 = self.calculateSpeed(np.abs(self.cantNew[i+1]), np.abs(self.cantDef[i+1]), np.abs(self.kappa[i+1]), iterationStep, self.vInit[i+1])
 
-                minVmax         = min(v1, v2)
-                minCantSpeed    = min(cantSpeed[i], cantSpeed[i+1])
-                minCantDefSpeed = min(cantDefSpeed[i], cantDefSpeed[i+1])
+                minVmax              = min(v1, v2)
+                minCantSpeed         = min(cantSpeed[i], cantSpeed[i+1])
+                minCantDefSpeed      = min(cantDefSpeed[i], cantDefSpeed[i+1])
+                minBoundaryDeltaI    = min(boundaryDeltaISpeed[i], boundaryDeltaISpeed[i+1])
 
-                self.vMax[i] = min(self.vInit[i], minVmax, minCantSpeed, minCantDefSpeed)
-                self.vMax[i+1] = min(self.vInit[i+1], minVmax, minCantSpeed, minCantDefSpeed)
+                self.vMax[i] = min(self.vInit[i], minVmax, minCantSpeed, minCantDefSpeed, minBoundaryDeltaI)
+                self.vMax[i+1] = min(self.vInit[i+1], minVmax, minCantSpeed, minCantDefSpeed, minBoundaryDeltaI)
 
                 if self.vMax[i] < self.vInit[i] or self.vMax[i+1] < self.vInit[i+1]:
                     if self.vInit[i] > iterationStep:
@@ -732,6 +762,61 @@ class GeometryCalculator:
             return np.sqrt(max(0, np.abs(D + I) / (11.8 * np.abs(kappa))))
 
         return (int(np.sqrt(max(0, np.abs(D + I) / (11.8 * np.abs(kappa))))) // round) * round
+
+    def calculateBoundarySpeed(self, deltaI_lim, dKappa):
+        """Maximum speed from a sudden cant-deficiency change at an L=0 curvature boundary.
+
+        Derived from the physical constraint:
+            deltaI_physical = 11.8 * v^2 * dKappa  <=  deltaI_lim
+        => v_lim = sqrt(deltaI_lim / (11.8 * dKappa))
+
+        D cancels because Stage 3 enforces cant continuity at L=0 boundaries.
+
+        Args:
+            deltaI_lim: maximum allowed sudden cant deficiency change [mm]
+            dKappa:     absolute curvature change |kappa2 - kappa1| [m^-1]
+        Returns:
+            maximum permissible speed [km/h]; np.inf when no constraint applies
+        """
+        if dKappa <= 1e-10 or deltaI_lim <= 0:
+            return np.inf
+        return np.sqrt(deltaI_lim / (11.8 * dKappa))
+
+    def calculateCantDefSpeedNI(self, length, nI_lim, dI_actual):
+        """Maximum speed from the nI cant-deficiency change-rate constraint on a spiral.
+
+        Derived from:
+            nI_lim  >=  dI_physical / (L [m] * v [km/h] / 1000)
+            => v_lim = L * 1000 / (nI_lim * dI_physical)   [km/h]
+
+        Args:
+            length:    spiral length [m]
+            nI_lim:    norm limit for the nI coefficient (must be > 0) [-]
+            dI_actual: absolute change of physical cant deficiency across the spiral [mm]
+        Returns:
+            maximum permissible speed [km/h]; np.inf when no constraint applies
+        """
+        if nI_lim <= 0 or dI_actual <= 0:
+            return np.inf
+        return length * 1000 / (nI_lim * dI_actual)
+
+    def calculateCantDefSpeedDeltaI(self, dD_actual, deltaI_lim, dKappa):
+        """Maximum speed from the virtual deltaI constraint on a spiral.
+
+        The virtual-deltaI approach treats the spiral as an equivalent L=0 boundary
+        with the cant change dD_actual included as an additional tolerance:
+            v_deltaI = sqrt((dD_actual + deltaI_lim) / (11.8 * dKappa))
+
+        Args:
+            dD_actual:  absolute cant change across the spiral [mm]
+            deltaI_lim: maximum allowed sudden cant deficiency change [mm]
+            dKappa:     absolute curvature change |kappa_end - kappa_start| [m^-1]
+        Returns:
+            maximum permissible speed [km/h]; np.inf when no constraint applies (dKappa ≈ 0)
+        """
+        if dKappa <= 1e-10:
+            return np.inf
+        return np.sqrt((dD_actual + deltaI_lim) / (11.8 * dKappa))
 
     def calculateSpeedCant(self, length, dD, nLin):
         if nLin[0] == 0:
