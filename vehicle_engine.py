@@ -19,6 +19,7 @@ class VehicleCalculator:
         for v_idx, v_data in enumerate(vehicles):
             speedProfile = v_data.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"])
             trainMaxSpeed = float(v_data.get("trainMaxSpeed", settings.get("vInit", [120])[0]))
+            run_reversed = v_data.get("runReversed", False)
 
             if speedProfile[0] == "unlimited":
                 lxml = self.data.get("LandXML", {})
@@ -29,22 +30,19 @@ class VehicleCalculator:
                 else:
                     stationSpeedLimit = np.array([])
                     speedLimit = np.array([])
-            elif speedProfile[0] == "manualSpeedLimits":
-                manual_limits = settings.get("manualSpeedLimits", [])
-                if manual_limits:
-                    manual_limits_arr = np.array(manual_limits)
-                    stationSpeedLimit = manual_limits_arr[:, 0] * 1000
-                    speedLimit = manual_limits_arr[:, 1]
-
-                    sort_idx = np.argsort(stationSpeedLimit)
-                    stationSpeedLimit = stationSpeedLimit[sort_idx]
-                    speedLimit = speedLimit[sort_idx]
-                else:
-                    stationSpeedLimit = np.array([])
-                    speedLimit = np.array([])
             else:
-                stationSpeedLimit = np.copy(self.data.get(speedProfile[0], []))
-                speedLimit = np.copy(self.data.get(speedProfile[1], []))
+                if speedProfile[0] == "manualSpeedLimits":
+                    manual_limits = settings.get("manualSpeedLimits", [])
+                    if manual_limits:
+                        manual_limits_arr = np.array(manual_limits)
+                        stationSpeedLimit = manual_limits_arr[:, 0]
+                        speedLimit = manual_limits_arr[:, 1]
+                    else:
+                        stationSpeedLimit = np.array([])
+                        speedLimit = np.array([])
+                else:
+                    stationSpeedLimit = np.copy(self.data.get(speedProfile[0], []))
+                    speedLimit = np.copy(self.data.get(speedProfile[1], []))
                 
                 if len(stationSpeedLimit) > 0 and len(speedLimit) == len(stationSpeedLimit):
                     sort_idx = np.argsort(stationSpeedLimit)
@@ -53,6 +51,10 @@ class VehicleCalculator:
 
                 if len(stationSpeedLimit) > 0:
                     stationSpeedLimit = stationSpeedLimit * 1000
+
+            if run_reversed and len(stationSpeedLimit) > 0:
+                stationSpeedLimit = stationSpeedLimit[::-1]
+                speedLimit = speedLimit[::-1]
 
             if len(speedLimit) > 0:
                 speedLimit = np.clip(speedLimit, 0, trainMaxSpeed)
@@ -64,7 +66,7 @@ class VehicleCalculator:
                 continue
 
             speedLimitM = speedLimit / 3.6
-            ds = np.diff(stationSpeedLimit)
+            ds = np.abs(np.diff(stationSpeedLimit))
 
             # Speed limit 0 check to prevent division by zero
             with np.errstate(divide='ignore', invalid='ignore'):

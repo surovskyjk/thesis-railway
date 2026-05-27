@@ -1507,6 +1507,7 @@ class MainWindow(QMainWindow):
         limit_colors = ['crimson', 'darkred', 'lightcoral']
 
         num_vehicles = self.dataStorage.get("num_vehicles", 1)
+        vehicles_settings = self.dataStorage.get("settingsData", {}).get("vehicles", [])
 
         for v_idx in range(num_vehicles):
             stationSpeedLimits = self.dataStorage.get(f"stationSpeedLimitM_{v_idx}")
@@ -1620,8 +1621,18 @@ class MainWindow(QMainWindow):
                 for v_idx in range(num_vehicles):
                     kinematicsStation = self.dataStorage.get(f"kinematicsStationM_{v_idx}")
                     kinematicsTime = self.dataStorage.get(f"kinematicsTimeS_{v_idx}")
+
+                    is_reversed = False
+                    if v_idx < len(vehicles_settings):
+                        is_reversed = vehicles_settings[v_idx].get("runReversed", False)
+
                     if kinematicsStation is not None and len(kinematicsStation) > 0:
-                        stop_time = np.interp(s_m, kinematicsStation, kinematicsTime)
+                        xp, fp = kinematicsStation, kinematicsTime
+                        if is_reversed:
+                            xp = kinematicsStation[::-1]
+                            fp = kinematicsTime[::-1]
+
+                        stop_time = np.interp(s_m, xp, fp)
                         self.canvasKinematics.ax_tacho_time.axvline(x=stop_time / t_factor, color=limit_colors[v_idx], linestyle=':', alpha=0.5)
                         if name:
                             self.canvasKinematics.ax_tacho_time.text(stop_time / t_factor, 0, f" {name} (V{v_idx+1})", rotation=90, verticalalignment='bottom', color=limit_colors[v_idx], fontsize=7, alpha=0.7)
