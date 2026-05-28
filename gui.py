@@ -1,9 +1,9 @@
 # PySide6 imports
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import (QTabWidget, QApplication, QMainWindow, QPushButton, QWidget,
-                                QHBoxLayout, QVBoxLayout, QLabel, QPlainTextEdit, QFileDialog, 
-                                QSplitter, QMessageBox, QStyle, QToolBar)
-from PySide6.QtGui import QAction, QIcon
+                                QHBoxLayout, QVBoxLayout, QLabel, QPlainTextEdit, QFileDialog,
+                                QSplitter, QMessageBox, QStyle, QToolBar, QMenu)
+from PySide6.QtGui import QAction, QIcon, QCursor
 
 # pyqtgraph imports
 import pyqtgraph as pg
@@ -547,6 +547,12 @@ class MainWindow(QMainWindow):
         layoutPlotsKinematics.addWidget(self.canvasKinematics, stretch=3)
         self.toolbar = NavigationToolbar(self.canvasKinematics, self)
         layoutPlotsKinematics.addWidget(self.toolbar)
+
+        # Right-click context menu: open any graph in a standalone pop-up window.
+        # References kept in _popup_windows so Qt does not garbage-collect the dialogs.
+        self._popup_windows = []
+        for _canvas in (self.canvasAlignment, self.canvasProfile, self.canvasKinematics):
+            _canvas.mpl_connect('button_press_event', self._on_canvas_right_click)
 
         # Report - add widget for plotting reports
         self.reportSplitter = QSplitter(Qt.Orientation.Horizontal)
@@ -1679,6 +1685,361 @@ class MainWindow(QMainWindow):
 
         self.canvasKinematics.draw()
 
+    # ------------------------------------------------------------------
+    # Pop-up plot windows (right-click context menu on any canvas)
+    # ------------------------------------------------------------------
+
+    def _on_canvas_right_click(self, event):
+        """Called for every mouse button press on any of the three canvases.
+        Opens the graph context menu on right-click (button 3)."""
+        if event.button != 3:
+            return
+        self._show_graph_context_menu(QCursor.pos())
+
+    def _show_graph_context_menu(self, global_pos):
+        """Build and display the QMenu with a fixed list of all graphs."""
+        lan = lang.DIC[self.current_language]
+
+        graph_defs = [
+            ("speed",       lan.get("speed_lim",                   "Speed Limits")),
+            ("cant_curv",   f'{lan.get("cant","Cant")} / {lan.get("curvature","Curvature")}'),
+            ("profile",     lan.get("profile",                     "Profile")),
+            ("tacho_track", lan.get("kinematicsSpeedLimitTrack",   "Speed–Distance")),
+            ("tacho_time",  lan.get("kinematicsSpeedLimitTime",    "Speed–Time")),
+            ("dist_time",   lan.get("kinematicsDistanceTime",      "Distance–Time")),
+            ("forces",      lan.get("kinematicsForces",            "Forces")),
+        ]
+
+        menu = QMenu(self)
+        menu.addSection(lan.get("openGraphMenu", "Open graph in new window"))
+        for graph_id, graph_name in graph_defs:
+            action = menu.addAction(graph_name)
+            # Default-argument binding prevents loop-variable capture issues
+            action.triggered.connect(
+                lambda checked=False, gid=graph_id: self._open_popup_plot(gid)
+            )
+        menu.exec(global_pos)
+
+    def _open_popup_plot(self, graph_id: str):
+        """Collect data from dataStorage and open a PopupPlotWindow for *graph_id*."""
+        lan  = lang.DIC[self.current_language]
+        lxml = self.dataStorage.get("LandXML", {})
+
+        # Unit factors (shared with plotKinematics)
+        use_kmh   = self.toggleUnitsAction.isChecked()
+        v_factor  = 3.6    if use_kmh else 1.0
+        d_factor  = 1000.0 if use_kmh else 1.0
+        t_factor  = 60.0   if use_kmh else 1.0
+        spd_lbl   = lan.get("speedKmh",    "Speed [km/h]")  if use_kmh else lan.get("speedM",    "Speed [m/s]")
+        splim_lbl = lan.get("speedLimKmh", "Speed Limit [km/h]") if use_kmh else lan.get("speedLimM", "Speed Limit [m/s]")
+        dist_lbl  = lan.get("distanceKm",  "Distance [km]") if use_kmh else lan.get("distance",   "Distance [m]")
+        time_lbl  = lan.get("timeMin",     "Time [min]")    if use_kmh else lan.get("time",        "Time [s]")
+
+        num_vehicles    = self.dataStorage.get("num_vehicles", 1)
+        colors_speed    = ['blue',   'purple',    'brown']
+        colors_trac     = ['green',  'lime',      'darkgreen']
+        colors_brake    = ['red',    'darkred',   'salmon']
+        colors_res      = ['orange', 'darkorange','gold']
+        limit_colors    = ['crimson','darkred',   'lightcoral']
+
+        def lbl_v(v_idx):
+            return f" V{v_idx+1}" if num_vehicles > 1 else ""
+
+        # ---- helper: build stop-expanded time/speed/station arrays ----------
+        def _expand_stops(v_idx, base_times, base_values):
+            """Insert arrival (t, 0-speed or same station) points for dwell stops."""
+            dwells = self.dataStorage.get(f"kinematicsDwellTimesS_{v_idx}")
+            if dwells is None:
+                return np.array(base_times), np.array(base_values)
+            t_list = list(base_times)
+            v_list = list(base_values)
+            stop_idx = np.where(dwells > 0)[0]
+            offset = 0
+            for idx in stop_idx:
+                ai = idx + offset
+                arrival = t_list[ai] - dwells[idx]
+                t_list.insert(ai, arrival)
+                v_list.insert(ai, 0.0)
+                offset += 1
+            return np.array(t_list), np.array(v_list)
+
+        def _expand_stops_station(v_idx, base_times, base_stations):
+            """Same but preserves station value (for distance-time)."""
+            dwells = self.dataStorage.get(f"kinematicsDwellTimesS_{v_idx}")
+            if dwells is None:
+                return np.array(base_times), np.array(base_stations)
+            t_list = list(base_times)
+            s_list = list(base_stations)
+            stop_idx = np.where(dwells > 0)[0]
+            offset = 0
+            for idx in stop_idx:
+                ai = idx + offset
+                arrival = t_list[ai] - dwells[idx]
+                t_list.insert(ai, arrival)
+                s_list.insert(ai, s_list[ai])
+                offset += 1
+            return np.array(t_list), np.array(s_list)
+
+        # ==================================================================
+        if graph_id == "speed":
+            title   = lan.get("speed_lim", "Speed Limits")
+            primary = []
+            pairs = [
+                ("stationSpeedLimits", "speedLimits",   lan.get("speed_lim"),       'black'),
+                ("stationSpeed100",    "speedLimits100", lan.get("speed_lim_100"),   'red'),
+                ("stationSpeed130",    "speedLimits130", lan.get("speed_lim_130"),   'teal'),
+                ("stationSpeed150",    "speedLimits150", lan.get("speed_lim_150"),   'darkorchid'),
+                ("stationSpeedK",      "speedLimitsK",   lan.get("speed_lim_K"),     'cornflowerblue'),
+            ]
+            for sk, vk, lbl, col in pairs:
+                st = self.dataStorage.get(sk)
+                sp = self.dataStorage.get(vk)
+                if st is not None and sp is not None and len(st) > 0 and len(sp) > 0:
+                    primary.append(dict(x=st, y=sp, label=lbl, color=col,
+                                        step=True, marker='s'))
+            win = gui_overlay.PopupPlotWindow(title, self)
+            win.draw_data(primary,
+                          xlabel=lan.get("station","Station [km]"),
+                          ylabel=lan.get("speed_lim","Speed Limits"),
+                          title=title)
+
+        # ------------------------------------------------------------------
+        elif graph_id == "cant_curv":
+            title   = f'{lan.get("cant","Cant")} / {lan.get("curvature","Curvature")}'
+            primary = []
+            secondary = []
+
+            cant_series = [
+                ("stationCant",         "cant",       lan.get("cant"),         'black'),
+                ("stationCantPossible", "cantPossible",lan.get("cant_possible"),'green'),
+                ("stationCantPossible", "cDef100",    lan.get("cdef_100"),     'red'),
+                ("stationCantPossible", "cDef130",    lan.get("cdef_130"),     'teal'),
+                ("stationCantPossible", "cDef150",    lan.get("cdef_150"),     'darkorchid'),
+                ("stationCantPossible", "cDefK",      lan.get("cdef_K"),       'cornflowerblue'),
+                ("stationCantPossible", "cantDef100", lan.get("cant_def_100"), 'tomato'),
+                ("stationCantPossible", "cantDef130", lan.get("cant_def_130"), 'aqua'),
+                ("stationCantPossible", "cantDef150", lan.get("cant_def_150"), 'mediumorchid'),
+                ("stationCantPossible", "cantDefK",   lan.get("cant_def_K"),   'royalblue'),
+            ]
+            for sk, dk, lbl, col in cant_series:
+                x = lxml.get(sk)
+                y = lxml.get(dk)
+                if x is not None and y is not None and len(x) > 0 and len(y) > 0:
+                    primary.append(dict(x=x, y=y, label=lbl, color=col,
+                                        linestyle='-', marker='o'))
+
+            for sk, ck, lbl, col in [
+                ("stationHorizontal",    "curvature",    lan.get("curvature"),     'tab:gray'),
+                ("stationHorizontalNew", "curvatureNew", lan.get("curvature_new"), 'tab:orange'),
+            ]:
+                x = lxml.get(sk)
+                y = lxml.get(ck)
+                if x is not None and y is not None and len(x) > 0 and len(y) > 0:
+                    secondary.append(dict(x=x, y=y, label=lbl, color=col,
+                                          linestyle='-', marker='o'))
+
+            def _frac_fmt(x, pos=None):
+                if np.isclose(x, 0, atol=1e-6):
+                    return "0"
+                sign = "-" if x < 0 else ""
+                return f"{sign}1/{abs(int(round(1/x)))}"
+
+            win = gui_overlay.PopupPlotWindow(title, self)
+            win.draw_data(
+                primary,
+                xlabel=lan.get("station","Station [km]"),
+                ylabel=lan.get("cant","Cant [mm]"),
+                title=title,
+                secondary_series=secondary or None,
+                secondary_ylabel=lan.get("curvature","Curvature [1/m]"),
+                secondary_formatter=FuncFormatter(_frac_fmt),
+                symmetric_ylim=True,
+            )
+
+        # ------------------------------------------------------------------
+        elif graph_id == "profile":
+            title   = lan.get("profile", "Profile")
+            primary = []
+            annotations = []
+            st_v = lxml.get("stationVertical")
+            elev = lxml.get("elevation")
+            slp  = lxml.get("slope")
+            if st_v is not None and elev is not None and len(st_v) > 0:
+                primary.append(dict(x=st_v, y=elev,
+                                    label=lan.get("profile","Profile"),
+                                    color='tab:gray', linestyle='-', marker='o'))
+                if slp is not None and len(slp) > 0:
+                    midX = (st_v[:-1] + st_v[1:]) / 2
+                    midZ = (elev[:-1] + elev[1:]) / 2
+                    for i in range(len(midX)):
+                        annotations.append(dict(x=midX[i], y=float(midZ[i]) + 0.1,
+                                                 text=f"{slp[i]:.2f} ‰", fontsize=6))
+            win = gui_overlay.PopupPlotWindow(title, self)
+            win.draw_data(primary,
+                          xlabel=lan.get("station","Station [km]"),
+                          ylabel=lan.get("elevation","Elevation [m]"),
+                          title=title,
+                          text_annotations=annotations)
+
+        # ------------------------------------------------------------------
+        elif graph_id == "tacho_track":
+            title   = lan.get("kinematicsSpeedLimitTrack", "Speed–Distance")
+            primary = []
+            for v_idx in range(num_vehicles):
+                st_lim = self.dataStorage.get(f"stationSpeedLimitM_{v_idx}")
+                sp_lim = self.dataStorage.get(f"speedLimitsM_{v_idx}")
+                st_kin = self.dataStorage.get(f"kinematicsStationM_{v_idx}")
+                sp_kin = self.dataStorage.get(f"kinematicsSpeedM_{v_idx}")
+                if st_lim is not None and sp_lim is not None and len(st_lim) > 0:
+                    primary.append(dict(x=st_lim/d_factor, y=sp_lim*v_factor,
+                                        label=splim_lbl+lbl_v(v_idx),
+                                        color=limit_colors[v_idx], step=True, marker='s'))
+                if st_kin is not None and sp_kin is not None and len(st_kin) > 0:
+                    primary.append(dict(x=st_kin/d_factor, y=sp_kin*v_factor,
+                                        label=spd_lbl+lbl_v(v_idx),
+                                        color=colors_speed[v_idx]))
+            # Stop markers – vertical line at each station position
+            axlines = []
+            trainStops = self.dataStorage.get("settingsData", {}).get("trainStops", [])
+            for stop in trainStops:
+                try:
+                    s_m  = float(stop[0]) * 1000.0
+                    name = str(stop[2]) if len(stop) > 2 else ""
+                except (IndexError, ValueError):
+                    continue
+                al = dict(axis="x", pos=s_m/d_factor,
+                          color="gray", linestyle="--", alpha=0.7)
+                if name:
+                    al.update(label_text=f" {name}", label_rotation=90,
+                              label_va="bottom", label_color="black",
+                              label_fontsize=8, label_alpha=0.7, label_y=0)
+                axlines.append(al)
+            win = gui_overlay.PopupPlotWindow(title, self)
+            win.draw_data(primary, xlabel=dist_lbl, ylabel=splim_lbl,
+                          title=title, axlines=axlines or None)
+
+        # ------------------------------------------------------------------
+        elif graph_id == "tacho_time":
+            title   = lan.get("kinematicsSpeedLimitTime", "Speed–Time")
+            primary = []
+            for v_idx in range(num_vehicles):
+                sp_lim_t = self.dataStorage.get(f"speedLimitsT_{v_idx}")
+                sp_lim   = self.dataStorage.get(f"speedLimitsM_{v_idx}")
+                kin_t    = self.dataStorage.get(f"kinematicsTimeS_{v_idx}")
+                kin_sp   = self.dataStorage.get(f"kinematicsSpeedM_{v_idx}")
+                if sp_lim_t is not None and sp_lim is not None and len(sp_lim_t) > 0:
+                    primary.append(dict(x=sp_lim_t/t_factor, y=sp_lim*v_factor,
+                                        label=splim_lbl+lbl_v(v_idx),
+                                        color=limit_colors[v_idx], step=True, marker='s'))
+                if kin_t is not None and kin_sp is not None and len(kin_t) > 0:
+                    pt, pv = _expand_stops(v_idx, kin_t, kin_sp)
+                    primary.append(dict(x=pt/t_factor, y=pv*v_factor,
+                                        label=spd_lbl+lbl_v(v_idx),
+                                        color=colors_speed[v_idx]))
+            # Stop markers – vertical line at interpolated arrival time per vehicle
+            axlines = []
+            trainStops    = self.dataStorage.get("settingsData", {}).get("trainStops", [])
+            vehicles_sett = self.dataStorage.get("settingsData", {}).get("vehicles", [])
+            for stop in trainStops:
+                try:
+                    s_m  = float(stop[0]) * 1000.0
+                    name = str(stop[2]) if len(stop) > 2 else ""
+                except (IndexError, ValueError):
+                    continue
+                for v_idx in range(num_vehicles):
+                    kin_st = self.dataStorage.get(f"kinematicsStationM_{v_idx}")
+                    kin_t2 = self.dataStorage.get(f"kinematicsTimeS_{v_idx}")
+                    is_rev = (vehicles_sett[v_idx].get("runReversed", False)
+                              if v_idx < len(vehicles_sett) else False)
+                    if kin_st is None or kin_t2 is None or len(kin_st) == 0:
+                        continue
+                    xp, fp = kin_st, kin_t2
+                    if is_rev:
+                        xp, fp = kin_st[::-1], kin_t2[::-1]
+                    stop_time = np.interp(s_m, xp, fp)
+                    al = dict(axis="x", pos=stop_time/t_factor,
+                              color=limit_colors[v_idx], linestyle=":", alpha=0.5)
+                    if name:
+                        al.update(label_text=f" {name} (V{v_idx+1})",
+                                  label_rotation=90, label_va="bottom",
+                                  label_color=limit_colors[v_idx],
+                                  label_fontsize=7, label_alpha=0.7, label_y=0)
+                    axlines.append(al)
+            win = gui_overlay.PopupPlotWindow(title, self)
+            win.draw_data(primary, xlabel=time_lbl, ylabel=splim_lbl,
+                          title=title, axlines=axlines or None)
+
+        # ------------------------------------------------------------------
+        elif graph_id == "dist_time":
+            title   = lan.get("kinematicsDistanceTime", "Distance–Time")
+            primary = []
+            for v_idx in range(num_vehicles):
+                sp_lim_t = self.dataStorage.get(f"speedLimitsT_{v_idx}")
+                st_lim   = self.dataStorage.get(f"stationSpeedLimitM_{v_idx}")
+                kin_t    = self.dataStorage.get(f"kinematicsTimeS_{v_idx}")
+                kin_st   = self.dataStorage.get(f"kinematicsStationM_{v_idx}")
+                if sp_lim_t is not None and st_lim is not None and len(sp_lim_t) > 0:
+                    primary.append(dict(x=sp_lim_t/t_factor, y=st_lim/d_factor,
+                                        label=dist_lbl+lbl_v(v_idx),
+                                        color=limit_colors[v_idx], marker='s'))
+                if kin_t is not None and kin_st is not None and len(kin_t) > 0:
+                    pt, ps = _expand_stops_station(v_idx, kin_t, kin_st)
+                    primary.append(dict(x=pt/t_factor, y=ps/d_factor,
+                                        label=dist_lbl+lbl_v(v_idx),
+                                        color=colors_speed[v_idx]))
+            # Stop markers – horizontal line at each station position
+            axlines = []
+            trainStops = self.dataStorage.get("settingsData", {}).get("trainStops", [])
+            for stop in trainStops:
+                try:
+                    s_m  = float(stop[0]) * 1000.0
+                    name = str(stop[2]) if len(stop) > 2 else ""
+                except (IndexError, ValueError):
+                    continue
+                al = dict(axis="y", pos=s_m/d_factor,
+                          color="gray", linestyle="--", alpha=0.7)
+                if name:
+                    al.update(label_text=f" {name}", label_va="bottom",
+                              label_color="black", label_fontsize=8,
+                              label_alpha=0.7, label_x=0)
+                axlines.append(al)
+            win = gui_overlay.PopupPlotWindow(title, self)
+            win.draw_data(primary, xlabel=time_lbl, ylabel=dist_lbl,
+                          title=title, axlines=axlines or None)
+
+        # ------------------------------------------------------------------
+        elif graph_id == "forces":
+            title   = lan.get("kinematicsForces", "Forces Profile")
+            primary = []
+            for v_idx in range(num_vehicles):
+                kin_st = self.dataStorage.get(f"kinematicsStationM_{v_idx}")
+                f_trac = self.dataStorage.get(f"kinematicsForceTractionKN_{v_idx}")
+                f_brk  = self.dataStorage.get(f"kinematicsForceBrakingKN_{v_idx}")
+                f_res  = self.dataStorage.get(f"kinematicsForceResistanceKN_{v_idx}")
+                if kin_st is None or len(kin_st) == 0:
+                    continue
+                x = kin_st / d_factor
+                for arr, col, lbl_key in [
+                    (f_trac, colors_trac[v_idx],  "forceTraction"),
+                    (f_brk,  colors_brake[v_idx], "forceBraking"),
+                    (f_res,  colors_res[v_idx],   "forceResistance"),
+                ]:
+                    if arr is not None and len(arr) > 0:
+                        primary.append(dict(x=x, y=arr,
+                                            label=lan.get(lbl_key, lbl_key)+lbl_v(v_idx),
+                                            color=col))
+            win = gui_overlay.PopupPlotWindow(title, self)
+            win.draw_data(primary,
+                          xlabel=dist_lbl,
+                          ylabel=lan.get("forceKN", "Force [kN]"),
+                          title=title)
+
+        else:
+            return  # unknown id — do nothing
+
+        # Show window and keep reference alive so Qt doesn't GC it
+        win.show()
+        self._popup_windows.append(win)
 
     def cleanData(self):
         self.cleanLandXMLData()
@@ -2195,6 +2556,16 @@ class MainWindow(QMainWindow):
         f_brake = self.dataStorage.get(f"kinematicsForceBrakingKN_{v_idx}", np.zeros_like(stations))
         f_res = self.dataStorage.get(f"kinematicsForceResistanceKN_{v_idx}", np.zeros_like(stations))
         times = self.dataStorage.get(f"kinematicsTimeS_{v_idx}", [])
+        has_times = len(times) == len(stations)
+
+        # Shorthand column key names (keeps dict literals concise and order consistent)
+        k_sta   = lan.get("station", "Station [km]")
+        k_time  = lan.get("time", "Time [s]")
+        k_spd   = lan.get("speed", "Speed [km/h]")
+        k_acc   = "Accel [m/s2]"
+        k_trac  = lan.get("forceTraction", "Tractive Force [kN]")
+        k_brake = lan.get("forceBraking", "Braking Force [kN]")
+        k_res   = lan.get("forceResistance", "Resistance [kN]")
 
         tableData = []
 
@@ -2207,12 +2578,13 @@ class MainWindow(QMainWindow):
             minutes, seconds = divmod(total_time_s, 60)
 
             tableData.append({
-                lan.get("station", "Station [km]"): f"=== {lan.get('run_summary_title', 'SOUHRN JÍZDY')} ===",
-                lan.get("speed", "Speed [km/h]"): lan.get('total_travel_time', 'Celková jízdní doba:'),
-                "Accel [m/s2]": f"{int(minutes):02d} min {int(seconds):02d} s",
-                lan.get("forceTraction", "Tractive Force [kN]"): lan.get('average_speed', 'Průměrná rychlost:'),
-                lan.get("forceBraking", "Braking Force [kN]"): f"{avg_speed_kmh:.2f} km/h",
-                lan.get("forceResistance", "Resistance [kN]"): ""
+                k_sta:   f"=== {lan.get('run_summary_title', 'SOUHRN JÍZDY')} ===",
+                k_time:  "",
+                k_spd:   lan.get('total_travel_time', 'Celková jízdní doba:'),
+                k_acc:   f"{int(minutes):02d} min {int(seconds):02d} s",
+                k_trac:  lan.get('average_speed', 'Průměrná rychlost:'),
+                k_brake: f"{avg_speed_kmh:.2f} km/h",
+                k_res:   ""
             })
             tableData.append({k: "---" for k in tableData[0].keys()})
 
@@ -2221,28 +2593,29 @@ class MainWindow(QMainWindow):
         dx = np.append(dx, 0)
         energy_kwh = np.sum(f_trac * dx) / 3600.0
         brake_energy_kwh = np.sum(f_brake * dx) / 3600.0
-        
-        # Insert energy summary block at the beginning
+
         tableData.append({
-            lan.get("station", "Station [km]"): f"=== {lan.get('energy_title', 'ENERGY')} ===",
-            lan.get("speed", "Speed [km/h]"): f"{lan.get('energyTraction', 'Traction [kWh]')}:",
-            "Accel [m/s2]": f"{energy_kwh:.2f}",
-            lan.get("forceTraction", "Tractive Force [kN]"): f"{lan.get('energyBraking', 'Braking [kWh]')}:",
-            lan.get("forceBraking", "Braking Force [kN]"): f"{brake_energy_kwh:.2f}",
-            lan.get("forceResistance", "Resistance [kN]"): ""
+            k_sta:   f"=== {lan.get('energy_title', 'ENERGY')} ===",
+            k_time:  "",
+            k_spd:   f"{lan.get('energyTraction', 'Traction [kWh]')}:",
+            k_acc:   f"{energy_kwh:.2f}",
+            k_trac:  f"{lan.get('energyBraking', 'Braking [kWh]')}:",
+            k_brake: f"{brake_energy_kwh:.2f}",
+            k_res:   ""
         })
         tableData.append({k: "---" for k in tableData[0].keys()})
 
-        # Insert train stops summary block at the beginning
+        # Train stops summary block
         trainStops = self.dataStorage.get("settingsData", {}).get("trainStops", [])
         if trainStops:
             tableData.append({
-                lan.get("station", "Station [km]"): "=== ZASTÁVKY / STOPS ===",
-                lan.get("speed", "Speed [km/h]"): "",
-                "Accel [m/s2]": "",
-                lan.get("forceTraction", "Tractive Force [kN]"): "",
-                lan.get("forceBraking", "Braking Force [kN]"): "",
-                lan.get("forceResistance", "Resistance [kN]"): ""
+                k_sta:   "=== ZASTÁVKY / STOPS ===",
+                k_time:  "",
+                k_spd:   "",
+                k_acc:   "",
+                k_trac:  "",
+                k_brake: "",
+                k_res:   ""
             })
             for stop in trainStops:
                 try:
@@ -2255,26 +2628,32 @@ class MainWindow(QMainWindow):
                         dep_time = self.dataStorage.get(f"kinematicsTimeS_{v_idx}")[idx]
                         arr_time = max(0, dep_time - dwell)
                         tableData.append({
-                            lan.get("station", "Station [km]"): f"{s_km:.3f} {name}",
-                            lan.get("speed", "Speed [km/h]"): f"Arr: {arr_time:.1f} s",
-                            "Accel [m/s2]": f"Dep: {dep_time:.1f} s",
-                            lan.get("forceTraction", "Tractive Force [kN]"): f"Dwell: {dwell} s",
-                            lan.get("forceBraking", "Braking Force [kN]"): "-",
-                            lan.get("forceResistance", "Resistance [kN]"): "-"
+                            k_sta:   f"{s_km:.3f} {name}",
+                            k_time:  "",
+                            k_spd:   f"Arr: {arr_time:.1f} s",
+                            k_acc:   f"Dep: {dep_time:.1f} s",
+                            k_trac:  f"Dwell: {dwell} s",
+                            k_brake: "-",
+                            k_res:   "-"
                         })
                 except Exception:
                     continue
             tableData.append({k: "---" for k in tableData[0].keys()})
 
-        for i in range(0, len(stations), 10):
+        # Every 10th point + always include first and last (V=0 endpoints)
+        step_indices = list(range(0, len(stations), 10))
+        if len(stations) - 1 not in step_indices:
+            step_indices.append(len(stations) - 1)
+        for i in step_indices:
             s_km = stations[i] / 1000.0
             tableData.append({
-                lan.get("station", "Station [km]"): f"{s_km:.3f}",
-                lan.get("speed", "Speed [km/h]"): f"{speeds[i]*3.6:.1f}",
-                "Accel [m/s2]": f"{accels[i]:.3f}",
-                lan.get("forceTraction", "Tractive Force [kN]"): f"{f_trac[i]:.1f}",
-                lan.get("forceBraking", "Braking Force [kN]"): f"{f_brake[i]:.1f}",
-                lan.get("forceResistance", "Resistance [kN]"): f"{f_res[i]:.1f}"
+                k_sta:   f"{s_km:.3f}",
+                k_time:  f"{times[i]:.1f}" if has_times else "",
+                k_spd:   f"{speeds[i]*3.6:.1f}",
+                k_acc:   f"{accels[i]:.3f}",
+                k_trac:  f"{f_trac[i]:.1f}",
+                k_brake: f"{f_brake[i]:.1f}",
+                k_res:   f"{f_res[i]:.1f}"
             })
 
         self.reportVehicleTable.setData(tableData)
@@ -2303,49 +2682,97 @@ class MainWindow(QMainWindow):
             return
 
         filepath, _ = QFileDialog.getSaveFileName(self, lan.get("exportVehicleReport", "Export Vehicle Report"), "", "CSV Files (*.csv);;All Files (*)")
-        if filepath:
-            try:
-                with open(filepath, "w", newline="", encoding="utf-8") as file:
-                    writer = csv.writer(file)
-                    headers = [
-                        lan.get("station", "Station [km]"),
-                        lan.get("speed", "Speed [km/h]"),
-                        "Accel [m/s2]",
-                        lan.get("forceTraction", "Tractive Force [kN]"),
-                        lan.get("forceBraking", "Braking Force [kN]"),
-                        lan.get("forceResistance", "Resistance [kN]")
-                    ]
-                    writer.writerow(headers)
+        if not filepath:
+            return
 
-                    speeds = self.dataStorage.get(f"kinematicsSpeedM_{v_idx}", np.zeros_like(stations))
-                    accels = self.dataStorage.get(f"kinematicsAcceleration_{v_idx}", np.zeros_like(stations))
-                    f_trac = self.dataStorage.get(f"kinematicsForceTractionKN_{v_idx}", np.zeros_like(stations))
-                    f_brake = self.dataStorage.get(f"kinematicsForceBrakingKN_{v_idx}", np.zeros_like(stations))
-                    f_res = self.dataStorage.get(f"kinematicsForceResistanceKN_{v_idx}", np.zeros_like(stations))
+        try:
+            speeds = self.dataStorage.get(f"kinematicsSpeedM_{v_idx}", np.zeros_like(stations))
+            accels = self.dataStorage.get(f"kinematicsAcceleration_{v_idx}", np.zeros_like(stations))
+            f_trac = self.dataStorage.get(f"kinematicsForceTractionKN_{v_idx}", np.zeros_like(stations))
+            f_brake = self.dataStorage.get(f"kinematicsForceBrakingKN_{v_idx}", np.zeros_like(stations))
+            f_res = self.dataStorage.get(f"kinematicsForceResistanceKN_{v_idx}", np.zeros_like(stations))
+            times = self.dataStorage.get(f"kinematicsTimeS_{v_idx}", [])
+            has_times = len(times) == len(stations)
 
-                    dx = np.diff(stations)
-                    dx = np.append(dx, 0)
-                    energy_kwh = np.sum(f_trac * dx) / 3600.0
-                    brake_energy_kwh = np.sum(f_brake * dx) / 3600.0
-                    
-                    writer.writerow([f"=== {lan.get('energy_title', 'ENERGY')} ==="])
-                    writer.writerow([lan.get('energyTraction', 'Traction [kWh]'), f"{energy_kwh:.2f}"])
-                    writer.writerow([lan.get('energyBraking', 'Braking [kWh]'), f"{brake_energy_kwh:.2f}"])
+            with open(filepath, "w", newline="", encoding="utf-8") as file:
+                writer = csv.writer(file)
+
+                # === RUN SUMMARY ===
+                if len(stations) > 1 and len(times) > 1:
+                    total_distance_m = stations[-1] - stations[0]
+                    total_time_s = times[-1]
+                    avg_speed_ms = total_distance_m / total_time_s if total_time_s > 0 else 0
+                    avg_speed_kmh = avg_speed_ms * 3.6
+                    minutes, seconds = divmod(total_time_s, 60)
+                    writer.writerow([f"=== {lan.get('run_summary_title', 'SOUHRN JÍZDY')} ==="])
+                    writer.writerow([lan.get('total_travel_time', 'Celková jízdní doba:'),
+                                     f"{int(minutes):02d} min {int(seconds):02d} s"])
+                    writer.writerow([lan.get('average_speed', 'Průměrná rychlost:'),
+                                     f"{avg_speed_kmh:.2f} km/h"])
                     writer.writerow([])
 
-                    for i in range(len(stations)):
-                        s_km = stations[i] / 1000.0
-                        row = [
-                            f"{s_km:.3f}",
-                            f"{speeds[i]*3.6:.1f}",
-                            f"{accels[i]:.3f}",
-                            f"{f_trac[i]:.1f}",
-                            f"{f_brake[i]:.1f}",
-                            f"{f_res[i]:.1f}"
-                        ]
-                        writer.writerow(row)
-            except Exception as e:
-                QMessageBox.critical(self, lan.get("error", "Error"), f"{e}")
+                # === ENERGY ===
+                dx = np.diff(stations)
+                dx = np.append(dx, 0)
+                energy_kwh = np.sum(f_trac * dx) / 3600.0
+                brake_energy_kwh = np.sum(f_brake * dx) / 3600.0
+                writer.writerow([f"=== {lan.get('energy_title', 'ENERGY')} ==="])
+                writer.writerow([lan.get('energyTraction', 'Traction [kWh]'), f"{energy_kwh:.2f}"])
+                writer.writerow([lan.get('energyBraking', 'Braking [kWh]'), f"{brake_energy_kwh:.2f}"])
+                writer.writerow([])
+
+                # === STOPS ===
+                trainStops = self.dataStorage.get("settingsData", {}).get("trainStops", [])
+                if trainStops and has_times:
+                    writer.writerow(["=== ZASTÁVKY / STOPS ==="])
+                    writer.writerow([
+                        lan.get("station", "Station [km]"),
+                        lan.get("stopName", "Stop Name"),
+                        "Arr [s]",
+                        "Dep [s]",
+                        lan.get("dwellTimeTable", "Dwell Time [s]")
+                    ])
+                    for stop in trainStops:
+                        try:
+                            s_km = float(stop[0])
+                            dwell = float(stop[1])
+                            name = str(stop[2]) if len(stop) > 2 else ""
+                            s_m = s_km * 1000.0
+                            idx = np.argmin(np.abs(stations - s_m))
+                            if np.abs(stations[idx] - s_m) < 2.0:
+                                dep_time = times[idx]
+                                arr_time = max(0.0, dep_time - dwell)
+                                writer.writerow([f"{s_km:.3f}", name,
+                                                 f"{arr_time:.1f}", f"{dep_time:.1f}",
+                                                 f"{dwell:.0f}"])
+                        except Exception:
+                            continue
+                    writer.writerow([])
+
+                # === DATA ROWS ===
+                writer.writerow([
+                    lan.get("station", "Station [km]"),
+                    lan.get("time", "Time [s]"),
+                    lan.get("speed", "Speed [km/h]"),
+                    "Accel [m/s2]",
+                    lan.get("forceTraction", "Tractive Force [kN]"),
+                    lan.get("forceBraking", "Braking Force [kN]"),
+                    lan.get("forceResistance", "Resistance [kN]")
+                ])
+                for i in range(len(stations)):
+                    s_km = stations[i] / 1000.0
+                    writer.writerow([
+                        f"{s_km:.3f}",
+                        f"{times[i]:.1f}" if has_times else "",
+                        f"{speeds[i]*3.6:.1f}",
+                        f"{accels[i]:.3f}",
+                        f"{f_trac[i]:.1f}",
+                        f"{f_brake[i]:.1f}",
+                        f"{f_res[i]:.1f}"
+                    ])
+
+        except Exception as e:
+            QMessageBox.critical(self, lan.get("error", "Error"), f"{e}")
 
     # Update tables
     def updateTableLandXML(self, data):

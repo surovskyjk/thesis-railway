@@ -1,4 +1,4 @@
-# thesis-railway
+# COYPU
 
 A desktop application for railway track geometry analysis and train performance simulation, developed as part of a master's thesis. The tool follows the Czech railway standard CSN 73 6360-1.
 
@@ -11,8 +11,8 @@ Built with Python and PySide6.
 - Parse and visualize LandXML horizontal alignment files (lines, spirals, curves; cant; vertical profile)
 - Parse line speed limits from XML TTP files (Czech national infrastructure registry format)
 - Append multiple LandXML or TTP files to build a longer corridor
-- Design cant (D) and calculate permissible speed profiles for four passenger comfort classes: V100, V130, V150, VK
-- Enforce norm limits: cant ramp slope (n), cant deficiency change rate (nI), sudden cant deficiency change (deltaI)
+- Design cant (D) and calculate permissible speed profiles for four speed profiles (difference in global max cant deficiency): V100, V130, V150, VK
+- Enforce norm limits: cant ramp gradient (n), rate of change of cant deficiency (nI), abrupt change of cant deficiency (deltaI)
 - Simulate train kinematics using a forward-backward pass algorithm with traction, resistance, and braking
 - Interactive map viewer showing the alignment geometry coloured by speed
 - Multi-language UI: Czech, English, German
@@ -78,8 +78,8 @@ Within each iteration:
 
 Two calculation modes are available:
 
-- Design mode (`runCalculationLoop`) - calculates optimal D for the given speed, then derives I and the permissible speed; produces one output profile using the default comfort class
-- As-built mode (`runCalculationLoopI`) - uses the measured cant from the LandXML file directly; derives I and permissible speed for all four comfort classes (V100, V130, V150, VK)
+- Design mode (`runCalculationLoop`) - calculates optimal D for the given speed, then derives I and the permissible speed; produces one output profile using the default speed profile
+- As-built mode (`runCalculationLoopI`) - uses the measured cant from the LandXML file directly; derives I and permissible speed for all four speed profiles (V100, V130, V150, VK)
 
 After convergence, D and I values are rounded and the final speed is verified against the D+I formula.
 

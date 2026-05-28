@@ -1,11 +1,17 @@
-from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, 
-                               QDialogButtonBox, QCheckBox, QLabel, 
-                               QListWidget, QListWidgetItem, QFormLayout, 
-                               QLineEdit, QTableWidget, QTableWidgetItem, 
-                               QHeaderView, QFileDialog, QMessageBox, 
+from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout,
+                               QDialogButtonBox, QCheckBox, QLabel,
+                               QListWidget, QListWidgetItem, QFormLayout,
+                               QLineEdit, QTableWidget, QTableWidgetItem,
+                               QHeaderView, QFileDialog, QMessageBox,
                                QDialogButtonBox, QPushButton, QComboBox,
                                QTabWidget, QWidget)
 from PySide6.QtCore import Qt
+
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_qtagg import (
+    FigureCanvasQTAgg as FigureCanvas,
+    NavigationToolbar2QT as NavigationToolbar,
+)
 
 import csv
 import readfile
@@ -1136,3 +1142,209 @@ class VehicleSettingsDialog(QDialog):
     def getSettings(self):
         vehicles = [self.tabs.widget(i).getSettings() for i in range(self.tabs.count())]
         return {"vehicles": vehicles}
+
+
+# ---------------------------------------------------------------------------
+# Pop-up plot window
+# ---------------------------------------------------------------------------
+
+class PopupPlotWindow(QDialog):
+    """Standalone pop-up window with its own Matplotlib Figure and canvas.
+
+    Data must be passed via :meth:`draw_data` as numpy array references —
+    the existing Figure / Axes from the main window are never copied or
+    touched (that would break Qt backend references).
+    """
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        # Make this a proper independent top-level window (not a modal dialog).
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
+        self.resize(960, 580)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.fig = Figure(figsize=(9, 5), dpi=100, layout="constrained")
+        self.canvas = FigureCanvas(self.fig)
+        self.toolbar = NavigationToolbar(self.canvas, self)
+
+        layout.addWidget(self.toolbar)
+        layout.addWidget(self.canvas)
+
+    # ------------------------------------------------------------------
+    def draw_data(
+        self,
+        primary_series,
+        *,
+        xlabel: str = "",
+        ylabel: str = "",
+        title: str = "",
+        grid: bool = True,
+        secondary_series=None,
+        secondary_ylabel: str = "",
+        secondary_formatter=None,
+        symmetric_ylim: bool = False,
+        text_annotations=None,
+        axlines=None,
+    ):
+        """Render data into the pop-up window's own Figure.
+
+        Parameters
+        ----------
+        primary_series : list[dict]
+            List of series descriptors for the primary (left) y-axis.
+            Each dict recognises these keys:
+
+            =========  =====================================================
+            x, y       array-like (required)
+            label      str
+            color      str (default 'tab:blue')
+            linestyle  str (default '-')
+            marker     str or None (optional)
+            step       bool — use ``ax.step(where='post')`` (default False)
+            =========  =====================================================
+
+        secondary_series : list[dict] or None
+            Same format, plotted on an auto-created twin-y (right) axis.
+        secondary_ylabel : str
+            Y-axis label for the secondary axis.
+        secondary_formatter : matplotlib Formatter or None
+            Tick formatter applied to the secondary y-axis.
+        symmetric_ylim : bool
+            If True, both y-axes are symmetrised around 0 (useful for the
+            cant / curvature overlay where zero must be centred).
+        text_annotations : list[dict] or None
+            Each dict: ``x``, ``y``, ``text``, ``fontsize``,
+            ``axis`` (``'primary'`` or ``'secondary'``).
+        axlines : list[dict] or None
+            Stop-marker lines drawn after all series.  Each dict recognises:
+
+            ================  ================================================
+            axis              ``'x'`` → ``axvline``, ``'y'`` → ``axhline``
+            pos               float – position on the chosen axis
+            color             str (default ``'gray'``)
+            linestyle         str (default ``'--'``)
+            alpha             float (default 0.7)
+            label_text        str – optional text annotation beside the line
+            label_rotation    int (default 0; use 90 for vertical lines)
+            label_va          str vertical-alignment (default ``'bottom'``)
+            label_color       str (defaults to *color*)
+            label_fontsize    int (default 8)
+            label_alpha       float (default 0.7)
+            label_x           float – x position when axis=``'y'`` (default 0)
+            label_y           float – y position when axis=``'x'`` (default 0)
+            ================  ================================================
+        """
+        self.fig.clear()
+        ax = self.fig.add_subplot(111)
+        ax_twin = ax.twinx() if secondary_series else None
+
+        def _plot(axis, series_list):
+            for s in series_list:
+                x, y = s.get("x"), s.get("y")
+                if x is None or y is None or len(x) == 0 or len(y) == 0:
+                    continue
+                kw = dict(
+                    label=s.get("label", ""),
+                    color=s.get("color", "tab:blue"),
+                    linestyle=s.get("linestyle", "-"),
+                )
+                if s.get("marker"):
+                    kw["marker"] = s["marker"]
+                if s.get("step", False):
+                    axis.step(x, y, where="post", **kw)
+                else:
+                    axis.plot(x, y, **kw)
+
+        _plot(ax, primary_series)
+        if ax_twin is not None:
+            _plot(ax_twin, secondary_series)
+
+        # Optional text annotations (e.g. slope labels on the profile graph)
+        if text_annotations:
+            for ann in text_annotations:
+                target = (
+                    ax_twin
+                    if (ann.get("axis") == "secondary" and ax_twin is not None)
+                    else ax
+                )
+                target.text(
+                    ann.get("x", 0),
+                    ann.get("y", 0),
+                    ann.get("text", ""),
+                    fontsize=ann.get("fontsize", 8),
+                )
+
+        # Stop-marker axlines (axvline / axhline with optional text)
+        if axlines:
+            for al in axlines:
+                axis_dir  = al.get("axis", "x")
+                pos       = al.get("pos", 0)
+                color     = al.get("color", "gray")
+                linestyle = al.get("linestyle", "--")
+                alpha     = al.get("alpha", 0.7)
+                lbl_text  = al.get("label_text", "")
+                lbl_rot   = al.get("label_rotation", 0)
+                lbl_va    = al.get("label_va", "bottom")
+                lbl_col   = al.get("label_color", color)
+                lbl_fs    = al.get("label_fontsize", 8)
+                lbl_alph  = al.get("label_alpha", 0.7)
+                if axis_dir == "x":
+                    ax.axvline(x=pos, color=color, linestyle=linestyle, alpha=alpha)
+                    if lbl_text:
+                        ax.text(pos, al.get("label_y", 0), lbl_text,
+                                rotation=lbl_rot, verticalalignment=lbl_va,
+                                color=lbl_col, fontsize=lbl_fs, alpha=lbl_alph)
+                else:  # "y" → horizontal line
+                    ax.axhline(y=pos, color=color, linestyle=linestyle, alpha=alpha)
+                    if lbl_text:
+                        ax.text(al.get("label_x", 0), pos, lbl_text,
+                                verticalalignment=lbl_va,
+                                color=lbl_col, fontsize=lbl_fs, alpha=lbl_alph)
+
+        # Primary axis decoration
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        if grid:
+            ax.grid(True)
+        ax.autoscale(enable=True, axis="x", tight=True)
+
+        # Secondary axis decoration
+        if ax_twin is not None:
+            ax_twin.set_ylabel(secondary_ylabel)
+            if secondary_formatter is not None:
+                ax_twin.yaxis.set_major_formatter(secondary_formatter)
+            ax_twin.yaxis.set_label_position("right")
+            ax_twin.yaxis.tick_right()
+            ax_twin.grid(False)
+            ax_twin.autoscale(enable=True, axis="x", tight=True)
+
+        # Symmetric y-axis: centre at 0 (cant / curvature overlay)
+        if symmetric_ylim:
+            lo, hi = ax.get_ylim()
+            lim = max(abs(lo), abs(hi), 1e-9)
+            ax.set_ylim(-lim, lim)
+            if ax_twin is not None:
+                lo2, hi2 = ax_twin.get_ylim()
+                lim2 = max(abs(lo2), abs(hi2), 1e-9)
+                ax_twin.set_ylim(-lim2, lim2)
+
+        # Legends (only if any series has a non-empty label)
+        h, lbl = ax.get_legend_handles_labels()
+        if lbl:
+            ax.legend(h, lbl, loc="upper left")
+        if ax_twin is not None:
+            h2, lbl2 = ax_twin.get_legend_handles_labels()
+            if lbl2:
+                ax_twin.legend(h2, lbl2, loc="upper right")
+
+        self.canvas.draw()
