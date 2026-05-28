@@ -1518,11 +1518,11 @@ class MainWindow(QMainWindow):
         dist_lbl = lan.get("distanceKm", "Distance [km]") if use_kmh else lan.get("distance", "Distance [m]")
         time_lbl = lan.get("timeMin", "Time [min]") if use_kmh else lan.get("time", "Time [s]")
 
-        colors_speed = ['blue', 'purple', 'brown']
+        colors_speed = ['tab:red', 'tab:green', 'tab:blue']
         colors_trac = ['green', 'lime', 'darkgreen']
         colors_brake = ['red', 'darkred', 'salmon']
         colors_res = ['orange', 'darkorange', 'gold']
-        limit_colors = ['crimson', 'darkred', 'lightcoral']
+        limit_colors = ['lightcoral', 'lightgreen', 'lightskyblue']
 
         num_vehicles = self.dataStorage.get("num_vehicles", 1)
         vehicles_settings = self.dataStorage.get("settingsData", {}).get("vehicles", [])
@@ -1535,17 +1535,28 @@ class MainWindow(QMainWindow):
             lbl_v = f" V{v_idx+1}" if num_vehicles > 1 else ""
 
             if (speedLimits is not None and len(speedLimits) > 0) and (stationSpeedLimits is not None and len(stationSpeedLimits) > 0):
-                line, = self.canvasKinematics.ax_tacho_track.step(stationSpeedLimits / d_factor, speedLimits * v_factor, where="post", marker='s', linestyle='-', color=limit_colors[v_idx], label=speed_lim_lbl + lbl_v)
+                # For reversed vehicles the stored arrays are descending; `where="post"` on a
+                # descending x shifts every limit one segment to the wrong side, so sort
+                # ascending for the visual only (stored data / time calcs are untouched).
+                is_rev_v = (v_idx < len(vehicles_settings) and
+                            vehicles_settings[v_idx].get("runReversed", False))
+                if is_rev_v and len(stationSpeedLimits) > 1:
+                    _si = np.argsort(stationSpeedLimits)
+                    _st_plot = stationSpeedLimits[_si]
+                    _sp_plot = speedLimits[_si]
+                else:
+                    _st_plot, _sp_plot = stationSpeedLimits, speedLimits
+                line, = self.canvasKinematics.ax_tacho_track.step(_st_plot / d_factor, _sp_plot * v_factor, where="post", marker='s', linestyle='--', alpha=0.7, color=limit_colors[v_idx], label=speed_lim_lbl + lbl_v)
                 self.plotKinematicsData[f"tachoTrack_{v_idx}"] = line
                 line.set_visible(self.toggleKinematicsSpeedLimitTrackAction.isChecked())
 
             if (speedLimitsT is not None and len(speedLimitsT) > 0) and (speedLimits is not None and len(speedLimits) > 0):
-                line, = self.canvasKinematics.ax_tacho_time.step(speedLimitsT / t_factor, speedLimits * v_factor, where="post", marker='s', linestyle='-', color=limit_colors[v_idx], label=speed_lim_lbl + lbl_v)
+                line, = self.canvasKinematics.ax_tacho_time.step(speedLimitsT / t_factor, speedLimits * v_factor, where="post", marker='s', linestyle='--', alpha=0.7, color=limit_colors[v_idx], label=speed_lim_lbl + lbl_v)
                 self.plotKinematicsData[f"tachoTime_{v_idx}"] = line
                 line.set_visible(self.toggleKinematicsSpeedLimitTimeAction.isChecked())
 
             if (speedLimitsT is not None and len(speedLimitsT) > 0) and (stationSpeedLimits is not None and len(stationSpeedLimits) > 0):
-                line, = self.canvasKinematics.ax_dist_time.plot(speedLimitsT / t_factor, stationSpeedLimits / d_factor, marker='s', linestyle='-', color=limit_colors[v_idx], label=dist_lbl + lbl_v)
+                line, = self.canvasKinematics.ax_dist_time.plot(speedLimitsT / t_factor, stationSpeedLimits / d_factor, marker='s', linestyle='--', alpha=0.7, color=limit_colors[v_idx], label=speed_lim_lbl + lbl_v)
                 self.plotKinematicsData[f"distTime_{v_idx}"] = line
                 line.set_visible(self.toggleKinematicsDistanceTimeAction.isChecked())
 
@@ -1736,11 +1747,11 @@ class MainWindow(QMainWindow):
         time_lbl  = lan.get("timeMin",     "Time [min]")    if use_kmh else lan.get("time",        "Time [s]")
 
         num_vehicles    = self.dataStorage.get("num_vehicles", 1)
-        colors_speed    = ['blue',   'purple',    'brown']
-        colors_trac     = ['green',  'lime',      'darkgreen']
-        colors_brake    = ['red',    'darkred',   'salmon']
-        colors_res      = ['orange', 'darkorange','gold']
-        limit_colors    = ['crimson','darkred',   'lightcoral']
+        colors_speed    = ['tab:red',   'tab:green',  'tab:blue']
+        colors_trac     = ['green',    'lime',       'darkgreen']
+        colors_brake    = ['red',      'darkred',    'salmon']
+        colors_res      = ['orange',   'darkorange', 'gold']
+        limit_colors    = ['lightcoral','lightgreen','lightskyblue']
 
         def lbl_v(v_idx):
             return f" V{v_idx+1}" if num_vehicles > 1 else ""
@@ -1885,15 +1896,26 @@ class MainWindow(QMainWindow):
         elif graph_id == "tacho_track":
             title   = lan.get("kinematicsSpeedLimitTrack", "Speed–Distance")
             primary = []
+            vehicles_sett_tt = self.dataStorage.get("settingsData", {}).get("vehicles", [])
             for v_idx in range(num_vehicles):
                 st_lim = self.dataStorage.get(f"stationSpeedLimitM_{v_idx}")
                 sp_lim = self.dataStorage.get(f"speedLimitsM_{v_idx}")
                 st_kin = self.dataStorage.get(f"kinematicsStationM_{v_idx}")
                 sp_kin = self.dataStorage.get(f"kinematicsSpeedM_{v_idx}")
                 if st_lim is not None and sp_lim is not None and len(st_lim) > 0:
-                    primary.append(dict(x=st_lim/d_factor, y=sp_lim*v_factor,
+                    # Same ascending-sort fix as plotKinematics tacho_track
+                    is_rev_tt = (v_idx < len(vehicles_sett_tt) and
+                                 vehicles_sett_tt[v_idx].get("runReversed", False))
+                    if is_rev_tt and len(st_lim) > 1:
+                        _si = np.argsort(st_lim)
+                        st_lim_p = st_lim[_si]
+                        sp_lim_p = sp_lim[_si]
+                    else:
+                        st_lim_p, sp_lim_p = st_lim, sp_lim
+                    primary.append(dict(x=st_lim_p/d_factor, y=sp_lim_p*v_factor,
                                         label=splim_lbl+lbl_v(v_idx),
-                                        color=limit_colors[v_idx], step=True, marker='s'))
+                                        color=limit_colors[v_idx], step=True, marker='s',
+                                        linestyle='--', alpha=0.7))
                 if st_kin is not None and sp_kin is not None and len(st_kin) > 0:
                     primary.append(dict(x=st_kin/d_factor, y=sp_kin*v_factor,
                                         label=spd_lbl+lbl_v(v_idx),
@@ -1930,7 +1952,8 @@ class MainWindow(QMainWindow):
                 if sp_lim_t is not None and sp_lim is not None and len(sp_lim_t) > 0:
                     primary.append(dict(x=sp_lim_t/t_factor, y=sp_lim*v_factor,
                                         label=splim_lbl+lbl_v(v_idx),
-                                        color=limit_colors[v_idx], step=True, marker='s'))
+                                        color=limit_colors[v_idx], step=True, marker='s',
+                                        linestyle='--', alpha=0.7))
                 if kin_t is not None and kin_sp is not None and len(kin_t) > 0:
                     pt, pv = _expand_stops(v_idx, kin_t, kin_sp)
                     primary.append(dict(x=pt/t_factor, y=pv*v_factor,
@@ -1980,8 +2003,9 @@ class MainWindow(QMainWindow):
                 kin_st   = self.dataStorage.get(f"kinematicsStationM_{v_idx}")
                 if sp_lim_t is not None and st_lim is not None and len(sp_lim_t) > 0:
                     primary.append(dict(x=sp_lim_t/t_factor, y=st_lim/d_factor,
-                                        label=dist_lbl+lbl_v(v_idx),
-                                        color=limit_colors[v_idx], marker='s'))
+                                        label=splim_lbl+lbl_v(v_idx),
+                                        color=limit_colors[v_idx], marker='s',
+                                        linestyle='--', alpha=0.7))
                 if kin_t is not None and kin_st is not None and len(kin_t) > 0:
                     pt, ps = _expand_stops_station(v_idx, kin_t, kin_st)
                     primary.append(dict(x=pt/t_factor, y=ps/d_factor,
@@ -2571,7 +2595,7 @@ class MainWindow(QMainWindow):
 
         # Travel time and average speed calculation
         if len(stations) > 1 and len(times) > 1:
-            total_distance_m = stations[-1] - stations[0]
+            total_distance_m = abs(stations[-1] - stations[0])
             total_time_s = times[-1]
             avg_speed_ms = total_distance_m / total_time_s if total_time_s > 0 else 0
             avg_speed_kmh = avg_speed_ms * 3.6
@@ -2588,8 +2612,8 @@ class MainWindow(QMainWindow):
             })
             tableData.append({k: "---" for k in tableData[0].keys()})
 
-        # Energy calculation
-        dx = np.diff(stations)
+        # Energy calculation (use abs(dx) so reversed vehicles give positive values)
+        dx = np.abs(np.diff(stations))
         dx = np.append(dx, 0)
         energy_kwh = np.sum(f_trac * dx) / 3600.0
         brake_energy_kwh = np.sum(f_brake * dx) / 3600.0
@@ -2699,7 +2723,7 @@ class MainWindow(QMainWindow):
 
                 # === RUN SUMMARY ===
                 if len(stations) > 1 and len(times) > 1:
-                    total_distance_m = stations[-1] - stations[0]
+                    total_distance_m = abs(stations[-1] - stations[0])
                     total_time_s = times[-1]
                     avg_speed_ms = total_distance_m / total_time_s if total_time_s > 0 else 0
                     avg_speed_kmh = avg_speed_ms * 3.6
@@ -2711,8 +2735,8 @@ class MainWindow(QMainWindow):
                                      f"{avg_speed_kmh:.2f} km/h"])
                     writer.writerow([])
 
-                # === ENERGY ===
-                dx = np.diff(stations)
+                # === ENERGY (abs(dx) so reversed vehicles give positive values) ===
+                dx = np.abs(np.diff(stations))
                 dx = np.append(dx, 0)
                 energy_kwh = np.sum(f_trac * dx) / 3600.0
                 brake_energy_kwh = np.sum(f_brake * dx) / 3600.0

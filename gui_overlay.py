@@ -1257,6 +1257,8 @@ class PopupPlotWindow(QDialog):
                     color=s.get("color", "tab:blue"),
                     linestyle=s.get("linestyle", "-"),
                 )
+                if s.get("alpha") is not None:
+                    kw["alpha"] = s["alpha"]
                 if s.get("marker"):
                     kw["marker"] = s["marker"]
                 if s.get("step", False):
