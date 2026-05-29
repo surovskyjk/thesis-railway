@@ -335,12 +335,16 @@ class GeometryCalculator:
                     I_i    = self.calculateCantDef(self.vInit[i], abs(self.cantNew[i]),   abs(self.kappa[i]))
                     I_prev = self.calculateCantDef(self.vInit[i], abs(self.cantNew[i-1]), abs(self.kappa[i-1]))
                     dI_actual  = abs(I_i - I_prev)
-                    dD_actual  = abs(self.cantNew[i] - self.cantNew[i-1])
                     dKappa     = abs(self.kappa[i] - self.kappa[i-1])
                     nI_lim     = self.getNormLimit("nILin", self.vInit[i], approach)
                     v_nI       = self.calculateCantDefSpeedNI(length, nI_lim[0], dI_actual)
                     deltaI_lim = self.getNormLimit("dI", self.vInit[i], approach)[0]
-                    v_deltaI   = self.calculateCantDefSpeedDeltaI(dD_actual, deltaI_lim, dKappa)
+                    # Signed cant credit: +|dD| when |D| and |κ| change in the same direction
+                    # (cant change reduces deltaI), −|dD| when opposite (cant change increases deltaI).
+                    _kappa_dir = abs(self.kappa[i]) - abs(self.kappa[i-1])
+                    _D_change  = abs(self.cantNew[i]) - abs(self.cantNew[i-1])
+                    dD_credit  = _D_change * (np.sign(_kappa_dir) if _kappa_dir != 0.0 else 0.0)
+                    v_deltaI   = self.calculateCantDefSpeedDeltaI(dD_credit, deltaI_lim, dKappa)
                     # More lenient of the two; fall back gracefully when one is not applicable (inf)
                     if np.isinf(v_nI) and np.isinf(v_deltaI):
                         cantDefSpeed[i] = np.inf
@@ -583,12 +587,16 @@ class GeometryCalculator:
                     I_i    = self.calculateCantDef(self.vInit[i], abs(self.cantNew[i]),   abs(self.kappa[i]))
                     I_prev = self.calculateCantDef(self.vInit[i], abs(self.cantNew[i-1]), abs(self.kappa[i-1]))
                     dI_actual  = abs(I_i - I_prev)
-                    dD_actual  = abs(self.cantNew[i] - self.cantNew[i-1])
                     dKappa     = abs(self.kappa[i] - self.kappa[i-1])
                     nI_lim     = self.getNormLimit("nILin", self.vInit[i], approach)
                     v_nI       = self.calculateCantDefSpeedNI(length, nI_lim[0], dI_actual)
                     deltaI_lim = self.getNormLimit("dI", self.vInit[i], approach)[0]
-                    v_deltaI   = self.calculateCantDefSpeedDeltaI(dD_actual, deltaI_lim, dKappa)
+                    # Signed cant credit: +|dD| when |D| and |κ| change in the same direction
+                    # (cant change reduces deltaI), −|dD| when opposite (cant change increases deltaI).
+                    _kappa_dir = abs(self.kappa[i]) - abs(self.kappa[i-1])
+                    _D_change  = abs(self.cantNew[i]) - abs(self.cantNew[i-1])
+                    dD_credit  = _D_change * (np.sign(_kappa_dir) if _kappa_dir != 0.0 else 0.0)
+                    v_deltaI   = self.calculateCantDefSpeedDeltaI(dD_credit, deltaI_lim, dKappa)
                     # More lenient of the two; fall back gracefully when one is not applicable (inf)
                     if np.isinf(v_nI) and np.isinf(v_deltaI):
                         cantDefSpeed[i] = np.inf
@@ -800,23 +808,37 @@ class GeometryCalculator:
             return np.inf
         return length * 1000 / (nI_lim * dI_actual)
 
-    def calculateCantDefSpeedDeltaI(self, dD_actual, deltaI_lim, dKappa):
+    def calculateCantDefSpeedDeltaI(self, dD_credit, deltaI_lim, dKappa):
         """Maximum speed from the virtual deltaI constraint on a spiral.
 
-        The virtual-deltaI approach treats the spiral as an equivalent L=0 boundary
-        with the cant change dD_actual included as an additional tolerance:
-            v_deltaI = sqrt((dD_actual + deltaI_lim) / (11.8 * dKappa))
+        The physical cant-deficiency change across a spiral is:
+            deltaI_phys = 11.8 · v² · |Δκ|  −  dD_credit
+
+        where dD_credit is the *signed* cant-change contribution:
+          +|dD|  when |D| and |κ| change in the **same** direction
+                 (e.g. entering a curve: κ↑ & D↑, or exiting: κ↓ & D↓)
+                 → cant change reduces deltaI (credit / relief)
+          −|dD|  when they change in **opposite** directions
+                 (e.g. κ↑ but D↓, or κ↓ but D↑)
+                 → cant change increases deltaI (cost / penalty)
+
+        Setting deltaI_phys = deltaI_lim and solving for v:
+            v_deltaI = sqrt((deltaI_lim + dD_credit) / (11.8 · |Δκ|))
 
         Args:
-            dD_actual:  absolute cant change across the spiral [mm]
-            deltaI_lim: maximum allowed sudden cant deficiency change [mm]
-            dKappa:     absolute curvature change |kappa_end - kappa_start| [m^-1]
+            dD_credit:  signed cant credit [mm]; positive = helps, negative = hurts
+            deltaI_lim: maximum allowed cant deficiency change [mm]
+            dKappa:     absolute curvature change |κ_end − κ_start| [m⁻¹]
         Returns:
-            maximum permissible speed [km/h]; np.inf when no constraint applies (dKappa ≈ 0)
+            maximum permissible speed [km/h]; np.inf when dKappa ≈ 0 (no constraint);
+            0 when the effective limit is zero or negative (constraint unachievable).
         """
         if dKappa <= 1e-10:
             return np.inf
-        return np.sqrt((dD_actual + deltaI_lim) / (11.8 * dKappa))
+        effective_lim = deltaI_lim + dD_credit
+        if effective_lim <= 0:
+            return 0.0  # no speed can satisfy this constraint
+        return np.sqrt(effective_lim / (11.8 * dKappa))
 
     def calculateSpeedCant(self, length, dD, nLin):
         if nLin[0] == 0:

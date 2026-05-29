@@ -824,12 +824,34 @@ class MainWindow(QMainWindow):
                 currentSection = sections[sectionID]
                 startID = currentSection["startID"]
                 endID = currentSection["endID"]+1
-                tempStations.append(stationsRaw[startID:endID])
-                tempSpeedLimits.append(speedLimitsRaw[startID:endID])
+                sec_st = stationsRaw[startID:endID]
+                sec_sp = speedLimitsRaw[startID:endID]
+                # Correct reversed (descending km) sections so that
+                # getSpeedLimitAt() post-step semantics give the right limit.
+                sec_st, sec_sp = self._correctReversedTTPSection(sec_st, sec_sp)
+                tempStations.append(sec_st)
+                tempSpeedLimits.append(sec_sp)
             stationsRaw = np.concatenate(tempStations)
             speedLimitsRaw = np.concatenate(tempSpeedLimits)
 
             # Sort by station so the step plot is always monotonically increasing
+            sort_idx = np.argsort(stationsRaw, kind='stable')
+            stationsRaw    = stationsRaw[sort_idx]
+            speedLimitsRaw = speedLimitsRaw[sort_idx]
+
+        else:
+            # loadAll=True — correct any reversed sections in the raw data.
+            all_sections = self.TTPSections(stationsRaw)
+            tempStations = []
+            tempSpeedLimits = []
+            for section in all_sections:
+                sec_st = stationsRaw[section["startID"]:section["endID"] + 1]
+                sec_sp = speedLimitsRaw[section["startID"]:section["endID"] + 1]
+                sec_st, sec_sp = self._correctReversedTTPSection(sec_st, sec_sp)
+                tempStations.append(sec_st)
+                tempSpeedLimits.append(sec_sp)
+            stationsRaw = np.concatenate(tempStations)
+            speedLimitsRaw = np.concatenate(tempSpeedLimits)
             sort_idx = np.argsort(stationsRaw, kind='stable')
             stationsRaw    = stationsRaw[sort_idx]
             speedLimitsRaw = speedLimitsRaw[sort_idx]
@@ -1177,8 +1199,13 @@ class MainWindow(QMainWindow):
                     startID = currentSection["startID"]
                     endID = currentSection["endID"]+1
 
-                    tempStations.append(stationsRaw[startID:endID])
-                    tempSpeedLimits.append(speedLimitsRaw[startID:endID])
+                    sec_st = stationsRaw[startID:endID]
+                    sec_sp = speedLimitsRaw[startID:endID]
+                    # Correct reversed (descending km) sections so that
+                    # getSpeedLimitAt() post-step semantics give the right limit.
+                    sec_st, sec_sp = self._correctReversedTTPSection(sec_st, sec_sp)
+                    tempStations.append(sec_st)
+                    tempSpeedLimits.append(sec_sp)
 
                 stationsRaw = np.concatenate(tempStations)
                 speedLimitsRaw = np.concatenate(tempSpeedLimits)
@@ -1186,6 +1213,24 @@ class MainWindow(QMainWindow):
                 # Sort by station so the step plot is always monotonically increasing.
                 # This acts as a safety net for any edge case the section detector may miss
                 # (e.g. non-standard TTP layouts or multiple selected sections).
+                sort_idx = np.argsort(stationsRaw, kind='stable')
+                stationsRaw    = stationsRaw[sort_idx]
+                speedLimitsRaw = speedLimitsRaw[sort_idx]
+
+            else:
+                # loadAll=True — apply the same reversed-section correction to every
+                # monotone section present in the raw data before storing.
+                all_sections = self.TTPSections(stationsRaw)
+                tempStations = []
+                tempSpeedLimits = []
+                for section in all_sections:
+                    sec_st = stationsRaw[section["startID"]:section["endID"] + 1]
+                    sec_sp = speedLimitsRaw[section["startID"]:section["endID"] + 1]
+                    sec_st, sec_sp = self._correctReversedTTPSection(sec_st, sec_sp)
+                    tempStations.append(sec_st)
+                    tempSpeedLimits.append(sec_sp)
+                stationsRaw = np.concatenate(tempStations)
+                speedLimitsRaw = np.concatenate(tempSpeedLimits)
                 sort_idx = np.argsort(stationsRaw, kind='stable')
                 stationsRaw    = stationsRaw[sort_idx]
                 speedLimitsRaw = speedLimitsRaw[sort_idx]
@@ -2869,7 +2914,70 @@ class MainWindow(QMainWindow):
         })
 
         return sections
-    
+
+    @staticmethod
+    def _correctReversedTTPSection(sec_stations, sec_limits):
+        """Correct the (station, speed-limit) arrays of a single TTP section that
+        was originally stored in *descending* km order (direction = high-km → low-km).
+
+        Background
+        ----------
+        ``getSpeedLimitAt`` uses a post-step-function lookup:
+        ``np.searchsorted(stations, x, side='right') - 1``.  After sorting
+        ascending, this assigns each sign's limit to the interval **above** the
+        sign's km position.  For an ascending (0→N) section that is correct —
+        the sign at km 10 restricts speed on the stretch km 10 … km 16.
+
+        For a reversed (N→0) section, the semantics are inverted: a sign at km 10
+        restricts speed on the stretch km 5 … km 10 (toward lower km).  After a
+        naive ascending sort the limit is assigned to km 10 … km 16 instead —
+        one segment too late.
+
+        Fix
+        ---
+        Insert a synthetic station at ``stations_asc[0] - 1e-6`` km (just below
+        the lowest sign) and shift all limits one position "right" by appending
+        the last limit.  This results in a monotonically increasing array with
+        correct post-step semantics for both forward and reversed vehicles using
+        reversed TTP data.
+
+        Example
+        -------
+        Reversed TTP: stations [16, 10, 5], limits [100, 80, 60]
+        → After sort:        stations [5, 10, 16], limits [60, 80, 100]
+        → After correction:  stations [4.999999, 5, 10, 16], limits [60, 80, 100, 100]
+        getSpeedLimitAt(7)  → 80  ✓   (sign at 10 covers km 5–10)
+        getSpeedLimitAt(12) → 100 ✓   (sign at 16 covers km 10–16)
+
+        Parameters
+        ----------
+        sec_stations : 1-D numpy array  — station positions [km] of one section
+        sec_limits   : 1-D numpy array  — speed limits [km/h] of that section
+
+        Returns
+        -------
+        (stations_corrected, limits_corrected) — both 1-D numpy arrays
+        """
+        if len(sec_stations) <= 1:
+            return sec_stations, sec_limits
+
+        # Only transform sections that were originally in descending order
+        if sec_stations[0] <= sec_stations[-1]:
+            return sec_stations, sec_limits
+
+        sort_idx = np.argsort(sec_stations, kind='stable')
+        st_asc = sec_stations[sort_idx]
+        sp_asc = sec_limits[sort_idx]
+
+        # Prepend a synthetic point 1 µm below the lowest real sign.
+        # It carries the lowest sign's own limit so that getSpeedLimitAt(x)
+        # for x < st_asc[0] still returns the correct value (sp_asc[0]).
+        stations_out = np.concatenate(([st_asc[0] - 1e-6], st_asc))
+        # Each sign's limit now applies from just-below its own km up to the
+        # next sign's km (the shift gives post-step semantics in ascending order).
+        limits_out = np.append(sp_asc, sp_asc[-1])
+        return stations_out, limits_out
+
     def calculateGeometry(self):
 
         if "alignmentCoordinates" not in self.dataStorage.get("LandXML",{}):
