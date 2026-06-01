@@ -6,7 +6,8 @@ from gui import MainWindow
 
 # Relative path for icon resource, compatible with PyInstaller
 def get_resource_path(relative_path):
-    base_path = getattr(sys, '_MEIPASS', Path(__file__).parent)
+    # sys._MEIPASS is a str when running from a PyInstaller bundle; wrap in Path()
+    base_path = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
     return base_path / relative_path
 
 # Main Function

@@ -5,3 +5,7 @@ parser-sandbox.py
 sandbox.py
 .claude/
 tests/
+
+# PyInstaller build artifacts
+build/
+dist/
