@@ -135,7 +135,10 @@ class MapSettingsDialog(QDialog):
 
         self.labelSpeedProfile = QLabel(lan.get("mapSpeedProfile", "Speed Profile for Map:"))
         self.comboSpeedProfile = QComboBox()
-        self.profiles = [("V100", "100"), ("V130", "130"), ("V150", "150"), ("VK", "K")]
+        self.profiles = [
+            ("TTP", "TTP"),
+            ("V100", "100"), ("V130", "130"), ("V150", "150"), ("VK", "K"),
+        ]
         for text, data in self.profiles:
             self.comboSpeedProfile.addItem(text, data)
         index = self.comboSpeedProfile.findData(currentSpeedProfile)
@@ -1156,6 +1159,17 @@ class PopupPlotWindow(QDialog):
     touched (that would break Qt backend references).
     """
 
+    # Reference canvas size (pixels) at which font scales equal 1.0.
+    # Matches the default window size (960 × 580) minus the toolbar (~36 px).
+    _BASE_W: float = 960.0
+    _BASE_H: float = 544.0
+
+    # Base font sizes (pt) at scale 1.0
+    _FS_TITLE:  float = 11.0
+    _FS_LABEL:  float = 10.0
+    _FS_TICK:   float =  9.0
+    _FS_LEGEND: float =  9.0
+
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -1178,6 +1192,38 @@ class PopupPlotWindow(QDialog):
 
         layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas)
+
+    # ------------------------------------------------------------------
+    def resizeEvent(self, event):
+        """Rescale all text elements whenever the window is resized."""
+        super().resizeEvent(event)
+        self._update_font_sizes()
+
+    def _update_font_sizes(self):
+        """Reapply font sizes scaled to the current canvas dimensions.
+
+        Scale factor = min(canvas_w / BASE_W, canvas_h / BASE_H), clamped to
+        [0.7, 2.5].  draw_idle() batches the repaint so rapid resize events
+        do not block the UI.
+        """
+        w = self.canvas.width()
+        h = self.canvas.height()
+        if w == 0 or h == 0:
+            return
+        scale = min(w / self._BASE_W, h / self._BASE_H)
+        scale = max(0.7, min(scale, 2.5))
+
+        for ax in self.fig.axes:
+            ax.title.set_fontsize(self._FS_TITLE * scale)
+            ax.xaxis.label.set_fontsize(self._FS_LABEL * scale)
+            ax.yaxis.label.set_fontsize(self._FS_LABEL * scale)
+            ax.tick_params(axis="both", labelsize=self._FS_TICK * scale)
+            leg = ax.get_legend()
+            if leg:
+                for txt in leg.get_texts():
+                    txt.set_fontsize(self._FS_LEGEND * scale)
+
+        self.canvas.draw_idle()
 
     # ------------------------------------------------------------------
     def draw_data(
@@ -1350,3 +1396,4 @@ class PopupPlotWindow(QDialog):
                 ax_twin.legend(h2, lbl2, loc="upper right")
 
         self.canvas.draw()
+        self._update_font_sizes()

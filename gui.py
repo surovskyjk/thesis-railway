@@ -165,9 +165,11 @@ class MainWindow(QMainWindow):
         self.calculateMenu.addAction(calculateGeometryIAction)
         calculateGeometryIAction.triggered.connect(self.calculateGeometryI)
 
-        calculateTrainSpeed = QAction(lan["calculate_train_speed"], self)
-        self.calculateMenu.addAction(calculateTrainSpeed)
-        calculateTrainSpeed.triggered.connect(self.calculateTrainSpeed)
+        self.calculateTrainSpeedAction = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay),
+            lan["calculate_train_speed"], self)
+        self.calculateMenu.addAction(self.calculateTrainSpeedAction)
+        self.calculateTrainSpeedAction.triggered.connect(self.calculateTrainSpeed)
 
         # Submenu - Clean
         cleanTTPDataAction = QAction(lan["cleanTTP"], self)
@@ -433,6 +435,43 @@ class MainWindow(QMainWindow):
         toolbar.addAction(autodetectXMLAction)
         toolbar.addAction(appendAutodetectXMLAction)
 
+        # Settings shortcuts: Vehicle | Stops | Map | ── | Clean All
+        toolbar.addSeparator()
+        _sty = self.style()
+
+        icon_vehicle = QIcon.fromTheme(
+            "preferences-system",
+            _sty.standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        self.vehicleToolAction = QAction(icon_vehicle, lan.get("vehicleSettings", "Vehicle Settings"), self)
+        self.vehicleToolAction.triggered.connect(self.openVehicleSettings)
+        toolbar.addAction(self.vehicleToolAction)
+
+        icon_stops = QIcon.fromTheme(
+            "appointment-new",
+            _sty.standardIcon(QStyle.StandardPixmap.SP_DialogResetButton))
+        self.stopsToolAction = QAction(icon_stops, lan.get("stopsSettings", "Stops Settings"), self)
+        self.stopsToolAction.triggered.connect(self.openStopsSettings)
+        toolbar.addAction(self.stopsToolAction)
+
+        icon_map = QIcon.fromTheme(
+            "internet-web-browser",
+            _sty.standardIcon(QStyle.StandardPixmap.SP_DialogYesButton))
+        self.mapToolAction = QAction(icon_map, lan.get("mapSettings", "Map Settings"), self)
+        self.mapToolAction.triggered.connect(self.openMapSettings)
+        toolbar.addAction(self.mapToolAction)
+
+        toolbar.addSeparator()
+
+        icon_trash = QIcon.fromTheme(
+            "user-trash",
+            _sty.standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        self.cleanToolAction = QAction(icon_trash, lan.get("cleanAll", "Clean All"), self)
+        self.cleanToolAction.triggered.connect(self.cleanData)
+        toolbar.addAction(self.cleanToolAction)
+
+        toolbar.addSeparator()
+        toolbar.addAction(self.calculateTrainSpeedAction)
+
         # Widgets for XML parsing tabs
         # Raw data
         self.textboxRawLandXML = QPlainTextEdit()
@@ -592,6 +631,7 @@ class MainWindow(QMainWindow):
         # Update menu texts
         self.setWindowTitle(lan["app_title"])
         self.fileMenu.setTitle(lan["file"])
+        self.calculateMenu.setTitle(lan["calculate"])
         self.settingsMenu.setTitle(lan["settings"])
         self.languageMenu.setTitle(lan["language"])
         self.viewMenu.setTitle(lan["view"])
@@ -599,6 +639,10 @@ class MainWindow(QMainWindow):
         self.cleanMenu.setTitle(lan["clean"])
         self.exitMenu.setTitle(lan["exit"])
         self.helpMenu.setTitle(lan["help"])
+
+        self.calculateMenu.actions()[0].setText(lan["calculate_geometry"])
+        self.calculateMenu.actions()[1].setText(lan["calculate_geometry_I"])
+        self.calculateTrainSpeedAction.setText(lan["calculate_train_speed"])
 
         self.fileMenu.actions()[0].setText(lan["open_file"])
         self.fileMenu.actions()[1].setText(lan["autodetect"])
@@ -628,8 +672,8 @@ class MainWindow(QMainWindow):
         self.viewMenu.actions()[7].setText(lan["cant_def_130"])
         self.viewMenu.actions()[8].setText(lan["cant_def_150"])
         self.viewMenu.actions()[9].setText(lan["cant_def_K"])
-        self.viewMenu.actions()[11].setText(lan["curvature"])
-        self.viewMenu.actions()[12].setText(lan["curvature_new"])
+        self.viewMenu.actions()[10].setText(lan["curvature"])
+        self.viewMenu.actions()[11].setText(lan["curvature_new"])
         self.viewMenu.actions()[13].setText(lan["speed_lim"])
         self.viewMenu.actions()[14].setText(lan["speed_lim_100"])
         self.viewMenu.actions()[15].setText(lan["speed_lim_130"])
@@ -657,6 +701,12 @@ class MainWindow(QMainWindow):
         self.exitMenu.actions()[0].setText(lan["exit"])
 
         self.helpMenu.actions()[0].setText(lan["help"])
+
+        # Toolbar shortcut labels (used as tooltip text)
+        self.vehicleToolAction.setText(lan.get("vehicleSettings", "Vehicle Settings"))
+        self.stopsToolAction.setText(lan.get("stopsSettings", "Stops Settings"))
+        self.mapToolAction.setText(lan.get("mapSettings", "Map Settings"))
+        self.cleanToolAction.setText(lan.get("cleanAll", "Clean All"))
 
         self.toggleUnitsAction.setText(lan["units_kmh"])
         self.toggleKinematicsSpeedLimitTrackAction.setText(lan["kinematicsSpeedLimitTrack"])
@@ -698,6 +748,14 @@ class MainWindow(QMainWindow):
 
         self.canvasAlignment.draw()
 
+    def _get_vehicle_name(self, v_idx: int) -> str:
+        """trainParam[0][0] from vehicle settings; returns '' when not available."""
+        vehicles = self.dataStorage.get("settingsData", {}).get("vehicles", [])
+        try:
+            return str(vehicles[v_idx]["trainParam"][0][0]).strip()
+        except (IndexError, KeyError, TypeError):
+            return ""
+
     def getFileContent(self):
         filepath, _ = QFileDialog.getOpenFileName(self, "Open File", "", "All Files (*);;Text Files (*.txt);;XML Files (*.xml)")
         
@@ -728,7 +786,7 @@ class MainWindow(QMainWindow):
             lan = lang.DIC[self.current_language]
             err = QMessageBox()
             err.setWindowTitle(lan["error"])
-            err.setText(lan["unknown_xml_type"])
+            err.setText(lan.get("unknown_xml_file", "Unknown XML file format."))
             err.setIcon(QMessageBox.Icon.Warning)
             err.exec()
 
@@ -927,6 +985,7 @@ class MainWindow(QMainWindow):
         
         self.cleanCalculatedSpeeds()
         self.plotSpeedLimits()
+        self.update_map_with_speeds()
 
     def appendLandXML(self):
         if "LandXML" not in self.dataStorage or len(self.dataStorage.get("LandXML", {}).get("stationHorizontal", [])) == 0:
@@ -1283,6 +1342,7 @@ class MainWindow(QMainWindow):
 
             self.tableTTP.setData(TTPData)
             self.plotSpeedLimits()
+            self.update_map_with_speeds()
         else:
             lan = lang.DIC[self.current_language]
             err = QMessageBox()
@@ -1577,7 +1637,11 @@ class MainWindow(QMainWindow):
             speedLimits = self.dataStorage.get(f"speedLimitsM_{v_idx}")
             speedLimitsT = self.dataStorage.get(f"speedLimitsT_{v_idx}")
             
-            lbl_v = f" V{v_idx+1}" if num_vehicles > 1 else ""
+            if num_vehicles > 1:
+                _vname = self._get_vehicle_name(v_idx)
+                lbl_v = f" {_vname}" if _vname else f" V{v_idx+1}"
+            else:
+                lbl_v = ""
 
             if (speedLimits is not None and len(speedLimits) > 0) and (stationSpeedLimits is not None and len(stationSpeedLimits) > 0):
                 # For reversed vehicles the stored arrays are descending; `where="post"` on a
@@ -1799,7 +1863,10 @@ class MainWindow(QMainWindow):
         limit_colors    = ['lightcoral','lightgreen','lightskyblue']
 
         def lbl_v(v_idx):
-            return f" V{v_idx+1}" if num_vehicles > 1 else ""
+            if num_vehicles <= 1:
+                return ""
+            _vname = self._get_vehicle_name(v_idx)
+            return f" {_vname}" if _vname else f" V{v_idx+1}"
 
         # ---- helper: build stop-expanded time/speed/station arrays ----------
         def _expand_stops(v_idx, base_times, base_values):
@@ -2127,9 +2194,6 @@ class MainWindow(QMainWindow):
         self.tableTTP.setData({})
         self.dataStorage["stationSpeedLimits"] = []
         self.dataStorage["speedLimits"] = []
-        self.dataStorage["stationSpeedLimitM"] = []
-        self.dataStorage["speedLimitsM"] = []
-        self.dataStorage["speedLimitsT"] = []
         self.plotSpeedData.clear()
         self.plotSpeedLimits()
         self.plotKinematics()
@@ -2146,42 +2210,57 @@ class MainWindow(QMainWindow):
         self.plotProfile()
 
     def cleanCalculatedCants(self):
-        lxml = self.dataStorage.setdefault("LandXML",{})
-        lxml["stationCantPossible"] = []
-        lxml["cDef100"] = []
-        lxml["cDef130"] = []
-        lxml["cDef150"] = []
-        lxml["cDefK"] = []
-        lxml["cantPossible"] = []
-        lxml["cantDef100"] = []
-        lxml["cantDef130"] = []
-        lxml["cantDef150"] = []
-        lxml["cantDefK"] = []
+        lxml = self.dataStorage.setdefault("LandXML", {})
+
+        # Cant and cant-deficiency arrays
+        for key in ["stationCantPossible", "cantPossible",
+                    "cDef100", "cDef130", "cDef150", "cDefK",
+                    "cantDef100", "cantDef130", "cantDef150", "cantDefK"]:
+            lxml[key] = []
+
+        # Rate-of-change arrays written by the geometry engine
+        # (note: suffix is "100/130/150/K", no leading "I")
+        for suffix in ["100", "130", "150", "K"]:
+            lxml[f"dDdt{suffix}"] = []
+            lxml[f"dIdt{suffix}"] = []
+
+        # Utilisation and limit-reached flags (profile names: I100/I130/I150/K)
+        for profile in ["I100", "I130", "I150", "K"]:
+            lxml[f"util_D_{profile}"]        = []
+            lxml[f"util_I_{profile}"]        = []
+            lxml[f"limitReachedD_{profile}"] = []
+            lxml[f"limitReachedI_{profile}"] = []
+
         self.plotCantData.clear()
+        self.reportGeometryWidget.setPlainText("")
         self.plotCant()
+        self.plotSpeedLimits()
 
     def cleanCalculatedSpeeds(self):
-        self.dataStorage["stationSpeed100"] = []
-        self.dataStorage["stationSpeed130"] = []
-        self.dataStorage["stationSpeed150"] = []
-        self.dataStorage["stationSpeedK"] = []
-        self.dataStorage["speedLimits100"] = []
-        self.dataStorage["speedLimits130"] = []
-        self.dataStorage["speedLimits150"] = []
-        self.dataStorage["speedLimitsK"] = []
+        # Geometry-derived speed profiles (all four speed classes)
+        for suffix in ["100", "130", "150", "K"]:
+            self.dataStorage[f"stationSpeed{suffix}"] = []
+            self.dataStorage[f"speedLimits{suffix}"]  = []
+
+        # Per-vehicle kinematics and speed-limit arrays
         for v_idx in range(3):
-            self.dataStorage[f"kinematicsStationM_{v_idx}"] = []
-            self.dataStorage[f"kinematicsSpeedM_{v_idx}"] = []
-            self.dataStorage[f"kinematicsTimeS_{v_idx}"] = []
-            self.dataStorage[f"kinematicsAcceleration_{v_idx}"] = []
+            self.dataStorage[f"kinematicsStationM_{v_idx}"]        = []
+            self.dataStorage[f"kinematicsSpeedM_{v_idx}"]          = []
+            self.dataStorage[f"kinematicsTimeS_{v_idx}"]           = []
+            self.dataStorage[f"kinematicsAcceleration_{v_idx}"]    = []
             self.dataStorage[f"kinematicsForceTractionKN_{v_idx}"] = []
-            self.dataStorage[f"kinematicsForceBrakingKN_{v_idx}"] = []
+            self.dataStorage[f"kinematicsForceBrakingKN_{v_idx}"]  = []
             self.dataStorage[f"kinematicsForceResistanceKN_{v_idx}"] = []
-            self.dataStorage[f"stationSpeedLimitM_{v_idx}"] = []
-            self.dataStorage[f"speedLimitsM_{v_idx}"] = []
-            self.dataStorage[f"speedLimitsT_{v_idx}"] = []
+            self.dataStorage[f"kinematicsDwellTimesS_{v_idx}"]     = []
+            self.dataStorage[f"stationSpeedLimitM_{v_idx}"]        = []
+            self.dataStorage[f"speedLimitsM_{v_idx}"]              = []
+            self.dataStorage[f"speedLimitsT_{v_idx}"]              = []
+            # Warning flag — remove entirely so downstream code gets None / missing key
+            self.dataStorage.pop(f"kinematicsWarning_{v_idx}", None)
+
         self.plotSpeedData.clear()
         self.plotKinematicsData.clear()
+        self.reportVehicleTable.setData({})
         self.plotSpeedLimits()
         self.plotKinematics()
 
@@ -2374,6 +2453,15 @@ class MainWindow(QMainWindow):
 
         stations = lxml["stationCantPossible"]
         geomType = lxml.get("geometryType", [])
+
+        # Localised element-type names used in report headers
+        elem_type_names = {
+            "Curve":  lan.get("elemCurve",  "Curve"),
+            "Spiral": lan.get("elemSpiral", "Spiral"),
+            "Line":   lan.get("elemLine",   "Line"),
+        }
+        util_d_lbl = lan.get("utilD", "Util D")
+        util_i_lbl = lan.get("utilI", "Util I")
         
         if len(geomType) != len(stations):
             self.reportGeometryWidget.setPlainText(lan.get("error", "Error") + ": Data lengths do not match. Please recalculate.")
@@ -2489,7 +2577,9 @@ class MainWindow(QMainWindow):
                 g_type_from = geomType[i] if i < len(geomType) else "-"
                 g_type_to = geomType[i+1] if i+1 < len(geomType) else "-"
                 if any_deltaI and g_type_from != "Spiral" and g_type_to != "Spiral":
-                    report_lines.append(f"--- {lan.get('reportTransition', 'Transition')} | {lan['station']}: {stations[i]:.3f} | {g_type_from} -> {g_type_to} ---")
+                    lbl_from = elem_type_names.get(g_type_from, g_type_from)
+                    lbl_to   = elem_type_names.get(g_type_to,   g_type_to)
+                    report_lines.append(f"--- {lan.get('reportTransition', 'Transition')} | {lan['station']}: {stations[i]:.3f} | {lbl_from} -> {lbl_to} ---")
                     for p_name, dI_val, v_val, dI_lim_val, exceeded in transition_data:
                         flag = " (!)" if exceeded else ""
                         line_str = f"  [{p_name}] V: {v_val:.0f} km/h | deltaI: {dI_val:.0f} mm (limit {dI_lim_val:.0f} mm){flag}"
@@ -2508,7 +2598,8 @@ class MainWindow(QMainWindow):
             x_val = L / max_v_elem if max_v_elem > 0 else float('inf')
             str_x = f"{x_val:.2f}" if max_v_elem > 0 else "INF"
             
-            header_line = f"--- {g_type} | {lan['station']}: {stations[i]:.3f} - {stations[i+1]:.3f} | L = {L:.2f} m ({str_x}*V)"
+            g_type_lbl  = elem_type_names.get(g_type, g_type)
+            header_line = f"--- {g_type_lbl} | {lan['station']}: {stations[i]:.3f} - {stations[i+1]:.3f} | L = {L:.2f} m ({str_x}*V)"
             if g_type == "Curve":
                 header_line += f" | R: {format_r(r_start)} m"
             elif g_type == "Spiral":
@@ -2558,7 +2649,7 @@ class MainWindow(QMainWindow):
 
                 util_D_val = max(util_D_arr[i], util_D_arr[i+1])
                 util_I_val = max(util_I_arr[i], util_I_arr[i+1])
-                line_str += f" | Util D: {util_D_val*100:.1f}% | Util I: {util_I_val*100:.1f}%"
+                line_str += f" | {util_d_lbl}: {util_D_val*100:.1f}% | {util_i_lbl}: {util_I_val*100:.1f}%"
 
                 if g_type in ["Curve", "Spiral"]:
                     profile_stats[p_name]["weighted_util_sum_D"] += util_D_val * L
@@ -2631,29 +2722,36 @@ class MainWindow(QMainWindow):
         k_sta   = lan.get("station", "Station [km]")
         k_time  = lan.get("time", "Time [s]")
         k_spd   = lan.get("speed", "Speed [km/h]")
-        k_acc   = "Accel [m/s2]"
+        k_acc   = lan.get("accel", "Accel [m/s²]")
         k_trac  = lan.get("forceTraction", "Tractive Force [kN]")
         k_brake = lan.get("forceBraking", "Braking Force [kN]")
         k_res   = lan.get("forceResistance", "Resistance [kN]")
 
         tableData = []
 
-        # Travel time and average speed calculation
+        # Vehicle name for report header
+        vehicle_name = self._get_vehicle_name(v_idx)
+        summary_title = lan.get('run_summary_title', 'RUN SUMMARY')
+        if vehicle_name:
+            summary_title = f"{summary_title} — {vehicle_name}"
+
+        # Travel time, average speed, and maximum speed
         if len(stations) > 1 and len(times) > 1:
             total_distance_m = abs(stations[-1] - stations[0])
             total_time_s = times[-1]
             avg_speed_ms = total_distance_m / total_time_s if total_time_s > 0 else 0
             avg_speed_kmh = avg_speed_ms * 3.6
+            max_speed_kmh = float(np.max(speeds)) * 3.6 if len(speeds) > 0 else 0.0
             minutes, seconds = divmod(total_time_s, 60)
 
             tableData.append({
-                k_sta:   f"=== {lan.get('run_summary_title', 'SOUHRN JÍZDY')} ===",
+                k_sta:   f"=== {summary_title} ===",
                 k_time:  "",
-                k_spd:   lan.get('total_travel_time', 'Celková jízdní doba:'),
+                k_spd:   lan.get('total_travel_time', 'Total travel time:'),
                 k_acc:   f"{int(minutes):02d} min {int(seconds):02d} s",
-                k_trac:  lan.get('average_speed', 'Průměrná rychlost:'),
+                k_trac:  lan.get('average_speed', 'Average speed:'),
                 k_brake: f"{avg_speed_kmh:.2f} km/h",
-                k_res:   ""
+                k_res:   f"{lan.get('max_speed_achieved', 'Max speed:')} {max_speed_kmh:.0f} km/h"
             })
             tableData.append({k: "---" for k in tableData[0].keys()})
 
@@ -2678,7 +2776,7 @@ class MainWindow(QMainWindow):
         trainStops = self.dataStorage.get("settingsData", {}).get("trainStops", [])
         if trainStops:
             tableData.append({
-                k_sta:   "=== ZASTÁVKY / STOPS ===",
+                k_sta:   f"=== {lan.get('stopsHeader', 'STOPS')} ===",
                 k_time:  "",
                 k_spd:   "",
                 k_acc:   "",
@@ -2767,17 +2865,23 @@ class MainWindow(QMainWindow):
                 writer = csv.writer(file)
 
                 # === RUN SUMMARY ===
+                vehicle_name = self._get_vehicle_name(v_idx)
                 if len(stations) > 1 and len(times) > 1:
                     total_distance_m = abs(stations[-1] - stations[0])
                     total_time_s = times[-1]
                     avg_speed_ms = total_distance_m / total_time_s if total_time_s > 0 else 0
                     avg_speed_kmh = avg_speed_ms * 3.6
+                    max_speed_kmh = float(np.max(speeds)) * 3.6 if len(speeds) > 0 else 0.0
                     minutes, seconds = divmod(total_time_s, 60)
-                    writer.writerow([f"=== {lan.get('run_summary_title', 'SOUHRN JÍZDY')} ==="])
-                    writer.writerow([lan.get('total_travel_time', 'Celková jízdní doba:'),
+                    writer.writerow([f"=== {lan.get('run_summary_title', 'RUN SUMMARY')} ==="])
+                    if vehicle_name:
+                        writer.writerow([lan.get('vehicle', 'Vehicle') + ":", vehicle_name])
+                    writer.writerow([lan.get('total_travel_time', 'Total travel time:'),
                                      f"{int(minutes):02d} min {int(seconds):02d} s"])
-                    writer.writerow([lan.get('average_speed', 'Průměrná rychlost:'),
+                    writer.writerow([lan.get('average_speed', 'Average speed:'),
                                      f"{avg_speed_kmh:.2f} km/h"])
+                    writer.writerow([lan.get('max_speed_achieved', 'Maximum speed achieved:'),
+                                     f"{max_speed_kmh:.0f} km/h"])
                     writer.writerow([])
 
                 # === ENERGY (abs(dx) so reversed vehicles give positive values) ===
@@ -2793,12 +2897,12 @@ class MainWindow(QMainWindow):
                 # === STOPS ===
                 trainStops = self.dataStorage.get("settingsData", {}).get("trainStops", [])
                 if trainStops and has_times:
-                    writer.writerow(["=== ZASTÁVKY / STOPS ==="])
+                    writer.writerow([f"=== {lan.get('stopsHeader', 'STOPS')} ==="])
                     writer.writerow([
                         lan.get("station", "Station [km]"),
                         lan.get("stopName", "Stop Name"),
-                        "Arr [s]",
-                        "Dep [s]",
+                        lan.get("arrivalTime", "Arr [s]"),
+                        lan.get("departureTime", "Dep [s]"),
                         lan.get("dwellTimeTable", "Dwell Time [s]")
                     ])
                     for stop in trainStops:
@@ -2865,17 +2969,8 @@ class MainWindow(QMainWindow):
         self.tableLandXML.setData(tableData)
 
     def TTPSections(self, stations):
-        """Split TTP station array into monotone sections.
-
-        A new section starts whenever:
-          - The absolute jump between consecutive stations exceeds 20 km, OR
-          - The direction (sign) of the step reverses compared to the most recent
-            non-zero step.
-
-        Using *prev_nonzero_diff* instead of the immediately preceding diff means
-        that flat/duplicate stations (diff == 0) do not reset the direction tracker
-        and therefore do not mask a subsequent direction change.
-        """
+        """Split station array into monotone sections (new section on direction reversal or gap > 20 km).
+        Tracks last non-zero diff so duplicate stations do not mask a subsequent reversal."""
         if len(stations) == 0:
             return []
 
@@ -2917,46 +3012,13 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _correctReversedTTPSection(sec_stations, sec_limits):
-        """Correct the (station, speed-limit) arrays of a single TTP section that
-        was originally stored in *descending* km order (direction = high-km → low-km).
+        """Fix post-step semantics for a descending-order TTP section.
 
-        Background
-        ----------
-        ``getSpeedLimitAt`` uses a post-step-function lookup:
-        ``np.searchsorted(stations, x, side='right') - 1``.  After sorting
-        ascending, this assigns each sign's limit to the interval **above** the
-        sign's km position.  For an ascending (0→N) section that is correct —
-        the sign at km 10 restricts speed on the stretch km 10 … km 16.
-
-        For a reversed (N→0) section, the semantics are inverted: a sign at km 10
-        restricts speed on the stretch km 5 … km 10 (toward lower km).  After a
-        naive ascending sort the limit is assigned to km 10 … km 16 instead —
-        one segment too late.
-
-        Fix
-        ---
-        Insert a synthetic station at ``stations_asc[0] - 1e-6`` km (just below
-        the lowest sign) and shift all limits one position "right" by appending
-        the last limit.  This results in a monotonically increasing array with
-        correct post-step semantics for both forward and reversed vehicles using
-        reversed TTP data.
-
-        Example
-        -------
-        Reversed TTP: stations [16, 10, 5], limits [100, 80, 60]
-        → After sort:        stations [5, 10, 16], limits [60, 80, 100]
-        → After correction:  stations [4.999999, 5, 10, 16], limits [60, 80, 100, 100]
-        getSpeedLimitAt(7)  → 80  ✓   (sign at 10 covers km 5–10)
-        getSpeedLimitAt(12) → 100 ✓   (sign at 16 covers km 10–16)
-
-        Parameters
-        ----------
-        sec_stations : 1-D numpy array  — station positions [km] of one section
-        sec_limits   : 1-D numpy array  — speed limits [km/h] of that section
-
-        Returns
-        -------
-        (stations_corrected, limits_corrected) — both 1-D numpy arrays
+        After ascending sort, getSpeedLimitAt assigns each sign's limit one segment
+        too early. Fix: insert a synthetic station at stations[0]-1e-6 and append
+        the last limit so every limit applies to the interval below its sign.
+        E.g. [16,10,5]→[100,80,60] becomes stations=[4.999999,5,10,16], limits=[60,80,100,100].
+        No-op for ascending sections.
         """
         if len(sec_stations) <= 1:
             return sec_stations, sec_limits
@@ -3022,11 +3084,17 @@ class MainWindow(QMainWindow):
 
     def update_map_with_speeds(self):
         lxml = self.dataStorage.get("LandXML", {})
-        if not lxml: return
-        
+        if not lxml:
+            return
+
+        # Geometry profiles (V100 / V130 / V150 / VK)
         for profile in ["100", "130", "150", "K"]:
             lxml[f"speedLimits{profile}"] = self.dataStorage.get(f"speedLimits{profile}")
             lxml[f"stationSpeed{profile}"] = self.dataStorage.get(f"stationSpeed{profile}")
-        
+
+        # TTP raw speed limits – nearest-station extrapolation is handled in map_viewer
+        lxml["speedLimitsTTP"]  = np.asarray(self.dataStorage.get("speedLimits",      []))
+        lxml["stationSpeedTTP"] = np.asarray(self.dataStorage.get("stationSpeedLimits", []))
+
         self.mapWidget.drawAlignment(lxml.get("alignmentCoordinates", []), lxml)
         

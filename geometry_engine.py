@@ -772,67 +772,22 @@ class GeometryCalculator:
         return (int(np.sqrt(max(0, np.abs(D + I) / (11.8 * np.abs(kappa))))) // round) * round
 
     def calculateBoundarySpeed(self, deltaI_lim, dKappa):
-        """Maximum speed from a sudden cant-deficiency change at an L=0 curvature boundary.
-
-        Derived from the physical constraint:
-            deltaI_physical = 11.8 * v^2 * dKappa  <=  deltaI_lim
-        => v_lim = sqrt(deltaI_lim / (11.8 * dKappa))
-
-        D cancels because Stage 3 enforces cant continuity at L=0 boundaries.
-
-        Args:
-            deltaI_lim: maximum allowed sudden cant deficiency change [mm]
-            dKappa:     absolute curvature change |kappa2 - kappa1| [m^-1]
-        Returns:
-            maximum permissible speed [km/h]; np.inf when no constraint applies
-        """
+        """v_lim = sqrt(deltaI_lim / (11.8·dKappa)) at an L=0 curvature boundary.
+        D cancels because Stage 3 enforces cant continuity at L=0 junctions."""
         if dKappa <= 1e-10 or deltaI_lim <= 0:
             return np.inf
         return np.sqrt(deltaI_lim / (11.8 * dKappa))
 
     def calculateCantDefSpeedNI(self, length, nI_lim, dI_actual):
-        """Maximum speed from the nI cant-deficiency change-rate constraint on a spiral.
-
-        Derived from:
-            nI_lim  >=  dI_physical / (L [m] * v [km/h] / 1000)
-            => v_lim = L * 1000 / (nI_lim * dI_physical)   [km/h]
-
-        Args:
-            length:    spiral length [m]
-            nI_lim:    norm limit for the nI coefficient (must be > 0) [-]
-            dI_actual: absolute change of physical cant deficiency across the spiral [mm]
-        Returns:
-            maximum permissible speed [km/h]; np.inf when no constraint applies
-        """
+        """v_lim = L*1000 / (nI_lim * dI_actual) [km/h] from the nI criterion on a spiral."""
         if nI_lim <= 0 or dI_actual <= 0:
             return np.inf
         return length * 1000 / (nI_lim * dI_actual)
 
     def calculateCantDefSpeedDeltaI(self, dD_credit, deltaI_lim, dKappa):
-        """Maximum speed from the virtual deltaI constraint on a spiral.
-
-        The physical cant-deficiency change across a spiral is:
-            deltaI_phys = 11.8 · v² · |Δκ|  −  dD_credit
-
-        where dD_credit is the *signed* cant-change contribution:
-          +|dD|  when |D| and |κ| change in the **same** direction
-                 (e.g. entering a curve: κ↑ & D↑, or exiting: κ↓ & D↓)
-                 → cant change reduces deltaI (credit / relief)
-          −|dD|  when they change in **opposite** directions
-                 (e.g. κ↑ but D↓, or κ↓ but D↑)
-                 → cant change increases deltaI (cost / penalty)
-
-        Setting deltaI_phys = deltaI_lim and solving for v:
-            v_deltaI = sqrt((deltaI_lim + dD_credit) / (11.8 · |Δκ|))
-
-        Args:
-            dD_credit:  signed cant credit [mm]; positive = helps, negative = hurts
-            deltaI_lim: maximum allowed cant deficiency change [mm]
-            dKappa:     absolute curvature change |κ_end − κ_start| [m⁻¹]
-        Returns:
-            maximum permissible speed [km/h]; np.inf when dKappa ≈ 0 (no constraint);
-            0 when the effective limit is zero or negative (constraint unachievable).
-        """
+        """v_lim = sqrt((deltaI_lim + dD_credit) / (11.8·dKappa)) from the virtual-ΔI criterion.
+        dD_credit is signed: +|dD| when D and κ change in the same direction (credit),
+        −|dD| when opposite directions (penalty). Returns inf if dKappa≈0, 0 if limit≤0."""
         if dKappa <= 1e-10:
             return np.inf
         effective_lim = deltaI_lim + dD_credit

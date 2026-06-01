@@ -7,8 +7,7 @@ from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import QWidget, QVBoxLayout
 from PySide6.QtWebEngineWidgets import QWebEngineView
 import numpy as np
-import matplotlib.cm as cm
-import matplotlib.colors as mcolors
+import branca.colormap as bcm
 
 class MapWidget(QWidget):
     def __init__(self, parent=None):
@@ -108,34 +107,72 @@ class MapWidget(QWidget):
 
     def _draw_speed_colored_alignment(self, m, lxml):
         dense_alignment = lxml.get("denseAlignment")
-        if not dense_alignment or len(dense_alignment) < 2: return
-
-        speed_profile_key = f"speedLimits{self.speedProfile}"
-        station_profile_key = f"stationSpeed{self.speedProfile}"
-
-        speeds = lxml.get(speed_profile_key)
-        stations = lxml.get(station_profile_key)
-
-        if speeds is None or stations is None or len(speeds) == 0:
-            all_coords = [segment_data[0] for segment_data in self.alignment]
-            folium.PolyLine(all_coords, color="red", weight=2.5, opacity=1, tooltip="Alignment (speed data missing)").add_to(m)
+        if not dense_alignment or len(dense_alignment) < 2:
             return
 
-        min_speed, max_speed = np.min(speeds), np.max(speeds)
-        norm = mcolors.Normalize(vmin=min_speed, vmax=max_speed) if max_speed > min_speed else mcolors.Normalize(vmin=min_speed - 1, vmax=max_speed + 1)
-        cmap = cm.get_cmap('RdYlGn')
+        # Resolve data keys — TTP uses its own stored arrays
+        if self.speedProfile == "TTP":
+            speed_key   = "speedLimitsTTP"
+            station_key = "stationSpeedTTP"
+        else:
+            speed_key   = f"speedLimits{self.speedProfile}"
+            station_key = f"stationSpeed{self.speedProfile}"
 
-        points = [(p[1], p[2]) for p in dense_alignment]
-        colors = []
-        sort_indices = np.argsort(stations)
-        sorted_stations, sorted_speeds = stations[sort_indices], speeds[sort_indices]
+        speeds   = lxml.get(speed_key)
+        stations = lxml.get(station_key)
 
+        _missing = (speeds is None or stations is None or
+                    (hasattr(speeds, '__len__') and len(speeds) == 0))
+        if _missing:
+            all_coords = [seg[0] for seg in self.alignment]
+            folium.PolyLine(all_coords, color="gray", weight=2.5, opacity=0.6,
+                            tooltip="Speed data not yet calculated").add_to(m)
+            return
+
+        speeds   = np.asarray(speeds,   dtype=float)
+        stations = np.asarray(stations, dtype=float)
+
+        # Drop NaN / zero entries (geometry engine initialises arrays to 0)
+        valid = np.isfinite(speeds) & np.isfinite(stations) & (speeds > 0)
+        speeds, stations = speeds[valid], stations[valid]
+        if len(speeds) == 0:
+            all_coords = [seg[0] for seg in self.alignment]
+            folium.PolyLine(all_coords, color="gray", weight=2.5, opacity=0.6,
+                            tooltip="Speed data not yet calculated").add_to(m)
+            return
+
+        min_spd = float(np.min(speeds))
+        max_spd = float(np.max(speeds))
+        if max_spd <= min_spd:
+            max_spd = min_spd + 1.0
+
+        # Branca colormap: red (slow) → yellow → green (fast).
+        # Adding it to the map automatically renders a colour-scale legend.
+        cmap_bc = bcm.LinearColormap(
+            ['#d73027', '#fee08b', '#1a9850'],
+            vmin=min_spd,
+            vmax=max_spd,
+            caption='Speed [km/h]',
+        )
+        cmap_bc.add_to(m)
+
+        sort_idx    = np.argsort(stations)
+        sorted_st   = stations[sort_idx]
+        sorted_sp   = speeds[sort_idx]
+        n           = len(sorted_sp)
+
+        points     = [(p[1], p[2]) for p in dense_alignment]
+        spd_values = []
         for i in range(len(dense_alignment) - 1):
-            avg_station = (dense_alignment[i][0] + dense_alignment[i+1][0]) / 2.0
-            idx = np.clip(np.searchsorted(sorted_stations, avg_station, side='right') - 1, 0, len(sorted_speeds) - 1)
-            colors.append(mcolors.to_hex(cmap(norm(sorted_speeds[idx]))))
+            avg = (dense_alignment[i][0] + dense_alignment[i + 1][0]) * 0.5
+            idx = int(np.clip(
+                np.searchsorted(sorted_st, avg, side='right') - 1,
+                0, n - 1
+            ))
+            spd_values.append(float(sorted_sp[idx]))
 
-        if points and colors: ColorLine(points, colors=colors, weight=3).add_to(m)
+        if points and spd_values:
+            ColorLine(points, colors=spd_values, colormap=cmap_bc, weight=3).add_to(m)
 
     def renderMap(self, m):
         data = io.BytesIO()
