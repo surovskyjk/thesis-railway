@@ -1,5 +1,7 @@
 # COYPU
 
+**https://github.com/surovskyjk/COYPU**
+
 A desktop application for railway track geometry analysis and train performance simulation, developed as part of a master's thesis. The tool follows the Czech railway standard CSN 73 6360-1.
 
 Built with Python and PySide6.
@@ -14,7 +16,8 @@ Built with Python and PySide6.
 - Design cant (D) and calculate permissible speed profiles for four speed profiles (difference in global max cant deficiency): V100, V130, V150, VK
 - Enforce norm limits: cant ramp gradient (n), rate of change of cant deficiency (nI), abrupt change of cant deficiency (deltaI)
 - Simulate train kinematics using a forward-backward pass algorithm with traction, resistance, and braking
-- Interactive map viewer showing the alignment geometry coloured by speed
+- Interactive map viewer showing the alignment coloured by selected speed profile (TTP, V100, V130, V150, VK) with a colour-scale legend
+- Toolbar shortcuts for the most frequent actions (open, vehicle settings, stops settings, map settings, clean all, calculate train speed)
 - Multi-language UI: Czech, English, German
 - Export geometry report (text) and kinematics results (CSV)
 
@@ -119,3 +122,9 @@ Train stops are enforced by setting the speed limit to zero at the stop station.
 - `default_values.py` - built-in default norm limits and vehicle parameters
 - `lang.py` - UI strings for Czech, English, and German
 - `tests/` - unit tests for geometry engine functions
+
+---
+
+## Repository
+
+Source code: https://github.com/surovskyjk/COYPU

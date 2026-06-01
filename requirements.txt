@@ -22,3 +22,6 @@ pyclothoids==0.2.0
 
 # Interactive map rendering
 folium==0.20.0
+
+# Colour-scale colormaps for the speed-coloured map view (folium dependency, used directly)
+branca==0.8.2
