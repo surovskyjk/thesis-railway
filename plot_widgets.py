@@ -63,6 +63,23 @@ TAB_COLORS = {
 # Colour used when a descriptor names something Qt cannot resolve
 FALLBACK_COLOR = "#888888"
 
+# Captions of vertical markers hug the bottom axis, clear of a top corner legend
+MARKER_LABEL_POSITION_VERTICAL = 0.02
+
+# Captions of horizontal markers sit at the right end, clear of a left corner legend
+MARKER_LABEL_POSITION_HORIZONTAL = 0.98
+
+# Fraction of the visible range past which a caption flips to the other side
+MARKER_FLIP_FRACTION = 0.75
+
+# Legend placement offsets, negative values anchor to the opposite plot edge
+LEGEND_OFFSETS = {
+    "topLeft": (10, 10),
+    "topRight": (-10, 10),
+    "bottomLeft": (10, -10),
+    "bottomRight": (-10, -10),
+}
+
 
 # Translate a colour name into something QColor accepts
 def resolveColor(color):
@@ -141,6 +158,8 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
 
         self.stationList = []
         self.showStationMarkers = True
+        self.managedMarkers = []
+        self.anchoredPlots = set()
         self.highlightedSeries = {}
         self.cursorAxis = "x"
         self.mouseProxy = None
@@ -150,7 +169,7 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
 
     # Register a plot row and wire its legend, crosshair and context menu
     def addPlotRow(self, plotKey, row, leftLabel="", bottomLabel="", rightAxis=None,
-                   withLegend=True, withCrosshair=True):
+                   withLegend=True, withCrosshair=True, legendCorner="topLeft"):
         axisItems = {}
         if rightAxis == "fraction":
             axisItems["right"] = FractionAxisItem("right")
@@ -167,8 +186,8 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
 
         if withLegend:
             # Tight vertical spacing keeps the legend compact over the data
-            legend = plotItem.addLegend(offset=(10, 10), verSpacing=-4,
-                                        horSpacing=8, labelTextSize="8pt")
+            legend = plotItem.addLegend(offset=LEGEND_OFFSETS.get(legendCorner, (10, 10)),
+                                        verSpacing=-4, horSpacing=8, labelTextSize="8pt")
             self.plotLegends[plotKey] = legend
 
         if withCrosshair:
@@ -316,20 +335,78 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
         for plotKey, plotItem in self.plotItems.items():
             for marker in self.plotStationMarkers.get(plotKey, []):
                 plotItem.removeItem(marker)
+                self.forgetMarker(marker)
             self.plotStationMarkers[plotKey] = []
 
             if not self.showStationMarkers:
                 continue
 
             for stationKm, stationName in self.stationList:
-                marker = pg.InfiniteLine(
-                    pos=float(stationKm), angle=90, movable=False,
-                    pen=pg.mkPen("#8a8a8a", width=1, style=Qt.PenStyle.DashLine),
-                    label=stationName or None,
-                    labelOpts={"position": 0.92, "rotateAxis": (1, 0), "anchor": (0, 1),
-                               "color": foreground, "fill": None})
-                plotItem.addItem(marker, ignoreBounds=True)
+                marker = self.buildMarker(plotItem, float(stationKm), 90, "#8a8a8a",
+                                          stationName, foreground)
                 self.plotStationMarkers[plotKey].append(marker)
+
+        self.updateMarkerAnchors()
+
+    # Create one marker line whose caption is kept inside the plot at all times
+    def buildMarker(self, plotItem, position, angle, color, label, labelColor,
+                    penStyle=Qt.PenStyle.DashLine):
+        isVertical = angle == 90
+
+        labelOpts = None
+        if label:
+            # Captions stay horizontal, a rotated caption is taller than a stacked plot
+            labelPosition = (MARKER_LABEL_POSITION_VERTICAL if isVertical
+                             else MARKER_LABEL_POSITION_HORIZONTAL)
+            labelOpts = {"position": labelPosition, "color": labelColor,
+                         "fill": None, "anchor": (0.0, 1.0)}
+
+        marker = pg.InfiniteLine(pos=float(position), angle=angle, movable=False,
+                                 pen=pg.mkPen(color, width=1, style=penStyle),
+                                 label=label or None, labelOpts=labelOpts)
+        plotItem.addItem(marker, ignoreBounds=True)
+
+        if label:
+            self.managedMarkers.append((plotItem, marker, isVertical))
+            self.trackPlotRange(plotItem)
+
+        return marker
+
+    # Drop a marker from the anchor bookkeeping when its plot is cleared
+    def forgetMarker(self, marker):
+        self.managedMarkers = [entry for entry in self.managedMarkers if entry[1] is not marker]
+
+    # Recompute the caption anchors whenever the visible range of a plot changes
+    def trackPlotRange(self, plotItem):
+        if plotItem in self.anchoredPlots:
+            return
+        self.anchoredPlots.add(plotItem)
+        plotItem.vb.sigRangeChanged.connect(lambda *args: self.updateMarkerAnchors())
+
+    # Flip each caption away from the view edge it would otherwise overflow
+    def updateMarkerAnchors(self):
+        for plotItem, marker, isVertical in self.managedMarkers:
+            label = getattr(marker, "label", None)
+            if label is None:
+                continue
+
+            xRange, yRange = plotItem.vb.viewRange()
+            low, high = xRange if isVertical else yRange
+            span = high - low
+            fraction = 0.5 if span <= 0 else (float(marker.value()) - low) / span
+
+            if isVertical:
+                # Near the right edge the caption is drawn to the left of the line
+                anchorX = 1.0 if fraction > MARKER_FLIP_FRACTION else 0.0
+                anchor = (anchorX, 1.0)
+            else:
+                # Near the top edge the caption drops below its horizontal line
+                anchorY = 0.0 if fraction > MARKER_FLIP_FRACTION else 1.0
+                anchor = (1.0, anchorY)
+
+            # Both slots are set because pyqtgraph picks one of them on every update
+            label.anchors = [anchor, anchor]
+            label.setAnchor(anchor)
 
     # Show or hide the station indicators across every plot
     def setStationMarkersVisible(self, isVisible):

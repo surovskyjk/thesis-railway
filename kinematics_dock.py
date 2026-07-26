@@ -16,7 +16,8 @@ class KinematicsPlotWidget(CoypuPlotWidget):
 
         self.plotTachoTrack = self.addPlotRow("tachoTrack", 0, withCrosshair=False)
         self.plotTachoTime = self.addPlotRow("tachoTime", 1, withCrosshair=False)
-        self.plotDistTime = self.addPlotRow("distTime", 2, withCrosshair=False)
+        self.plotDistTime = self.addPlotRow("distTime", 2, withCrosshair=False,
+                                            legendCorner="bottomLeft")
         self.plotForces = self.addPlotRow("forces", 3, withCrosshair=False)
 
         # Plots sharing the same X quantity are linked, distance and time stay apart
@@ -236,10 +237,10 @@ class KinematicsPlotWidget(CoypuPlotWidget):
 
             self.addStopMarker(self.plotTachoTrack, stationMetres / distanceFactor,
                                angle=90, color="#8a8a8a", label=stopName,
-                               labelColor=foreground, rotate=True)
+                               labelColor=foreground)
             self.addStopMarker(self.plotDistTime, stationMetres / distanceFactor,
                                angle=0, color="#8a8a8a", label=stopName,
-                               labelColor=foreground, rotate=False)
+                               labelColor=foreground)
 
             for vehicleIndex in range(vehicleCount):
                 stopTime = self.interpolateStopTime(dataStorage, vehiclesSettings,
@@ -252,24 +253,16 @@ class KinematicsPlotWidget(CoypuPlotWidget):
                                    color=plot_widgets.VEHICLE_LIMIT_COLORS[colorIndex],
                                    label=markerLabel,
                                    labelColor=plot_widgets.VEHICLE_LIMIT_COLORS[colorIndex],
-                                   rotate=True, dotted=True)
+                                   dotted=True)
+
+        self.updateMarkerAnchors()
 
     # Add a single labelled marker line and remember it for the next redraw
     def addStopMarker(self, plotItem, position, angle, color, label, labelColor,
-                      rotate, dotted=False):
+                      dotted=False):
         penStyle = Qt.PenStyle.DotLine if dotted else Qt.PenStyle.DashLine
-        markerPen = pg.mkPen(color, width=1, style=penStyle)
-
-        labelOpts = None
-        if label:
-            labelOpts = {"position": 0.05, "color": labelColor, "fill": None,
-                         "anchor": (0, 1) if rotate else (0, 1)}
-            if rotate:
-                labelOpts["rotateAxis"] = (1, 0)
-
-        markerLine = pg.InfiniteLine(pos=float(position), angle=angle, movable=False,
-                                     pen=markerPen, label=label or None, labelOpts=labelOpts)
-        plotItem.addItem(markerLine, ignoreBounds=True)
+        markerLine = self.buildMarker(plotItem, position, angle, color, label,
+                                      labelColor, penStyle)
         self.stopMarkers.append((plotItem, markerLine))
 
     # Time at which one vehicle reaches a given chainage, honouring reversed runs
@@ -313,6 +306,7 @@ class KinematicsPlotWidget(CoypuPlotWidget):
     def clearAll(self):
         for plotItem, markerLine in self.stopMarkers:
             plotItem.removeItem(markerLine)
+            self.forgetMarker(markerLine)
         self.stopMarkers = []
 
         for plotKey in ("tachoTrack", "tachoTime", "distTime", "forces"):

@@ -35,6 +35,9 @@ SPEED_SERIES = [
 # Fixed vertical range of the cant axis, matching the previous alignment plot
 CANT_RANGE = 500.0
 
+# Extra headroom above the fastest speed curve so the top line stays readable
+SPEED_RANGE_HEADROOM = 1.05
+
 
 class PerformanceGraphsWidget(CoypuPlotWidget):
     def __init__(self, lan, parent=None):
@@ -146,6 +149,24 @@ class PerformanceGraphsWidget(CoypuPlotWidget):
                 np.asarray(simulatedSpeeds, dtype=float) * 3.6,
                 styleKey="simulated",
                 name=f"{self.lan.get('speedKmh', 'Speed')} V{vehicleIndex + 1}")
+
+        self.applyFullSpeedRange()
+
+    # Show the speed axis from standstill up to the fastest curve on the plot
+    def applyFullSpeedRange(self):
+        peak = 0.0
+        for entry in self.plotSeries.get("speed", {}).values():
+            if entry["y"].size == 0:
+                continue
+            finiteValues = entry["y"][np.isfinite(entry["y"])]
+            if finiteValues.size:
+                peak = max(peak, float(np.max(finiteValues)))
+
+        if peak <= 0.0:
+            self.plotSpeed.vb.enableAutoRange(axis="y")
+            return
+
+        self.plotSpeed.vb.setYRange(0.0, peak * SPEED_RANGE_HEADROOM, padding=0)
 
     # Guard used before touching any optional array
     def hasData(self, values):
