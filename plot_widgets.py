@@ -1,0 +1,677 @@
+# Shared pyqtgraph plotting infrastructure used by every plot dock and popup
+import numpy as np
+import pyqtgraph as pg
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QAction, QActionGroup, QColor
+from PySide6.QtWidgets import QFileDialog, QMenu, QToolBar
+
+import icons
+
+# Single source of truth for every series colour used across the application
+SERIES_STYLES = {
+    "cant": {"color": "#111111", "width": 2},
+    "cantPossible": {"color": "#2e9e4f", "width": 2},
+    "cDef100": {"color": "#d64545", "width": 2},
+    "cDef130": {"color": "#0f8b8d", "width": 2},
+    "cDef150": {"color": "#8a4fd3", "width": 2},
+    "cDefK": {"color": "#4a7fd4", "width": 2},
+    "cantDef100": {"color": "#e8734a", "width": 2, "dash": True},
+    "cantDef130": {"color": "#35b6c4", "width": 2, "dash": True},
+    "cantDef150": {"color": "#b06fe0", "width": 2, "dash": True},
+    "cantDefK": {"color": "#5b8ede", "width": 2, "dash": True},
+    "curvature": {"color": "#8a8a8a", "width": 2},
+    "curvatureNew": {"color": "#e09b3d", "width": 2},
+    "speedLimits": {"color": "#111111", "width": 2},
+    "speedLimits100": {"color": "#d64545", "width": 2},
+    "speedLimits130": {"color": "#0f8b8d", "width": 2},
+    "speedLimits150": {"color": "#8a4fd3", "width": 2},
+    "speedLimitsK": {"color": "#4a7fd4", "width": 2},
+    "profile": {"color": "#8a8a8a", "width": 2},
+    "simulated": {"color": "#d19a66", "width": 2},
+}
+
+# Per vehicle colour banks mirroring the previous matplotlib palettes
+VEHICLE_SPEED_COLORS = ["#d64545", "#2e9e4f", "#4a7fd4"]
+VEHICLE_LIMIT_COLORS = ["#f0a0a0", "#a8dcae", "#a8c8ef"]
+VEHICLE_TRACTION_COLORS = ["#2e9e4f", "#63d17c", "#1c6b34"]
+VEHICLE_BRAKING_COLORS = ["#d64545", "#8f2020", "#f08e8e"]
+VEHICLE_RESISTANCE_COLORS = ["#e08a2e", "#f0a95c", "#c9a227"]
+
+# Series that keep the theme foreground colour so they stay readable on both themes
+FOREGROUND_SERIES = ("cant", "speedLimits")
+
+# Interaction mode identifiers exposed through the plot context menu
+MODE_BOX_ZOOM = "boxZoom"
+MODE_PAN = "pan"
+MODE_AXIS_LOCK = "axisLock"
+
+# Matplotlib tableau colour names still used by the popup series descriptors
+TAB_COLORS = {
+    "tab:blue": "#1f77b4",
+    "tab:orange": "#ff7f0e",
+    "tab:green": "#2ca02c",
+    "tab:red": "#d62728",
+    "tab:purple": "#9467bd",
+    "tab:brown": "#8c564b",
+    "tab:pink": "#e377c2",
+    "tab:gray": "#7f7f7f",
+    "tab:grey": "#7f7f7f",
+    "tab:olive": "#bcbd22",
+    "tab:cyan": "#17becf",
+}
+
+# Colour used when a descriptor names something Qt cannot resolve
+FALLBACK_COLOR = "#888888"
+
+
+# Translate a colour name into something QColor accepts
+def resolveColor(color):
+    if not isinstance(color, str):
+        return color if color is not None else FALLBACK_COLOR
+
+    mapped = TAB_COLORS.get(color.lower())
+    if mapped is not None:
+        return mapped
+    if QColor.isValidColorName(color):
+        return color
+    return FALLBACK_COLOR
+
+
+# Build a pen from the shared style table with optional overrides
+def penFor(seriesKey, color=None, width=None, dash=None):
+    style = SERIES_STYLES.get(seriesKey, {})
+    penColor = resolveColor(color or style.get("color", FALLBACK_COLOR))
+    penWidth = width if width is not None else style.get("width", 2)
+    useDash = style.get("dash", False) if dash is None else dash
+
+    if useDash:
+        return pg.mkPen(penColor, width=penWidth, style=Qt.PenStyle.DashLine)
+    return pg.mkPen(penColor, width=penWidth)
+
+
+# Translate a matplotlib style line style string into a Qt pen style
+def penStyleFromLineStyle(lineStyle):
+    if lineStyle == "--":
+        return Qt.PenStyle.DashLine
+    if lineStyle == ":":
+        return Qt.PenStyle.DotLine
+    if lineStyle == "-.":
+        return Qt.PenStyle.DashDotLine
+    return Qt.PenStyle.SolidLine
+
+
+# Translate a matplotlib marker character into a pyqtgraph symbol
+def symbolFromMarker(marker):
+    markerMap = {"o": "o", "s": "s", "^": "t", "v": "t1", "d": "d", "+": "+", "x": "x"}
+    return markerMap.get(marker)
+
+
+class FractionAxisItem(pg.AxisItem):
+    # Render curvature tick values as a one over radius fraction
+    def tickStrings(self, values, scale, spacing):
+        labels = []
+        for value in values:
+            if abs(value) < 1e-9:
+                labels.append("0")
+                continue
+            sign = "-" if value < 0 else ""
+            labels.append(f"{sign}1/{abs(int(round(1.0 / value)))}")
+        return labels
+
+
+class CoypuPlotWidget(pg.GraphicsLayoutWidget):
+    # Emitted with the chainage in kilometres whenever a tracked plot is hovered
+    cursorMoved = Signal(float)
+
+    def __init__(self, lan, parent=None):
+        super().__init__(parent)
+
+        self.lan = lan
+        self.isDark = False
+        self.tokens = None
+
+        self.plotItems = {}
+        self.plotLegends = {}
+        self.plotSeries = {}
+        self.plotCrosshairs = {}
+        self.plotStationMarkers = {}
+        self.plotRightViews = {}
+        self.plotMenus = {}
+        self.plotTitles = {}
+
+        self.stationList = []
+        self.showStationMarkers = True
+        self.highlightedSeries = {}
+        self.cursorAxis = "x"
+        self.mouseProxy = None
+        self.readoutLabel = None
+        self.readoutPlotKey = None
+        self.detachedWindows = []
+
+    # Register a plot row and wire its legend, crosshair and context menu
+    def addPlotRow(self, plotKey, row, leftLabel="", bottomLabel="", rightAxis=None,
+                   withLegend=True, withCrosshair=True):
+        axisItems = {}
+        if rightAxis == "fraction":
+            axisItems["right"] = FractionAxisItem("right")
+
+        plotItem = self.addPlot(row=row, col=0, axisItems=axisItems or None)
+        plotItem.showGrid(x=True, y=True, alpha=0.3)
+        plotItem.setLabel("left", leftLabel)
+        plotItem.setLabel("bottom", bottomLabel)
+
+        self.plotItems[plotKey] = plotItem
+        self.plotSeries[plotKey] = {}
+        self.plotStationMarkers[plotKey] = []
+        self.highlightedSeries[plotKey] = None
+
+        if withLegend:
+            # Tight vertical spacing keeps the legend compact over the data
+            legend = plotItem.addLegend(offset=(10, 10), verSpacing=-4,
+                                        horSpacing=8, labelTextSize="8pt")
+            self.plotLegends[plotKey] = legend
+
+        if withCrosshair:
+            crosshair = pg.InfiniteLine(angle=90 if self.cursorAxis == "x" else 0, movable=False)
+            plotItem.addItem(crosshair, ignoreBounds=True)
+            self.plotCrosshairs[plotKey] = crosshair
+
+        self.installPlotContextMenu(plotKey)
+        return plotItem
+
+    # Attach a second view box so a plot can carry an independent right hand axis
+    def addRightAxis(self, plotKey, label=""):
+        plotItem = self.plotItems[plotKey]
+        rightView = pg.ViewBox()
+
+        plotItem.showAxis("right")
+        plotItem.scene().addItem(rightView)
+        plotItem.getAxis("right").linkToView(rightView)
+        rightView.setXLink(plotItem)
+        plotItem.setLabel("right", label)
+
+        self.plotRightViews[plotKey] = rightView
+        plotItem.vb.sigResized.connect(lambda vb, key=plotKey: self.syncRightView(key))
+        self.syncRightView(plotKey)
+        return rightView
+
+    # Drop the secondary view box so a redraw without one starts clean
+    def removeRightAxis(self, plotKey):
+        rightView = self.plotRightViews.pop(plotKey, None)
+        if rightView is None:
+            return
+
+        plotItem = self.plotItems.get(plotKey)
+        if plotItem is not None:
+            plotItem.scene().removeItem(rightView)
+            plotItem.hideAxis("right")
+
+    # Keep the secondary view box aligned with the primary one after a resize
+    def syncRightView(self, plotKey):
+        plotItem = self.plotItems.get(plotKey)
+        rightView = self.plotRightViews.get(plotKey)
+        if plotItem is None or rightView is None:
+            return
+        rightView.setGeometry(plotItem.vb.sceneBoundingRect())
+        rightView.linkedViewChanged(plotItem.vb, rightView.XAxis)
+
+    # Add or replace one curve, the registry keeps everything needed to redraw it
+    def setSeriesData(self, plotKey, seriesKey, x, y, name="", styleKey=None, color=None,
+                      width=None, dash=None, step=False, symbol=None, onRight=False,
+                      isVisible=True, alpha=None):
+        plotItem = self.plotItems.get(plotKey)
+        if plotItem is None:
+            return None
+
+        xValues = np.asarray(x, dtype=float)
+        yValues = np.asarray(y, dtype=float)
+        if xValues.size == 0 or yValues.size == 0:
+            return None
+
+        pen = penFor(styleKey or seriesKey, color=color, width=width, dash=dash)
+        if alpha is not None:
+            penColor = pen.color()
+            penColor.setAlphaF(float(alpha))
+            pen.setColor(penColor)
+
+        plotArgs = {"pen": pen, "connect": "finite", "name": name or None}
+        if step:
+            plotArgs["stepMode"] = "right"
+        if symbol:
+            plotArgs["symbol"] = symbol
+            plotArgs["symbolSize"] = 5
+            plotArgs["symbolBrush"] = pen.color()
+            plotArgs["symbolPen"] = pen.color()
+
+        item = pg.PlotDataItem(xValues, yValues, **plotArgs)
+
+        targetView = self.plotRightViews.get(plotKey) if onRight else None
+        if targetView is not None:
+            targetView.addItem(item)
+        else:
+            plotItem.addItem(item)
+
+        item.setVisible(bool(isVisible))
+        self.plotSeries[plotKey][seriesKey] = {
+            "item": item,
+            "name": name,
+            "pen": pen,
+            "step": step,
+            "symbol": symbol,
+            "onRight": onRight,
+            "x": xValues,
+            "y": yValues,
+            "visible": bool(isVisible),
+        }
+
+        self.rebuildLegend(plotKey)
+        return item
+
+    # Drop every curve and annotation from one plot
+    def clearPlot(self, plotKey):
+        plotItem = self.plotItems.get(plotKey)
+        if plotItem is None:
+            return
+
+        rightView = self.plotRightViews.get(plotKey)
+        for entry in self.plotSeries.get(plotKey, {}).values():
+            if entry["onRight"] and rightView is not None:
+                rightView.removeItem(entry["item"])
+            else:
+                plotItem.removeItem(entry["item"])
+
+        self.plotSeries[plotKey] = {}
+        self.highlightedSeries[plotKey] = None
+        self.rebuildLegend(plotKey)
+
+    # Toggle one curve and refresh the legend so hidden series disappear from it
+    def setSeriesVisible(self, plotKey, seriesKey, isVisible):
+        entry = self.plotSeries.get(plotKey, {}).get(seriesKey)
+        if entry is None:
+            return
+        entry["visible"] = bool(isVisible)
+        entry["item"].setVisible(bool(isVisible))
+        self.rebuildLegend(plotKey)
+
+    # Rebuild the legend from the currently visible curves of one plot
+    def rebuildLegend(self, plotKey):
+        legend = self.plotLegends.get(plotKey)
+        if legend is None:
+            return
+
+        legend.clear()
+        for entry in self.plotSeries.get(plotKey, {}).values():
+            if entry["visible"] and entry["name"]:
+                legend.addItem(entry["item"], entry["name"])
+
+    # Store the stop list and redraw the vertical station indicators
+    def setStations(self, stations):
+        self.stationList = list(stations or [])
+        self.refreshStationMarkers()
+
+    # Draw one labelled vertical line per station on every registered plot
+    def refreshStationMarkers(self):
+        foreground = self.tokens["plotForeground"] if self.tokens else "#666666"
+
+        for plotKey, plotItem in self.plotItems.items():
+            for marker in self.plotStationMarkers.get(plotKey, []):
+                plotItem.removeItem(marker)
+            self.plotStationMarkers[plotKey] = []
+
+            if not self.showStationMarkers:
+                continue
+
+            for stationKm, stationName in self.stationList:
+                marker = pg.InfiniteLine(
+                    pos=float(stationKm), angle=90, movable=False,
+                    pen=pg.mkPen("#8a8a8a", width=1, style=Qt.PenStyle.DashLine),
+                    label=stationName or None,
+                    labelOpts={"position": 0.92, "rotateAxis": (1, 0), "anchor": (0, 1),
+                               "color": foreground, "fill": None})
+                plotItem.addItem(marker, ignoreBounds=True)
+                self.plotStationMarkers[plotKey].append(marker)
+
+    # Show or hide the station indicators across every plot
+    def setStationMarkersVisible(self, isVisible):
+        self.showStationMarkers = bool(isVisible)
+        self.refreshStationMarkers()
+
+    # Apply the active theme to the canvas, the axes and the crosshairs
+    def applyTheme(self, isDark, tokens=None):
+        self.isDark = isDark
+        self.tokens = tokens
+
+        background = tokens["plotBackground"] if tokens else ("#1e1e1e" if isDark else "#ffffff")
+        foreground = tokens["plotForeground"] if tokens else ("#e6e6e6" if isDark else "#1c1c1c")
+
+        self.setBackground(background)
+
+        for plotItem in self.plotItems.values():
+            for axisName in ("left", "bottom", "right", "top"):
+                axis = plotItem.getAxis(axisName)
+                if axis is None:
+                    continue
+                axis.setPen(foreground)
+                axis.setTextPen(foreground)
+
+        crosshairPen = pg.mkPen(color="#4a90d9" if isDark else "#2f6fb5", width=1,
+                                style=Qt.PenStyle.DashLine)
+        for crosshair in self.plotCrosshairs.values():
+            crosshair.setPen(crosshairPen)
+
+        if self.readoutLabel is not None:
+            self.readoutLabel.setColor(foreground)
+
+        # Series drawn in the foreground colour need a new pen on every theme switch
+        for plotKey, seriesMap in self.plotSeries.items():
+            for seriesKey, entry in seriesMap.items():
+                if seriesKey in FOREGROUND_SERIES:
+                    entry["pen"] = pg.mkPen(foreground, width=2)
+                    entry["item"].setPen(entry["pen"])
+
+        for legend in self.plotLegends.values():
+            legend.setLabelTextColor(foreground)
+
+        self.refreshStationMarkers()
+
+    # Start reporting the chainage under the mouse from every tracked plot
+    def enableCursorTracking(self, readoutPlotKey=None):
+        self.readoutPlotKey = readoutPlotKey or next(iter(self.plotItems), None)
+        if self.readoutPlotKey is not None:
+            self.readoutLabel = pg.TextItem(anchor=(0, 1))
+            self.plotItems[self.readoutPlotKey].addItem(self.readoutLabel, ignoreBounds=True)
+
+        # A signal proxy keeps the crosshair responsive without flooding the event loop
+        self.mouseProxy = pg.SignalProxy(self.scene().sigMouseMoved, rateLimit=60,
+                                         slot=self.onMouseMoved)
+
+    # Hit test every plot so hovering any of them drives the shared crosshair
+    def onMouseMoved(self, event):
+        position = event[0]
+
+        for plotKey, plotItem in self.plotItems.items():
+            if not plotItem.sceneBoundingRect().contains(position):
+                continue
+
+            mousePoint = plotItem.vb.mapSceneToView(position)
+            value = float(mousePoint.x()) if self.cursorAxis == "x" else float(mousePoint.y())
+
+            self.setCursorStation(value)
+            self.updateReadout(value)
+            self.cursorMoved.emit(value)
+            return
+
+    # Move the readout label to the top of its plot at the current chainage
+    def updateReadout(self, value):
+        if self.readoutLabel is None or self.readoutPlotKey is None:
+            return
+        viewRange = self.plotItems[self.readoutPlotKey].vb.viewRange()
+        self.readoutLabel.setPos(value, viewRange[1][1])
+        self.readoutLabel.setText(f"{value:.3f} km")
+
+    # Drive every crosshair from an external source such as the map
+    def setCursorStation(self, stationKm):
+        for crosshair in self.plotCrosshairs.values():
+            crosshair.setPos(float(stationKm))
+
+    # Extend the native view box menu instead of replacing it
+    def installPlotContextMenu(self, plotKey):
+        plotItem = self.plotItems[plotKey]
+        viewBox = plotItem.vb
+        menu = viewBox.menu
+        lan = self.lan
+
+        menu.addSeparator()
+
+        expandAction = QAction(lan.get("plotExpand", "Expand / Detach to large window"), menu)
+        expandAction.setIcon(icons.makeIcon("expand"))
+        expandAction.triggered.connect(lambda checked=False, key=plotKey: self.openDetachedWindow(key))
+        menu.addAction(expandAction)
+
+        modeMenu = QMenu(lan.get("plotInteraction", "Interaction mode"), menu)
+        modeGroup = QActionGroup(modeMenu)
+        modeGroup.setExclusive(True)
+        modeDefinitions = [
+            (MODE_BOX_ZOOM, lan.get("plotModeBoxZoom", "Rectangular box zoom")),
+            (MODE_PAN, lan.get("plotModePan", "Mouse drag pan")),
+            (MODE_AXIS_LOCK, lan.get("plotModeAxisLock", "Axis lock")),
+        ]
+        for modeKey, modeLabel in modeDefinitions:
+            modeAction = QAction(modeLabel, modeMenu)
+            modeAction.setCheckable(True)
+            modeAction.setChecked(modeKey == MODE_PAN)
+            modeAction.triggered.connect(
+                lambda checked=False, key=plotKey, mode=modeKey: self.setInteractionMode(key, mode))
+            modeGroup.addAction(modeAction)
+            modeMenu.addAction(modeAction)
+        menu.addMenu(modeMenu)
+
+        gridAction = QAction(lan.get("plotToggleGrid", "Toggle grid lines"), menu)
+        gridAction.setCheckable(True)
+        gridAction.setChecked(True)
+        gridAction.setIcon(icons.makeIcon("grid"))
+        gridAction.triggered.connect(
+            lambda checked, key=plotKey: self.setGridVisible(key, checked))
+        menu.addAction(gridAction)
+
+        stationAction = QAction(lan.get("plotToggleStations", "Toggle station markers"), menu)
+        stationAction.setCheckable(True)
+        stationAction.setChecked(True)
+        stationAction.setIcon(icons.makeIcon("station"))
+        stationAction.triggered.connect(
+            lambda checked: self.setStationMarkersVisible(checked))
+        menu.addAction(stationAction)
+
+        highlightMenu = QMenu(lan.get("plotHighlight", "Highlight series"), menu)
+        highlightMenu.aboutToShow.connect(
+            lambda key=plotKey, target=highlightMenu: self.buildHighlightMenu(key, target))
+        menu.addMenu(highlightMenu)
+
+        self.plotMenus[plotKey] = {
+            "menu": menu,
+            "modeMenu": modeMenu,
+            "highlightMenu": highlightMenu,
+            "expandAction": expandAction,
+            "gridAction": gridAction,
+            "stationAction": stationAction,
+            "modeActions": modeGroup.actions(),
+        }
+
+    # Populate the highlight submenu from the curves the plot currently holds
+    def buildHighlightMenu(self, plotKey, highlightMenu):
+        highlightMenu.clear()
+        lan = self.lan
+
+        noneAction = QAction(lan.get("plotHighlightNone", "No highlight"), highlightMenu)
+        noneAction.triggered.connect(lambda checked=False, key=plotKey: self.highlightSeries(key, None))
+        highlightMenu.addAction(noneAction)
+        highlightMenu.addSeparator()
+
+        for seriesKey, entry in self.plotSeries.get(plotKey, {}).items():
+            if not entry["visible"]:
+                continue
+            label = entry["name"] or seriesKey
+            seriesAction = QAction(label, highlightMenu)
+            seriesAction.setCheckable(True)
+            seriesAction.setChecked(self.highlightedSeries.get(plotKey) == seriesKey)
+            seriesAction.triggered.connect(
+                lambda checked=False, key=plotKey, target=seriesKey: self.highlightSeries(key, target))
+            highlightMenu.addAction(seriesAction)
+
+    # Emphasise one curve by fading every other curve of the same plot
+    def highlightSeries(self, plotKey, seriesKey):
+        self.highlightedSeries[plotKey] = seriesKey
+
+        for currentKey, entry in self.plotSeries.get(plotKey, {}).items():
+            pen = pg.mkPen(entry["pen"])
+            penColor = pen.color()
+
+            if seriesKey is None:
+                penColor.setAlphaF(1.0)
+                pen.setWidth(entry["pen"].width())
+            elif currentKey == seriesKey:
+                penColor.setAlphaF(1.0)
+                pen.setWidth(max(entry["pen"].width() + 1, 3))
+            else:
+                penColor.setAlphaF(0.25)
+
+            pen.setColor(penColor)
+            entry["item"].setPen(pen)
+
+    # Switch a plot between box zoom, drag pan and a fully locked view
+    def setInteractionMode(self, plotKey, mode):
+        plotItem = self.plotItems.get(plotKey)
+        if plotItem is None:
+            return
+        viewBox = plotItem.vb
+
+        if mode == MODE_BOX_ZOOM:
+            viewBox.setMouseMode(pg.ViewBox.RectMode)
+            viewBox.setMouseEnabled(x=True, y=True)
+        elif mode == MODE_AXIS_LOCK:
+            viewBox.setMouseEnabled(x=False, y=False)
+        else:
+            viewBox.setMouseMode(pg.ViewBox.PanMode)
+            viewBox.setMouseEnabled(x=True, y=True)
+
+    # Show or hide the grid of a single plot
+    def setGridVisible(self, plotKey, isVisible):
+        plotItem = self.plotItems.get(plotKey)
+        if plotItem is not None:
+            plotItem.showGrid(x=bool(isVisible), y=bool(isVisible), alpha=0.3)
+
+    # Collect the drawable descriptors of one plot for the detached window
+    def buildSeriesDescriptors(self, plotKey):
+        primary = []
+        secondary = []
+
+        for entry in self.plotSeries.get(plotKey, {}).values():
+            if not entry["visible"]:
+                continue
+            descriptor = {
+                "x": entry["x"],
+                "y": entry["y"],
+                "label": entry["name"],
+                "color": entry["pen"].color().name(),
+                "step": entry["step"],
+                "marker": entry["symbol"],
+            }
+            if entry["onRight"]:
+                secondary.append(descriptor)
+            else:
+                primary.append(descriptor)
+
+        return primary, secondary
+
+    # Open the current plot in a standalone high resolution window
+    def openDetachedWindow(self, plotKey):
+        import gui_overlay
+
+        plotItem = self.plotItems.get(plotKey)
+        if plotItem is None:
+            return None
+
+        primary, secondary = self.buildSeriesDescriptors(plotKey)
+        title = self.plotTitles.get(plotKey, plotKey)
+
+        window = gui_overlay.PopupPlotWindow(title, self.window())
+        window.drawData(
+            primary,
+            xlabel=plotItem.getAxis("bottom").labelText,
+            ylabel=plotItem.getAxis("left").labelText,
+            title=title,
+            secondarySeries=secondary or None,
+            secondaryYlabel=plotItem.getAxis("right").labelText if secondary else "",
+        )
+        window.show()
+
+        # Keeping a reference prevents the window from being garbage collected
+        self.detachedWindows.append(window)
+        return window
+
+    # Refresh the context menu captions after a language change
+    def retranslateMenus(self, lan):
+        self.lan = lan
+        for plotKey, parts in self.plotMenus.items():
+            parts["expandAction"].setText(lan.get("plotExpand", "Expand / Detach to large window"))
+            parts["modeMenu"].setTitle(lan.get("plotInteraction", "Interaction mode"))
+            parts["gridAction"].setText(lan.get("plotToggleGrid", "Toggle grid lines"))
+            parts["stationAction"].setText(lan.get("plotToggleStations", "Toggle station markers"))
+            parts["highlightMenu"].setTitle(lan.get("plotHighlight", "Highlight series"))
+
+            modeLabels = [lan.get("plotModeBoxZoom", "Rectangular box zoom"),
+                          lan.get("plotModePan", "Mouse drag pan"),
+                          lan.get("plotModeAxisLock", "Axis lock")]
+            for modeAction, modeLabel in zip(parts["modeActions"], modeLabels):
+                modeAction.setText(modeLabel)
+
+
+class PlotNavigationToolbar(QToolBar):
+    def __init__(self, plotWidget, lan, parent=None):
+        super().__init__(parent)
+
+        self.plotWidget = plotWidget
+        self.lan = lan
+        self.setIconSize(icons.ribbonIconSize())
+        self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+
+        self.zoomInAction = self.addAction(icons.makeIcon("zoomIn"),
+                                           lan.get("plotZoomIn", "Zoom in"))
+        self.zoomInAction.triggered.connect(lambda: self.scaleView(0.75))
+
+        self.zoomOutAction = self.addAction(icons.makeIcon("zoomOut"),
+                                            lan.get("plotZoomOut", "Zoom out"))
+        self.zoomOutAction.triggered.connect(lambda: self.scaleView(1.33))
+
+        self.panAction = self.addAction(icons.makeIcon("pan"), lan.get("plotModePan", "Pan"))
+        self.panAction.setCheckable(True)
+        self.panAction.setChecked(True)
+        self.panAction.triggered.connect(self.togglePanMode)
+
+        self.resetAction = self.addAction(icons.makeIcon("resetView"),
+                                          lan.get("plotResetView", "Reset view"))
+        self.resetAction.triggered.connect(self.resetView)
+
+        self.addSeparator()
+
+        self.exportAction = self.addAction(icons.makeIcon("exportImage"),
+                                           lan.get("plotExportHighRes", "High resolution export"))
+        self.exportAction.triggered.connect(self.exportHighRes)
+
+    # Zoom every plot of the attached widget around its current centre
+    def scaleView(self, factor):
+        for plotItem in self.plotWidget.plotItems.values():
+            plotItem.vb.scaleBy((factor, factor))
+
+    # Switch between drag pan and rectangular box zoom on every plot
+    def togglePanMode(self, isChecked):
+        mode = MODE_PAN if isChecked else MODE_BOX_ZOOM
+        for plotKey in self.plotWidget.plotItems:
+            self.plotWidget.setInteractionMode(plotKey, mode)
+
+    # Restore the automatic range of every plot
+    def resetView(self):
+        for plotItem in self.plotWidget.plotItems.values():
+            plotItem.vb.autoRange()
+
+    # Save the whole plot canvas as a high resolution raster image
+    def exportHighRes(self):
+        filePath, _ = QFileDialog.getSaveFileName(
+            self, self.lan.get("plotExportHighRes", "High resolution export"),
+            "plot.png", "PNG (*.png);;JPEG (*.jpg)")
+        if not filePath:
+            return
+
+        exporter = pg.exporters.ImageExporter(self.plotWidget.scene())
+        # Multiplying the canvas width gives a print ready pixel density
+        exporter.parameters()["width"] = int(self.plotWidget.width() * 3)
+        exporter.export(filePath)
+
+    # Refresh the toolbar captions after a language change
+    def retranslate(self, lan):
+        self.lan = lan
+        self.zoomInAction.setText(lan.get("plotZoomIn", "Zoom in"))
+        self.zoomOutAction.setText(lan.get("plotZoomOut", "Zoom out"))
+        self.panAction.setText(lan.get("plotModePan", "Pan"))
+        self.resetAction.setText(lan.get("plotResetView", "Reset view"))
+        self.exportAction.setText(lan.get("plotExportHighRes", "High resolution export"))

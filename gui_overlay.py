@@ -7,11 +7,10 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout,
                                QTabWidget, QWidget)
 from PySide6.QtCore import Qt
 
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_qtagg import (
-    FigureCanvasQTAgg as FigureCanvas,
-    NavigationToolbar2QT as NavigationToolbar,
-)
+import numpy as np
+import pyqtgraph as pg
+
+import plot_widgets
 
 import csv
 import readfile
@@ -63,7 +62,7 @@ class TTPSelectSectionDialog(QDialog):
     def toggleListWidget(self, checked):
         self.listWidget.setEnabled(not checked)
 
-    def get_selected_section(self):
+    def getSelectedSection(self):
         selected = self.listWidget.selectedItems()
         selectedIds = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
         
@@ -81,8 +80,8 @@ class AlignmentSelectDialog(QDialog):
         self.listWidget = QListWidget()
         self.listWidget.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         
-        for id, alig_name in enumerate(alignments):
-            item = QListWidgetItem(f"{alig_name}")
+        for id, aligName in enumerate(alignments):
+            item = QListWidgetItem(f"{aligName}")
             item.setData(Qt.ItemDataRole.UserRole, id)
             self.listWidget.addItem(item)
             
@@ -97,7 +96,7 @@ class AlignmentSelectDialog(QDialog):
         layout.addWidget(buttons)
         self.setLayout(layout)
         
-    def get_selected_index(self):
+    def getSelectedIndex(self):
         selected = self.listWidget.selectedItems()
         if selected:
             return selected[0].data(Qt.ItemDataRole.UserRole)
@@ -158,9 +157,9 @@ class MapSettingsDialog(QDialog):
         layout.addWidget(buttons)
         
     def updateSpeedProfileVisibility(self):
-        is_speed_mode = self.comboDrawMode.currentData() == "speed"
-        self.labelSpeedProfile.setVisible(is_speed_mode)
-        self.comboSpeedProfile.setVisible(is_speed_mode)
+        isSpeedMode = self.comboDrawMode.currentData() == "speed"
+        self.labelSpeedProfile.setVisible(isSpeedMode)
+        self.comboSpeedProfile.setVisible(isSpeedMode)
 
     def getMapSettings(self):
         epsg = self.inputEPSG.text().strip().upper()
@@ -170,16 +169,6 @@ class MapSettingsDialog(QDialog):
             
         return epsg, self.comboMap.currentData(), self.comboDrawMode.currentData(), self.comboSpeedProfile.currentData()
         
-class HelpDialog(QDialog):
-    def __init__(self, lan, parent=None):
-        super().__init__(parent)
-
-        self.setWindowTitle(lan["help"])
-
-        layout = QVBoxLayout(self)
-        label = QLabel(lan["help_text"])
-        layout.addWidget(label)
-
 class GeometrySettingsDialog(QDialog):
     def __init__(self, settingsData, lan, parent=None):
         super().__init__(parent)
@@ -191,24 +180,24 @@ class GeometrySettingsDialog(QDialog):
         layout = QVBoxLayout(self)
 
         formLayout = QFormLayout()
-        current_max_d = self.settingsData.get("maxD", 150.0)
-        if isinstance(current_max_d, list):
-            current_max_d = current_max_d[0]
+        currentMaxD = self.settingsData.get("maxD", 150.0)
+        if isinstance(currentMaxD, list):
+            currentMaxD = currentMaxD[0]
             
-        self.inputMaxD = QLineEdit(str(current_max_d))
-        formLayout.addRow(QLabel(lan.get("max_cant", "Maximum cant D_max [mm]:")), self.inputMaxD)
+        self.inputMaxD = QLineEdit(str(currentMaxD))
+        formLayout.addRow(QLabel(lan.get("maxCant", "Maximum cant D_max [mm]:")), self.inputMaxD)
         
-        current_v_init = self.settingsData.get("vInit", [120.0])
-        if isinstance(current_v_init, list): current_v_init = current_v_init[0]
-        self.inputVInit = QLineEdit(str(current_v_init))
+        currentVInit = self.settingsData.get("vInit", [120.0])
+        if isinstance(currentVInit, list): currentVInit = currentVInit[0]
+        self.inputVInit = QLineEdit(str(currentVInit))
         formLayout.addRow(QLabel(lan.get("vInitLabel", "Initial Speed v_init [km/h]:")), self.inputVInit)
 
-        current_iter_step = self.settingsData.get("iterationStep", 5.0)
-        self.inputIterStep = QLineEdit(str(current_iter_step))
+        currentIterStep = self.settingsData.get("iterationStep", 5.0)
+        self.inputIterStep = QLineEdit(str(currentIterStep))
         formLayout.addRow(QLabel(lan.get("iterationStepLabel", "Iteration speed reduction step [km/h]:")), self.inputIterStep)
 
-        current_max_iter = self.settingsData.get("maxIterations", 50)
-        self.inputMaxIter = QLineEdit(str(current_max_iter))
+        currentMaxIter = self.settingsData.get("maxIterations", 50)
+        self.inputMaxIter = QLineEdit(str(currentMaxIter))
         formLayout.addRow(QLabel(lan.get("maxIterationsLabel", "Maximum number of iterations [-]:")), self.inputMaxIter)
 
         layout.addLayout(formLayout)
@@ -338,9 +327,9 @@ class GeometrySettingsDialog(QDialog):
             return
         
         # Read file content 
-        file_content = readfile.ReadFile().Read(filepath)
+        fileContent = readfile.ReadFile().Read(filepath)
         
-        if file_content.startswith("Error"):
+        if fileContent.startswith("Error"):
             err = QMessageBox()
             err.setWindowTitle("Error")
             err.setIcon(QMessageBox.Icon.Warning)
@@ -349,32 +338,32 @@ class GeometrySettingsDialog(QDialog):
         
         try:
             # Reads CSV file content
-            reader = csv.reader(io.StringIO(file_content), delimiter=',')
+            reader = csv.reader(io.StringIO(fileContent), delimiter=',')
             # Skips header
             next(reader, None)
 
-            i_data = []
-            di_data = []
-            nlin_data = []
-            nilin_data = []
+            iData = []
+            diData = []
+            nlinData = []
+            nilinData = []
 
             for row in reader:
                 if not row:
                     continue
                 section = row[0]
                 if section == "I" and len(row) >= 6:
-                    i_data.append(row[1:6])
+                    iData.append(row[1:6])
                 elif section == "DI" and len(row) >= 6:
-                    di_data.append(row[1:6])
+                    diData.append(row[1:6])
                 elif section == "nLin" and len(row) >= 9:
-                    nlin_data.append(row[1:9])
+                    nlinData.append(row[1:9])
                 elif section == "nILin" and len(row) >= 6:
-                    nilin_data.append(row[1:6])
+                    nilinData.append(row[1:6])
 
-            if i_data: self.populateTable(self.tableI, i_data)
-            if di_data: self.populateTable(self.tableDI, di_data)
-            if nlin_data: self.populateTable(self.tableNlin, nlin_data)
-            if nilin_data: self.populateTable(self.tableNIlin, nilin_data)
+            if iData: self.populateTable(self.tableI, iData)
+            if diData: self.populateTable(self.tableDI, diData)
+            if nlinData: self.populateTable(self.tableNlin, nlinData)
+            if nilinData: self.populateTable(self.tableNIlin, nilinData)
             
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
@@ -533,20 +522,20 @@ class DesignApproachDialog(QDialog):
             ("nILin", lan.get("nILin", "Coefficient of cant deficiency change nI [-]"))
         ]
 
-        for param_key, param_label in parameters:
+        for paramKey, paramLabel in parameters:
             cb = QComboBox(self)
             cb.addItems([lan["standard"], lan["limit"], lan["minmax"]])
             
-            current_val = self.designApproach.get(param_key, "standard")
-            if current_val == "standard":
+            currentVal = self.designApproach.get(paramKey, "standard")
+            if currentVal == "standard":
                 cb.setCurrentText(lan["standard"])
-            elif current_val == "limit":
+            elif currentVal == "limit":
                 cb.setCurrentText(lan["limit"])
-            elif current_val == "minmax":
+            elif currentVal == "minmax":
                 cb.setCurrentText(lan["minmax"])
                 
-            self.comboboxes[param_key] = cb
-            formLayout.addRow(QLabel(param_label), cb)
+            self.comboboxes[paramKey] = cb
+            formLayout.addRow(QLabel(paramLabel), cb)
             
         layout.addLayout(formLayout)
 
@@ -559,16 +548,16 @@ class DesignApproachDialog(QDialog):
 
     def getDesignApproach(self):
         result = {}
-        for param_key, cb in self.comboboxes.items():
+        for paramKey, cb in self.comboboxes.items():
             selected = cb.currentText()
             if selected == self.lan["standard"]:
-                result[param_key] = "standard"
+                result[paramKey] = "standard"
             elif selected == self.lan["limit"]:
-                result[param_key] = "limit"
+                result[paramKey] = "limit"
             elif selected == self.lan["minmax"]:
-                result[param_key] = "minmax"
+                result[paramKey] = "minmax"
             else:
-                result[param_key] = "standard"
+                result[paramKey] = "standard"
         return result
 
 class StopsSettingsDialog(QDialog):
@@ -653,14 +642,14 @@ class StopsSettingsDialog(QDialog):
     def importCSV(self, table):
         filepath, _ = QFileDialog.getOpenFileName(self, "Open File", "", "CSV Files (*.csv)")
         if not filepath: return
-        file_content = readfile.ReadFile().Read(filepath)
-        if file_content.startswith("Error"):
+        fileContent = readfile.ReadFile().Read(filepath)
+        if fileContent.startswith("Error"):
             err = QMessageBox(); err.setWindowTitle("Error"); err.setIcon(QMessageBox.Icon.Warning); err.exec(); return
         try:
-            reader = csv.reader(io.StringIO(file_content), delimiter=',')
+            reader = csv.reader(io.StringIO(fileContent), delimiter=',')
             next(reader, None)
-            data_list = list(reader)
-            if table == "tableStops": self.populateTable(self.tableStops, data_list)
+            dataList = list(reader)
+            if table == "tableStops": self.populateTable(self.tableStops, dataList)
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
             
@@ -685,8 +674,8 @@ class StopsSettingsDialog(QDialog):
             try: 
                 station = float(self.tableStops.item(row, 0).text())
                 dwell = float(self.tableStops.item(row, 1).text())
-                name_item = self.tableStops.item(row, 2)
-                name = name_item.text() if name_item else ""
+                nameItem = self.tableStops.item(row, 2)
+                name = nameItem.text() if nameItem else ""
                 settingsData["trainStops"].append([station, dwell, name])
             except (ValueError, AttributeError): 
                 continue
@@ -765,14 +754,14 @@ class SpeedSettingsDialog(QDialog):
     def importSpeedsCSV(self):
         filepath, _ = QFileDialog.getOpenFileName(self, "Open File", "", "CSV Files (*.csv)")
         if not filepath: return
-        file_content = readfile.ReadFile().Read(filepath)
-        if file_content.startswith("Error"):
+        fileContent = readfile.ReadFile().Read(filepath)
+        if fileContent.startswith("Error"):
             err = QMessageBox(); err.setWindowTitle("Error"); err.setIcon(QMessageBox.Icon.Warning); err.exec(); return
         try:
-            reader = csv.reader(io.StringIO(file_content), delimiter=',')
+            reader = csv.reader(io.StringIO(fileContent), delimiter=',')
             next(reader, None) # Skip header
-            data_list = [row[:2] for row in reader] # Take only first two columns
-            self.populateTable(self.tableSpeeds, data_list)
+            dataList = [row[:2] for row in reader] # Take only first two columns
+            self.populateTable(self.tableSpeeds, dataList)
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
             
@@ -802,25 +791,25 @@ class SpeedSettingsDialog(QDialog):
         return settingsData
 
 class VehicleTab(QWidget):
-    def __init__(self, v_data, lan, parent = None):
+    def __init__(self, vData, lan, parent = None):
         super().__init__(parent)
         self.lan = lan
-        self.v_data = v_data
+        self.vehicleData = vData
 
         layout = QVBoxLayout(self)
         formLayout = QFormLayout()
         
-        self.inputInitialSpeed = QLineEdit(str(self.v_data.get("trainInitialSpeed", 0.0)))
+        self.inputInitialSpeed = QLineEdit(str(self.vehicleData.get("trainInitialSpeed", 0.0)))
         formLayout.addRow(QLabel(lan.get("trainInitialSpeed", "Initial Speed [km/h]:")), self.inputInitialSpeed)
 
-        self.inputFinalSpeed = QLineEdit(str(self.v_data.get("trainFinalSpeed", 0.0)))
+        self.inputFinalSpeed = QLineEdit(str(self.vehicleData.get("trainFinalSpeed", 0.0)))
         formLayout.addRow(QLabel(lan.get("trainFinalSpeed", "Final Speed [km/h]:")), self.inputFinalSpeed)
 
         self.checkReverse = QCheckBox(lan.get("runAgainstStationing", "Run against stationing"))
-        self.checkReverse.setChecked(self.v_data.get("runReversed", False))
+        self.checkReverse.setChecked(self.vehicleData.get("runReversed", False))
         formLayout.addRow(self.checkReverse)
         
-        self.inputMaxSpeed = QLineEdit(str(self.v_data.get("trainMaxSpeed", 120.0)))
+        self.inputMaxSpeed = QLineEdit(str(self.vehicleData.get("trainMaxSpeed", 120.0)))
         
         self.comboProfile = QComboBox()
         self.profiles = [
@@ -836,15 +825,15 @@ class VehicleTab(QWidget):
         for text, data in self.profiles:
             self.comboProfile.addItem(text, data)
             
-        current_profile = self.v_data.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"])
+        currentProfile = self.vehicleData.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"])
         for i, (text, data) in enumerate(self.profiles):
-            if data == current_profile:
+            if data == currentProfile:
                 self.comboProfile.setCurrentIndex(i)
                 break
 
         formLayout.addRow(QLabel(lan.get("max_train_speed", "Max Train Speed [km/h]:")), self.inputMaxSpeed)
         
-        self.inputBrakeDecel = QLineEdit(str(self.v_data.get("trainBrakeDecel", default_values.defVal.get("trainBrakeDecel", 1.0))))
+        self.inputBrakeDecel = QLineEdit(str(self.vehicleData.get("trainBrakeDecel", default_values.defVal.get("trainBrakeDecel", 1.0))))
         formLayout.addRow(QLabel(lan.get("vehicleBrakeDecel", "Braking Deceleration [m/s2]:")), self.inputBrakeDecel)
 
         formLayout.addRow(QLabel(lan.get("speed_profile", "Speed Profile:")), self.comboProfile)
@@ -879,7 +868,7 @@ class VehicleTab(QWidget):
         layout.addWidget(self.tableRes)
 
         # Default values for train resistance coefficients
-        defaultRes = self.v_data.get("trainRes", default_values.defVal.get("trainRes", []))
+        defaultRes = self.vehicleData.get("trainRes", default_values.defVal.get("trainRes", []))
 
         self.populateTable(self.tableRes, defaultRes)
 
@@ -902,7 +891,7 @@ class VehicleTab(QWidget):
         layout.addWidget(self.tableTrac)
 
         # Default values for vehicle resistance
-        defaultTrac = self.v_data.get("trainTrac", default_values.defVal.get("trainTrac", []))
+        defaultTrac = self.vehicleData.get("trainTrac", default_values.defVal.get("trainTrac", []))
 
         self.populateTable(self.tableTrac, defaultTrac)
 
@@ -923,7 +912,7 @@ class VehicleTab(QWidget):
         layout.addWidget(self.tableParam)
 
         # Default values for train parameters
-        defaultParam = self.v_data.get("trainParam", default_values.defVal.get("trainParam", []))
+        defaultParam = self.vehicleData.get("trainParam", default_values.defVal.get("trainParam", []))
         
         # Ensure older saves have the 4th column (train length) initialized
         for rowData in defaultParam:
@@ -944,8 +933,8 @@ class VehicleTab(QWidget):
         if not filepath:
             return
         
-        file_content = readfile.ReadFile().Read(filepath)
-        if file_content.startswith("Error"):
+        fileContent = readfile.ReadFile().Read(filepath)
+        if fileContent.startswith("Error"):
             err = QMessageBox()
             err.setWindowTitle("Error")
             err.setIcon(QMessageBox.Icon.Warning)
@@ -953,27 +942,27 @@ class VehicleTab(QWidget):
             return
         
         try:
-            reader = csv.reader(io.StringIO(file_content), delimiter=',')
+            reader = csv.reader(io.StringIO(fileContent), delimiter=',')
             next(reader, None)
 
-            res_data = []
-            trac_data = []
-            param_data = []
+            resData = []
+            tracData = []
+            paramData = []
 
             for row in reader:
                 if not row:
                     continue
                 section = row[0]
                 if section == "Res" and len(row) >= 5:
-                    res_data.append(row[1:5])
+                    resData.append(row[1:5])
                 elif section == "Trac" and len(row) >= 7:
-                    trac_data.append(row[1:7])
+                    tracData.append(row[1:7])
                 elif section == "Param" and len(row) >= 5:
-                    param_data.append(row[1:5])
+                    paramData.append(row[1:5])
 
-            if res_data: self.populateTable(self.tableRes, res_data)
-            if trac_data: self.populateTable(self.tableTrac, trac_data)
-            if param_data: self.populateTable(self.tableParam, param_data)
+            if resData: self.populateTable(self.tableRes, resData)
+            if tracData: self.populateTable(self.tableTrac, tracData)
+            if paramData: self.populateTable(self.tableParam, paramData)
 
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
@@ -1065,12 +1054,12 @@ class VehicleTab(QWidget):
         # Table Train Parameters
         for row in range(self.tableParam.rowCount()):
             try:
-                length_item = self.tableParam.item(row, 3)
+                lengthItem = self.tableParam.item(row, 3)
                 settingsData["trainParam"].append([
                     self.tableParam.item(row, 0).text(),
                     float(self.tableParam.item(row, 1).text()),
                     float(self.tableParam.item(row, 2).text()),
-                    float(length_item.text()) if length_item and length_item.text() else 0.0
+                    float(lengthItem.text()) if lengthItem and lengthItem.text() else 0.0
                 ])
             except(ValueError, AttributeError):
                 continue
@@ -1102,7 +1091,7 @@ class VehicleSettingsDialog(QDialog):
         
         vehicles = self.settingsData.get("vehicles", [])
         if not vehicles:
-            old_v = {
+            oldV = {
                 "trainInitialSpeed": self.settingsData.get("trainInitialSpeed", 0.0),
                 "trainFinalSpeed": self.settingsData.get("trainFinalSpeed", 0.0),
                 "trainMaxSpeed": self.settingsData.get("trainMaxSpeed", self.settingsData.get("vInit", [120])[0]),
@@ -1113,25 +1102,25 @@ class VehicleSettingsDialog(QDialog):
                 "speedLimitPlot": self.settingsData.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"]),
                 "runReversed": self.settingsData.get("runReversed", False)
             }
-            vehicles.append(old_v)
+            vehicles.append(oldV)
             
-        for v_data in vehicles:
-            self.addTab(v_data)
+        for vData in vehicles:
+            self.addTab(vData)
             
         self.buttonBox = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self.buttonBox.accepted.connect(self.accept)
         self.buttonBox.rejected.connect(self.reject)
         layout.addWidget(self.buttonBox)
 
-    def addTab(self, v_data):
+    def addTab(self, vData):
         if self.tabs.count() >= 3: return
-        tab = VehicleTab(v_data, self.lan)
+        tab = VehicleTab(vData, self.lan)
         self.tabs.addTab(tab, f'{self.lan.get("vehicle", "Vehicle")} {self.tabs.count() + 1}')
         self.updateButtons()
 
     def addVehicle(self):
-        last_settings = self.tabs.widget(self.tabs.count() - 1).getSettings() if self.tabs.count() > 0 else {}
-        self.addTab(last_settings)
+        lastSettings = self.tabs.widget(self.tabs.count() - 1).getSettings() if self.tabs.count() > 0 else {}
+        self.addTab(lastSettings)
         
     def removeVehicle(self):
         if self.tabs.count() > 1:
@@ -1151,249 +1140,186 @@ class VehicleSettingsDialog(QDialog):
 # Pop-up plot window
 # ---------------------------------------------------------------------------
 
+# Standalone pop-up window with its own pyqtgraph canvas and navigation toolbar
 class PopupPlotWindow(QDialog):
-    """Standalone pop-up window with its own Matplotlib Figure and canvas.
 
-    Data must be passed via :meth:`draw_data` as numpy array references —
-    the existing Figure / Axes from the main window are never copied or
-    touched (that would break Qt backend references).
-    """
-
-    # Reference canvas size (pixels) at which font scales equal 1.0.
-    # Matches the default window size (960 × 580) minus the toolbar (~36 px).
-    _BASE_W: float = 960.0
-    _BASE_H: float = 544.0
-
-    # Base font sizes (pt) at scale 1.0
-    _FS_TITLE:  float = 11.0
-    _FS_LABEL:  float = 10.0
-    _FS_TICK:   float =  9.0
-    _FS_LEGEND: float =  9.0
-
-    def __init__(self, title: str, parent=None):
+    def __init__(self, title, parent=None, lan=None):
         super().__init__(parent)
         self.setWindowTitle(title)
-        # Make this a proper independent top-level window (not a modal dialog).
+
+        # Make this a proper independent top-level window, not a modal dialog
         self.setWindowFlags(
             Qt.WindowType.Window
             | Qt.WindowType.WindowMinimizeButtonHint
             | Qt.WindowType.WindowMaximizeButtonHint
             | Qt.WindowType.WindowCloseButtonHint
         )
-        self.resize(960, 580)
+        self.resize(1100, 680)
+
+        self.lan = lan if lan is not None else {}
+        self.annotationItems = []
+        self.markerLines = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.fig = Figure(figsize=(9, 5), dpi=100, layout="constrained")
-        self.canvas = FigureCanvas(self.fig)
-        self.toolbar = NavigationToolbar(self.canvas, self)
+        self.plotWidget = plot_widgets.CoypuPlotWidget(self.lan)
+        self.plotWidget.plotTitles["main"] = title
+        self.mainPlot = self.plotWidget.addPlotRow("main", 0, withCrosshair=False)
+
+        self.toolbar = plot_widgets.PlotNavigationToolbar(self.plotWidget, self.lan, self)
 
         layout.addWidget(self.toolbar)
-        layout.addWidget(self.canvas)
+        layout.addWidget(self.plotWidget)
+
+        self.secondaryView = None
+
+    # Adopt the theme of the main window so the popup does not flash white
+    def applyTheme(self, isDark, tokens=None):
+        self.plotWidget.applyTheme(isDark, tokens)
 
     # ------------------------------------------------------------------
-    def resizeEvent(self, event):
-        """Rescale all text elements whenever the window is resized."""
-        super().resizeEvent(event)
-        self._update_font_sizes()
-
-    def _update_font_sizes(self):
-        """Reapply font sizes scaled to the current canvas dimensions.
-
-        Scale factor = min(canvas_w / BASE_W, canvas_h / BASE_H), clamped to
-        [0.7, 2.5].  draw_idle() batches the repaint so rapid resize events
-        do not block the UI.
-        """
-        w = self.canvas.width()
-        h = self.canvas.height()
-        if w == 0 or h == 0:
-            return
-        scale = min(w / self._BASE_W, h / self._BASE_H)
-        scale = max(0.7, min(scale, 2.5))
-
-        for ax in self.fig.axes:
-            ax.title.set_fontsize(self._FS_TITLE * scale)
-            ax.xaxis.label.set_fontsize(self._FS_LABEL * scale)
-            ax.yaxis.label.set_fontsize(self._FS_LABEL * scale)
-            ax.tick_params(axis="both", labelsize=self._FS_TICK * scale)
-            leg = ax.get_legend()
-            if leg:
-                for txt in leg.get_texts():
-                    txt.set_fontsize(self._FS_LEGEND * scale)
-
-        self.canvas.draw_idle()
-
-    # ------------------------------------------------------------------
-    def draw_data(
+    def drawData(
         self,
-        primary_series,
+        primarySeries,
         *,
         xlabel: str = "",
         ylabel: str = "",
         title: str = "",
         grid: bool = True,
-        secondary_series=None,
-        secondary_ylabel: str = "",
-        secondary_formatter=None,
-        symmetric_ylim: bool = False,
-        text_annotations=None,
+        secondarySeries=None,
+        secondaryYlabel: str = "",
+        secondaryFormatter=None,
+        symmetricYlim: bool = False,
+        textAnnotations=None,
         axlines=None,
     ):
-        """Render data into the pop-up window's own Figure.
+        # Series descriptors carry x, y, label, color, linestyle, alpha, marker and step
+        self.resetCanvas()
 
-        Parameters
-        ----------
-        primary_series : list[dict]
-            List of series descriptors for the primary (left) y-axis.
-            Each dict recognises these keys:
+        if secondarySeries:
+            self.secondaryView = self.plotWidget.addRightAxis("main", secondaryYlabel)
+            if secondaryFormatter is not None:
+                self.applyAxisFormatter(secondaryFormatter)
 
-            =========  =====================================================
-            x, y       array-like (required)
-            label      str
-            color      str (default 'tab:blue')
-            linestyle  str (default '-')
-            marker     str or None (optional)
-            step       bool — use ``ax.step(where='post')`` (default False)
-            =========  =====================================================
+        self.drawSeries(primarySeries, onRight=False)
+        if secondarySeries:
+            self.drawSeries(secondarySeries, onRight=True)
 
-        secondary_series : list[dict] or None
-            Same format, plotted on an auto-created twin-y (right) axis.
-        secondary_ylabel : str
-            Y-axis label for the secondary axis.
-        secondary_formatter : matplotlib Formatter or None
-            Tick formatter applied to the secondary y-axis.
-        symmetric_ylim : bool
-            If True, both y-axes are symmetrised around 0 (useful for the
-            cant / curvature overlay where zero must be centred).
-        text_annotations : list[dict] or None
-            Each dict: ``x``, ``y``, ``text``, ``fontsize``,
-            ``axis`` (``'primary'`` or ``'secondary'``).
-        axlines : list[dict] or None
-            Stop-marker lines drawn after all series.  Each dict recognises:
+        self.drawAnnotations(textAnnotations)
+        self.drawMarkerLines(axlines)
 
-            ================  ================================================
-            axis              ``'x'`` → ``axvline``, ``'y'`` → ``axhline``
-            pos               float – position on the chosen axis
-            color             str (default ``'gray'``)
-            linestyle         str (default ``'--'``)
-            alpha             float (default 0.7)
-            label_text        str – optional text annotation beside the line
-            label_rotation    int (default 0; use 90 for vertical lines)
-            label_va          str vertical-alignment (default ``'bottom'``)
-            label_color       str (defaults to *color*)
-            label_fontsize    int (default 8)
-            label_alpha       float (default 0.7)
-            label_x           float – x position when axis=``'y'`` (default 0)
-            label_y           float – y position when axis=``'x'`` (default 0)
-            ================  ================================================
-        """
-        self.fig.clear()
-        ax = self.fig.add_subplot(111)
-        ax_twin = ax.twinx() if secondary_series else None
+        self.mainPlot.setLabel("bottom", xlabel)
+        self.mainPlot.setLabel("left", ylabel)
+        self.mainPlot.setTitle(title)
+        self.plotWidget.setGridVisible("main", grid)
+        self.plotWidget.plotTitles["main"] = title or self.windowTitle()
 
-        def _plot(axis, series_list):
-            for s in series_list:
-                x, y = s.get("x"), s.get("y")
-                if x is None or y is None or len(x) == 0 or len(y) == 0:
-                    continue
-                kw = dict(
-                    label=s.get("label", ""),
-                    color=s.get("color", "tab:blue"),
-                    linestyle=s.get("linestyle", "-"),
-                )
-                if s.get("alpha") is not None:
-                    kw["alpha"] = s["alpha"]
-                if s.get("marker"):
-                    kw["marker"] = s["marker"]
-                if s.get("step", False):
-                    axis.step(x, y, where="post", **kw)
-                else:
-                    axis.plot(x, y, **kw)
+        self.mainPlot.enableAutoRange(axis="x")
+        if symmetricYlim:
+            self.applySymmetricRange()
 
-        _plot(ax, primary_series)
-        if ax_twin is not None:
-            _plot(ax_twin, secondary_series)
+    # Drop every item so a repeated drawData call starts from a clean plot
+    def resetCanvas(self):
+        for item in self.annotationItems + self.markerLines:
+            self.mainPlot.removeItem(item)
+        self.annotationItems = []
+        self.markerLines = []
 
-        # Optional text annotations (e.g. slope labels on the profile graph)
-        if text_annotations:
-            for ann in text_annotations:
-                target = (
-                    ax_twin
-                    if (ann.get("axis") == "secondary" and ax_twin is not None)
-                    else ax
-                )
-                target.text(
-                    ann.get("x", 0),
-                    ann.get("y", 0),
-                    ann.get("text", ""),
-                    fontsize=ann.get("fontsize", 8),
-                )
+        self.plotWidget.clearPlot("main")
+        self.plotWidget.removeRightAxis("main")
+        self.secondaryView = None
 
-        # Stop-marker axlines (axvline / axhline with optional text)
-        if axlines:
-            for al in axlines:
-                axis_dir  = al.get("axis", "x")
-                pos       = al.get("pos", 0)
-                color     = al.get("color", "gray")
-                linestyle = al.get("linestyle", "--")
-                alpha     = al.get("alpha", 0.7)
-                lbl_text  = al.get("label_text", "")
-                lbl_rot   = al.get("label_rotation", 0)
-                lbl_va    = al.get("label_va", "bottom")
-                lbl_col   = al.get("label_color", color)
-                lbl_fs    = al.get("label_fontsize", 8)
-                lbl_alph  = al.get("label_alpha", 0.7)
-                if axis_dir == "x":
-                    ax.axvline(x=pos, color=color, linestyle=linestyle, alpha=alpha)
-                    if lbl_text:
-                        ax.text(pos, al.get("label_y", 0), lbl_text,
-                                rotation=lbl_rot, verticalalignment=lbl_va,
-                                color=lbl_col, fontsize=lbl_fs, alpha=lbl_alph)
-                else:  # "y" → horizontal line
-                    ax.axhline(y=pos, color=color, linestyle=linestyle, alpha=alpha)
-                    if lbl_text:
-                        ax.text(al.get("label_x", 0), pos, lbl_text,
-                                verticalalignment=lbl_va,
-                                color=lbl_col, fontsize=lbl_fs, alpha=lbl_alph)
+    # Convert descriptor dictionaries into curves on the requested axis
+    def drawSeries(self, seriesList, onRight):
+        for seriesIndex, series in enumerate(seriesList or []):
+            xValues, yValues = series.get("x"), series.get("y")
+            if xValues is None or yValues is None or len(xValues) == 0 or len(yValues) == 0:
+                continue
 
-        # Primary axis decoration
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        ax.set_title(title)
-        if grid:
-            ax.grid(True)
-        ax.autoscale(enable=True, axis="x", tight=True)
+            axisPrefix = "right" if onRight else "left"
+            self.plotWidget.setSeriesData(
+                "main", f"{axisPrefix}{seriesIndex}", xValues, yValues,
+                name=series.get("label", ""),
+                color=series.get("color", "#3b7dd8"),
+                dash=series.get("linestyle", "-") != "-",
+                step=bool(series.get("step", False)),
+                symbol=plot_widgets.symbolFromMarker(series.get("marker")),
+                onRight=onRight,
+                alpha=series.get("alpha"),
+            )
 
-        # Secondary axis decoration
-        if ax_twin is not None:
-            ax_twin.set_ylabel(secondary_ylabel)
-            if secondary_formatter is not None:
-                ax_twin.yaxis.set_major_formatter(secondary_formatter)
-            ax_twin.yaxis.set_label_position("right")
-            ax_twin.yaxis.tick_right()
-            ax_twin.grid(False)
-            ax_twin.autoscale(enable=True, axis="x", tight=True)
+    # Place free text labels such as the profile gradient annotations
+    def drawAnnotations(self, textAnnotations):
+        for annotation in textAnnotations or []:
+            textItem = pg.TextItem(annotation.get("text", ""), anchor=(0.5, 1.0))
+            textItem.setPos(annotation.get("x", 0), annotation.get("y", 0))
+            self.mainPlot.addItem(textItem, ignoreBounds=True)
+            self.annotationItems.append(textItem)
 
-        # Symmetric y-axis: centre at 0 (cant / curvature overlay)
-        if symmetric_ylim:
-            lo, hi = ax.get_ylim()
-            lim = max(abs(lo), abs(hi), 1e-9)
-            ax.set_ylim(-lim, lim)
-            if ax_twin is not None:
-                lo2, hi2 = ax_twin.get_ylim()
-                lim2 = max(abs(lo2), abs(hi2), 1e-9)
-                ax_twin.set_ylim(-lim2, lim2)
+    # Draw the stop marker lines with their optional rotated captions
+    def drawMarkerLines(self, axlines):
+        for axline in axlines or []:
+            axisDirection = axline.get("axis", "x")
+            lineColor = plot_widgets.resolveColor(axline.get("color", "#8a8a8a"))
+            penStyle = plot_widgets.penStyleFromLineStyle(axline.get("linestyle", "--"))
 
-        # Legends (only if any series has a non-empty label)
-        h, lbl = ax.get_legend_handles_labels()
-        if lbl:
-            ax.legend(h, lbl, loc="upper left")
-        if ax_twin is not None:
-            h2, lbl2 = ax_twin.get_legend_handles_labels()
-            if lbl2:
-                ax_twin.legend(h2, lbl2, loc="upper right")
+            markerPen = pg.mkPen(lineColor, width=1, style=penStyle)
+            markerPen.setColor(self.withAlpha(markerPen.color(), axline.get("alpha", 0.7)))
 
-        self.canvas.draw()
-        self._update_font_sizes()
+            labelText = axline.get("label_text", "")
+            labelOpts = None
+            if labelText:
+                labelOpts = {
+                    "position": 0.9,
+                    "color": plot_widgets.resolveColor(axline.get("label_color", lineColor)),
+                    "anchor": (0, 1) if axisDirection == "x" else (0, 0),
+                    "rotateAxis": (1, 0) if axline.get("label_rotation", 0) else None,
+                    "fill": None,
+                }
+
+            markerLine = pg.InfiniteLine(
+                pos=axline.get("pos", 0),
+                angle=90 if axisDirection == "x" else 0,
+                movable=False, pen=markerPen,
+                label=labelText or None, labelOpts=labelOpts)
+
+            self.mainPlot.addItem(markerLine, ignoreBounds=True)
+            self.markerLines.append(markerLine)
+
+    # Apply an alpha fraction to a colour without mutating the original
+    def withAlpha(self, color, alpha):
+        faded = pg.mkColor(color)
+        faded.setAlphaF(float(alpha))
+        return faded
+
+    # Swap in a tick formatter callable for the secondary axis
+    def applyAxisFormatter(self, formatter):
+        rightAxis = self.mainPlot.getAxis("right")
+
+        # The callable receives one tick value and returns the string to display
+        def tickStrings(values, scale, spacing):
+            return [formatter(value) for value in values]
+
+        rightAxis.tickStrings = tickStrings
+
+    # Centre both y-axes on zero so the cant and curvature overlay lines up
+    def applySymmetricRange(self):
+        # The range is taken from the data because auto ranging happens later
+        for viewBox, onRight in ((self.mainPlot.vb, False), (self.secondaryView, True)):
+            if viewBox is None:
+                continue
+            limit = self.peakMagnitude(onRight)
+            viewBox.setYRange(-limit, limit, padding=0.05)
+
+    # Largest absolute y value across the curves drawn on one of the two axes
+    def peakMagnitude(self, onRight):
+        peak = 1e-9
+        for entry in self.plotWidget.plotSeries.get("main", {}).values():
+            if entry["onRight"] != onRight or entry["y"].size == 0:
+                continue
+            finiteValues = entry["y"][np.isfinite(entry["y"])]
+            if finiteValues.size:
+                peak = max(peak, float(np.max(np.abs(finiteValues))))
+        return peak

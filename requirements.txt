@@ -5,11 +5,8 @@
 # GUI framework
 PySide6==6.10.2
 
-# Fast interactive plots (used alongside Matplotlib in the GUI)
+# Fast interactive plots, the only plotting backend used by the GUI
 pyqtgraph==0.14.0
-
-# Static plots and alignment/profile charts
-matplotlib==3.10.8
 
 # Numerical arrays and linear algebra
 numpy==2.4.2

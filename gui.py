@@ -1,19 +1,13 @@
 # PySide6 imports
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSettings, QSize, Qt
 from PySide6.QtWidgets import (QTabWidget, QApplication, QMainWindow, QPushButton, QWidget,
                                 QHBoxLayout, QVBoxLayout, QLabel, QPlainTextEdit, QFileDialog,
-                                QSplitter, QMessageBox, QStyle, QToolBar, QMenu)
-from PySide6.QtGui import QAction, QIcon, QCursor
+                                QSplitter, QMessageBox, QStyle, QToolBar, QMenu, QStackedWidget,
+                                QStatusBar)
+from PySide6.QtGui import QAction, QActionGroup, QIcon, QCursor
 
 # pyqtgraph imports
 import pyqtgraph as pg
-
-# Matplotlib imports for Qt
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
-from matplotlib.figure import Figure
-from matplotlib.ticker import FuncFormatter
-import matplotlib as mpl
 
 # numpy import for data handling
 import numpy as np
@@ -27,54 +21,122 @@ from map_viewer import MapWidget
 import default_values
 import geometry_engine
 import vehicle_engine
-
-# Apply global rcParams for text sizes
-mpl.rcParams['axes.titlesize'] = 10
-mpl.rcParams['axes.labelsize'] = 9
-mpl.rcParams['xtick.labelsize'] = 8
-mpl.rcParams['ytick.labelsize'] = 8
-mpl.rcParams['legend.fontsize'] = 8
-mpl.rcParams['figure.titlesize'] = 11
+import theme_manager
+import icons
+from theme_manager import ThemeManager
+from lazy_dock import LazyDockWidget
+from ribbon import RibbonBar
+from workflow_dock import WorkflowStepperWidget
+from graphs_dock import PerformanceGraphsWidget
+from profile_dock import ProfilePlotWidget
+from kinematics_dock import KinematicsPlotWidget
+from help_dock import HelpWidget
+from xml_editor import XmlCodeEditor
 import copy
 
-class AlignmentCanvas(FigureCanvas):
-    # Canvas widget for Matplotlib plots - Horizontal Alignment data (Cant, Speed Limits)
-    def __init__(self, parent=None, width=5, height=6, dpi=100):
-        self.fig = Figure(figsize=(width, height), dpi=dpi, layout="constrained")
-        
-        self.ax_speed = self.fig.add_subplot(211)
+# Central viewport page indices
+VIEW_MAP = 0
+VIEW_REPORT = 1
 
-        self.ax_cant = self.fig.add_subplot(212, sharex=self.ax_speed)
+# Vector icon assigned to each ribbon action, regenerated on every theme switch
+ACTION_ICONS = {
+    "openFileAction": "openText",
+    "autodetectXMLAction": "open",
+    "openParseLandXMLAction": "openLandxml",
+    "openParseXMLTTPAction": "openTtp",
+    "appendAutodetectXMLAction": "append",
+    "appendLandXMLAction": "appendLandxml",
+    "appendXMLTTPAction": "appendTtp",
+    "exitAction": "exit",
+    "helpAction": "help",
+    "calculateGeometryAction": "calculate",
+    "calculateGeometryIAction": "calculateAlt",
+    "calculateTrainSpeedAction": "run",
+    "cleanTTPDataAction": "cleanPart",
+    "cleanLandXMLDataAction": "cleanPart",
+    "cleanDataAction": "clean",
+    "cleanCalculatedCantsAction": "cleanPart",
+    "cleanCalculatedSpeedsAction": "cleanPart",
+    "mapSettingsAction": "map",
+    "geometrySettingsAction": "settings",
+    "vehicleSettingsAction": "vehicle",
+    "stopsSettingsAction": "stops",
+    "speedSettingsAction": "settings",
+    "designApproachAction": "settings",
+    "toggleUnitsAction": "units",
+    "themeAutoAction": "themeAuto",
+    "themeLightAction": "themeLight",
+    "themeDarkAction": "themeDark",
+    "showMapAction": "viewMap",
+    "showReportAction": "viewReport",
+    "resetLayoutAction": "layout",
+    "foldAllAction": "foldAll",
+    "unfoldAllAction": "unfoldAll",
+    "reportGeometryAction": "report",
+    "exportGeometryReportAction": "export",
+}
 
-        self.ax_curvature = self.ax_cant.twinx()
+# Compact ribbon captions for the data series toggles, full text stays in the tooltip
+SERIES_SHORT_KEYS = {
+    "toggleCantAction": "shortSeriesCant",
+    "toggleCantPossibleAction": "shortSeriesCantPossible",
+    "toggleCDef100Action": "shortSeriesCDef100",
+    "toggleCDef130Action": "shortSeriesCDef130",
+    "toggleCDef150Action": "shortSeriesCDef150",
+    "toggleCDefKAction": "shortSeriesCDefK",
+    "toggleCantDef100Action": "shortSeriesCantDef100",
+    "toggleCantDef130Action": "shortSeriesCantDef130",
+    "toggleCantDef150Action": "shortSeriesCantDef150",
+    "toggleCantDefKAction": "shortSeriesCantDefK",
+    "toggleCurvatureAction": "shortSeriesCurvature",
+    "toggleCurvatureNewAction": "shortSeriesCurvatureNew",
+    "toggleSpeedAction": "shortSeriesSpeed",
+    "toggleSpeed100Action": "shortSeriesSpeed100",
+    "toggleSpeed130Action": "shortSeriesSpeed130",
+    "toggleSpeed150Action": "shortSeriesSpeed150",
+    "toggleSpeedKAction": "shortSeriesSpeedK",
+    "toggleProfileAction": "shortSeriesProfile",
+    "toggleKinematicsSpeedLimitTrackAction": "shortSeriesTachoTrack",
+    "toggleKinematicsSpeedLimitTimeAction": "shortSeriesTachoTime",
+    "toggleKinematicsDistanceTimeAction": "shortSeriesDistTime",
+    "toggleKinematicsForcesAction": "shortSeriesForces",
+}
 
-        super().__init__(self.fig)
+# Short text badges rendered as icons for the data series toggle actions
+SERIES_BADGES = {
+    "toggleCantAction": "D",
+    "toggleCantPossibleAction": "Dp",
+    "toggleCDef100Action": "I100",
+    "toggleCDef130Action": "I130",
+    "toggleCDef150Action": "I150",
+    "toggleCDefKAction": "IK",
+    "toggleCantDef100Action": "D+I100",
+    "toggleCantDef130Action": "D+I130",
+    "toggleCantDef150Action": "D+I150",
+    "toggleCantDefKAction": "D+IK",
+    "toggleCurvatureAction": "1/R",
+    "toggleCurvatureNewAction": "1/Rn",
+    "toggleSpeedAction": "v_lim",
+    "toggleSpeed100Action": "V100",
+    "toggleSpeed130Action": "V130",
+    "toggleSpeed150Action": "V150",
+    "toggleSpeedKAction": "VK",
+    "toggleProfileAction": "H",
+    "toggleKinematicsSpeedLimitTrackAction": "v-s",
+    "toggleKinematicsSpeedLimitTimeAction": "v-t",
+    "toggleKinematicsDistanceTimeAction": "s-t",
+    "toggleKinematicsForcesAction": "F",
+}
 
-class ProfileCanvas(FigureCanvas):
-     # Canvas widget for Matplotlib plots - Vertical Alignment data
-     def __init__(self, parent=None, width=5, height=4, dpi=100):
-        self.fig = Figure(figsize=(width, height), dpi=dpi, layout="constrained")
-        self.ax_profile = self.fig.add_subplot(111)
-        super().__init__(self.fig)
-
-class KinematicsCanvas(FigureCanvas):
-    # Canvas widget for Matplotlib plots - Kinematics data
-    def __init__(self, parent=None, width=5, height=8, dpi=100):
-        self.fig = Figure(figsize=(width, height), dpi=dpi, layout="constrained")
-        self.ax_tacho_track = self.fig.add_subplot(411)
-        self.ax_tacho_time = self.fig.add_subplot(412)
-        self.ax_dist_time = self.fig.add_subplot(413)
-        self.ax_forces = self.fig.add_subplot(414)
-        super().__init__(self.fig)
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
         # Window settings
-        self.resize(QSize(1000, 800))
-        self.current_language = "en"
-        lan = lang.DIC[self.current_language]
+        self.resize(QSize(1400, 900))
+        self.currentLanguage = "en"
+        lan = lang.DIC[self.currentLanguage]
         self.setWindowTitle(lan["app_title"])
 
         # Other default settings
@@ -82,677 +144,874 @@ class MainWindow(QMainWindow):
 
         # Empty dictionaries for data to be loaded and plotted
         self.dataStorage = {}
-        self.plotCantData = {}
-        self.plotCurvatureData = {}
-        self.plotSpeedData = {}
-        self.plotProfileData = {}
-        self.plotKinematicsData = {}
 
         # Import default values to dataStorage
         self.dataStorage["settingsData"] = {}
         self.dataStorage["settingsData"] = copy.deepcopy(default_values.defVal)
 
-        # Layouts - main grid
-        layoutTabsXML = QTabWidget()
-        self.layoutTabsPlots = QTabWidget()
+        # Persistent settings store for layout, theme and language
+        self.appSettings = QSettings("COYPU", "COYPU")
 
-        # Central widget - Main Splitter
-        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.main_splitter.addWidget(layoutTabsXML)
-        self.main_splitter.addWidget(self.layoutTabsPlots)
-        self.setCentralWidget(self.main_splitter)
+        # Right-click context menu keeps popup dialogs alive in this list
+        self.popupWindows = []
 
-        self.main_splitter.setStretchFactor(0, 1)
-        self.main_splitter.setStretchFactor(1, 2)
+        self.themeManager = ThemeManager(self)
 
-        # Menu bar
-        main_menu = self.menuBar()
-        self.fileMenu = main_menu.addMenu(lan["file"])
-        self.calculateMenu = main_menu.addMenu(lan["calculate"])
-        self.cleanMenu = main_menu.addMenu(lan["clean"])
-        self.settingsMenu = main_menu.addMenu(lan["settings"])
-        self.viewMenu = main_menu.addMenu(lan["view"])
-        self.reportMenu = main_menu.addMenu(lan.get("reportMenu", "&Report"))
-        self.exitMenu = main_menu.addMenu(lan["exit"])
-        self.helpMenu = main_menu.addMenu(lan["help"])
+        self.buildActions()
+        self.buildCentralViews()
+        self.buildDocks()
 
-        # Submenu - File
-        openFileAction = QAction(lan["open_file"], self)
-        self.fileMenu.addAction(openFileAction)
-        openFileAction.triggered.connect(self.openFile)
+        # Icons need the dock toggle actions, so they are assigned after buildDocks
+        self.applyActionIcons()
 
-        autodetect_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
-        autodetectXMLAction = QAction(autodetect_icon, lan["autodetect"], self)
-        self.fileMenu.addAction(autodetectXMLAction)
-        autodetectXMLAction.setStatusTip(lan["autodetect_tip"])
-        autodetectXMLAction.setShortcut("Ctrl+O")
-        autodetectXMLAction.triggered.connect(self.openAutodetectXML)
+        self.buildRibbon()
+        self.buildStatusBar()
+        self.connectCursorSignals()
+        self.connectMapSignals()
 
-        append_autodetect_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileLinkIcon)
-        appendAutodetectXMLAction = QAction(append_autodetect_icon, lan.get("append_autodetect", "Append Autodetect"), self)
-        self.fileMenu.addAction(appendAutodetectXMLAction)
-        appendAutodetectXMLAction.setStatusTip(lan.get("append_autodetect_tip", "Autodetect and append"))
-        appendAutodetectXMLAction.triggered.connect(self.appendAutodetectXML)
+        self.themeManager.themeChanged.connect(self.onThemeChanged)
+        self.restoreSession()
 
-        openParseLandXMLAction = QAction(lan["open_parse_landxml"], self)
-        self.fileMenu.addAction(openParseLandXMLAction)
-        openParseLandXMLAction.triggered.connect(self.openLandXML)
+    # Create every QAction once and keep a named reference for translation
+    def buildActions(self):
+        lan = lang.DIC[self.currentLanguage]
+        style = self.style()
 
-        appendLandXMLAction = QAction(lan.get("append_landxml", "Append LandXML"), self)
-        self.fileMenu.addAction(appendLandXMLAction)
-        appendLandXMLAction.triggered.connect(self.appendLandXML)
+        # File actions
+        self.openFileAction = QAction(lan["open_file"], self)
+        self.openFileAction.triggered.connect(self.openFile)
 
-        openParseXMLTTPAction = QAction(lan["open_parse_xmlttp"], self)      
-        self.fileMenu.addAction(openParseXMLTTPAction)
-        openParseXMLTTPAction.triggered.connect(self.openXMLTTP)
-        
-        appendXMLTTPAction = QAction(lan.get("append_xmlttp", "Append XML TTP"), self)
-        self.fileMenu.addAction(appendXMLTTPAction)
-        appendXMLTTPAction.triggered.connect(self.appendXMLTTP)
+        self.autodetectXMLAction = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon), lan["autodetect"], self)
+        self.autodetectXMLAction.setStatusTip(lan["autodetect_tip"])
+        self.autodetectXMLAction.setShortcut("Ctrl+O")
+        self.autodetectXMLAction.triggered.connect(self.openAutodetectXML)
 
-        # importStopsTTPAction = QAction(lan.get("importStopsTTP", "Import Stops from XML TTP"), self)
-        # self.fileMenu.addAction(importStopsTTPAction)
-        # importStopsTTPAction.triggered.connect(self.importStopsTTP)
-        
-        self.fileMenu.addSeparator()
-        
-        # Submenu - Calculate
-        calculateGeometryAction = QAction(lan["calculate_geometry"], self)
-        self.calculateMenu.addAction(calculateGeometryAction)
-        calculateGeometryAction.triggered.connect(self.calculateGeometry)
+        self.appendAutodetectXMLAction = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_FileLinkIcon),
+            lan.get("append_autodetect", "Append Autodetect"), self)
+        self.appendAutodetectXMLAction.setStatusTip(lan.get("append_autodetect_tip", "Autodetect and append"))
+        self.appendAutodetectXMLAction.triggered.connect(self.appendAutodetectXML)
 
-        calculateGeometryIAction = QAction(lan["calculate_geometry_I"], self)
-        self.calculateMenu.addAction(calculateGeometryIAction)
-        calculateGeometryIAction.triggered.connect(self.calculateGeometryI)
+        self.openParseLandXMLAction = QAction(lan["open_parse_landxml"], self)
+        self.openParseLandXMLAction.triggered.connect(self.openLandXML)
+
+        self.appendLandXMLAction = QAction(lan.get("append_landxml", "Append LandXML"), self)
+        self.appendLandXMLAction.triggered.connect(self.appendLandXML)
+
+        self.openParseXMLTTPAction = QAction(lan["open_parse_xmlttp"], self)
+        self.openParseXMLTTPAction.triggered.connect(self.openXMLTTP)
+
+        self.appendXMLTTPAction = QAction(lan.get("append_xmlttp", "Append XML TTP"), self)
+        self.appendXMLTTPAction.triggered.connect(self.appendXMLTTP)
+
+        self.exitAction = QAction(lan["exit"], self)
+        self.exitAction.triggered.connect(self.close)
+
+        self.helpAction = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_DialogHelpButton), lan["help"], self)
+        self.helpAction.triggered.connect(self.openHelp)
+
+        # Calculate actions
+        self.calculateGeometryAction = QAction(lan["calculate_geometry"], self)
+        self.calculateGeometryAction.triggered.connect(self.calculateGeometry)
+
+        self.calculateGeometryIAction = QAction(lan["calculate_geometry_I"], self)
+        self.calculateGeometryIAction.triggered.connect(self.calculateGeometryI)
 
         self.calculateTrainSpeedAction = QAction(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay),
-            lan["calculate_train_speed"], self)
-        self.calculateMenu.addAction(self.calculateTrainSpeedAction)
+            style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay), lan["calculate_train_speed"], self)
         self.calculateTrainSpeedAction.triggered.connect(self.calculateTrainSpeed)
 
-        # Submenu - Clean
-        cleanTTPDataAction = QAction(lan["cleanTTP"], self)
-        self.cleanMenu.addAction(cleanTTPDataAction)
-        cleanTTPDataAction.triggered.connect(self.cleanTTPData)
+        # Clean actions
+        self.cleanTTPDataAction = QAction(lan["cleanTTP"], self)
+        self.cleanTTPDataAction.triggered.connect(self.cleanTTPData)
 
-        cleanLandXMLDataAction = QAction(lan["cleanLandXML"], self)
-        self.cleanMenu.addAction(cleanLandXMLDataAction)
-        cleanLandXMLDataAction.triggered.connect(self.cleanLandXMLData)
+        self.cleanLandXMLDataAction = QAction(lan["cleanLandXML"], self)
+        self.cleanLandXMLDataAction.triggered.connect(self.cleanLandXMLData)
 
-        cleanDataAction = QAction(lan["cleanAll"], self)
-        self.cleanMenu.addAction(cleanDataAction)
-        cleanDataAction.triggered.connect(self.cleanData)
+        self.cleanDataAction = QAction(
+            QIcon.fromTheme("user-trash", style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon)),
+            lan["cleanAll"], self)
+        self.cleanDataAction.triggered.connect(self.cleanData)
 
-        cleanCalculatedCantsAction = QAction(lan["cleanCants"], self)
-        self.cleanMenu.addAction(cleanCalculatedCantsAction)
-        cleanCalculatedCantsAction.triggered.connect(self.cleanCalculatedCants)
+        self.cleanCalculatedCantsAction = QAction(lan["cleanCants"], self)
+        self.cleanCalculatedCantsAction.triggered.connect(self.cleanCalculatedCants)
 
-        cleanCalculatedSpeedsAction = QAction(lan["cleanSpeeds"], self)
-        self.cleanMenu.addAction(cleanCalculatedSpeedsAction)
-        cleanCalculatedSpeedsAction.triggered.connect(self.cleanCalculatedSpeeds)
+        self.cleanCalculatedSpeedsAction = QAction(lan["cleanSpeeds"], self)
+        self.cleanCalculatedSpeedsAction.triggered.connect(self.cleanCalculatedSpeeds)
 
-        # Submenu - Settings
-        self.languageMenu = self.settingsMenu.addMenu(lan["language"])
-        self.settingsMenu.addSeparator()
+        # Settings actions
+        self.mapSettingsAction = QAction(
+            QIcon.fromTheme("internet-web-browser",
+                            style.standardIcon(QStyle.StandardPixmap.SP_DriveNetIcon)),
+            lan["mapSettings"], self)
+        self.mapSettingsAction.triggered.connect(self.openMapSettings)
 
-        # Sub-submenu - Languages
-        langCZAction = QAction("Čeština", self)
-        self.languageMenu.addAction(langCZAction)
-        langCZAction.triggered.connect(lambda: self.change_language("cz"))
+        self.geometrySettingsAction = QAction(lan["geometrySettings"], self)
+        self.geometrySettingsAction.triggered.connect(self.openGeometrySettings)
 
-        langENAction = QAction("English", self)
-        self.languageMenu.addAction(langENAction)
-        langENAction.triggered.connect(lambda: self.change_language("en"))
+        self.vehicleSettingsAction = QAction(
+            QIcon.fromTheme("preferences-system",
+                            style.standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView)),
+            lan.get("vehicleSettings", "Vehicle Settings"), self)
+        self.vehicleSettingsAction.triggered.connect(self.openVehicleSettings)
 
-        langDEAction = QAction("Deutsch", self)
-        self.languageMenu.addAction(langDEAction)
-        langDEAction.triggered.connect(lambda: self.change_language("de"))
+        self.stopsSettingsAction = QAction(
+            QIcon.fromTheme("appointment-new",
+                            style.standardIcon(QStyle.StandardPixmap.SP_DialogResetButton)),
+            lan.get("stopsSettings", "Stops Settings"), self)
+        self.stopsSettingsAction.triggered.connect(self.openStopsSettings)
 
-        # Sub-submenu - Map settings
-        mapSettingsAction = QAction(lan["mapSettings"], self)
-        self.settingsMenu.addAction(mapSettingsAction)
-        mapSettingsAction.triggered.connect(self.openMapSettings)
+        self.speedSettingsAction = QAction(lan.get("speedSettings", "Speed Limits Settings"), self)
+        self.speedSettingsAction.triggered.connect(self.openSpeedSettings)
 
-        # Sub-submenu - Geometry settings
-        geometrySettingsAction = QAction(lan["geometrySettings"], self)
-        self.settingsMenu.addAction(geometrySettingsAction)
-        geometrySettingsAction.triggered.connect(self.openGeometrySettings)
+        self.designApproachAction = QAction(lan["designApproach"], self)
+        self.designApproachAction.triggered.connect(self.openDesignApproach)
 
-        # Sub-submenu - Vehicle settings
-        vehicleSettingsAction = QAction(lan["vehicleSettings"], self)
-        self.settingsMenu.addAction(vehicleSettingsAction)
-        vehicleSettingsAction.triggered.connect(self.openVehicleSettings)
-        
-        # Sub-submenu - Stops settings
-        stopsSettingsAction = QAction(lan.get("stopsSettings", "Stops Settings"), self)
-        self.settingsMenu.addAction(stopsSettingsAction)
-        stopsSettingsAction.triggered.connect(self.openStopsSettings)
-
-        # Sub-submenu - Speed settings
-        speedSettingsAction = QAction(lan.get("speedSettings", "Speed Limits Settings"), self)
-        self.settingsMenu.addAction(speedSettingsAction)
-        speedSettingsAction.triggered.connect(self.openSpeedSettings)
-
-        # Sub-submenu - Design approach selection
-        designApproachAction = QAction(lan["designApproach"], self)
-        self.settingsMenu.addAction(designApproachAction)
-        designApproachAction.triggered.connect(self.openDesignApproach)
-
-        self.settingsMenu.addSeparator()
-
-        # Sub-submenu - Units
         self.toggleUnitsAction = QAction(lan["units_kmh"], self)
         self.toggleUnitsAction.setCheckable(True)
         self.toggleUnitsAction.setChecked(False)
         self.toggleUnitsAction.triggered.connect(self.plotKinematics)
-        self.settingsMenu.addAction(self.toggleUnitsAction)
 
-        # Submenu - View
-        self.toggleCantAction = QAction(lan["cant"], self)
-        self.toggleCantAction.setCheckable(True)
-        self.toggleCantAction.setChecked(True)
-        self.toggleCantAction.triggered.connect(self.toggleCantVisibility)
-        self.viewMenu.addAction(self.toggleCantAction)
+        # Language actions
+        self.langCZAction = QAction("Čeština", self)
+        self.langCZAction.triggered.connect(lambda: self.changeLanguage("cz"))
+        self.langENAction = QAction("English", self)
+        self.langENAction.triggered.connect(lambda: self.changeLanguage("en"))
+        self.langDEAction = QAction("Deutsch", self)
+        self.langDEAction.triggered.connect(lambda: self.changeLanguage("de"))
 
-        self.toggleCantPossibleAction = QAction(lan["cant_possible"], self)
-        self.toggleCantPossibleAction.setCheckable(True)
-        self.toggleCantPossibleAction.setChecked(True)
-        self.toggleCantPossibleAction.triggered.connect(self.toggleCantPossibleVisibility)
-        self.viewMenu.addAction(self.toggleCantPossibleAction)
+        # Theme override actions behave as a single exclusive choice
+        self.themeGroup = QActionGroup(self)
+        self.themeGroup.setExclusive(True)
 
-        self.toggleCDef100Action = QAction(lan["cdef_100"], self)
-        self.toggleCDef100Action.setCheckable(True)
-        self.toggleCDef100Action.setChecked(True)
-        self.toggleCDef100Action.triggered.connect(self.toggleCDef100Visibility)
-        self.viewMenu.addAction(self.toggleCDef100Action)
+        self.themeAutoAction = QAction(lan.get("themeAuto", "System default (auto)"), self)
+        self.themeLightAction = QAction(lan.get("themeLight", "Always light"), self)
+        self.themeDarkAction = QAction(lan.get("themeDark", "Always dark"), self)
+        for action, mode in ((self.themeAutoAction, theme_manager.MODE_AUTO),
+                             (self.themeLightAction, theme_manager.MODE_LIGHT),
+                             (self.themeDarkAction, theme_manager.MODE_DARK)):
+            action.setCheckable(True)
+            action.setData(mode)
+            self.themeGroup.addAction(action)
+            action.triggered.connect(lambda checked=False, m=mode: self.applyThemeMode(m))
+        self.themeAutoAction.setChecked(True)
 
-        self.toggleCDef130Action = QAction(lan["cdef_130"], self)
-        self.toggleCDef130Action.setCheckable(True)
-        self.toggleCDef130Action.setChecked(True)
-        self.toggleCDef130Action.triggered.connect(self.toggleCDef130Visibility)
-        self.viewMenu.addAction(self.toggleCDef130Action)
+        # Central viewport switching actions
+        self.viewGroup = QActionGroup(self)
+        self.viewGroup.setExclusive(True)
 
-        self.toggleCDef150Action = QAction(lan["cdef_150"], self)
-        self.toggleCDef150Action.setCheckable(True)
-        self.toggleCDef150Action.setChecked(True)
-        self.toggleCDef150Action.triggered.connect(self.toggleCDef150Visibility)
-        self.viewMenu.addAction(self.toggleCDef150Action)
+        self.showMapAction = QAction(
+            QIcon.fromTheme("internet-web-browser",
+                            style.standardIcon(QStyle.StandardPixmap.SP_DriveNetIcon)),
+            lan.get("viewMap", "Map"), self)
+        self.showMapAction.setCheckable(True)
+        self.showMapAction.setChecked(True)
+        self.showMapAction.triggered.connect(self.showMapView)
+        self.viewGroup.addAction(self.showMapAction)
 
-        self.toggleCDefKAction = QAction(lan["cdef_K"], self)
-        self.toggleCDefKAction.setCheckable(True)
-        self.toggleCDefKAction.setChecked(True)
-        self.toggleCDefKAction.triggered.connect(self.toggleCDefKVisibility)
-        self.viewMenu.addAction(self.toggleCDefKAction)
+        self.showReportAction = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView),
+            lan.get("viewReport", "Report"), self)
+        self.showReportAction.setCheckable(True)
+        self.showReportAction.triggered.connect(self.showReportView)
+        self.viewGroup.addAction(self.showReportAction)
 
-        self.toggleCantDef100Action = QAction(lan["cant_def_100"], self)
-        self.toggleCantDef100Action.setCheckable(True)
-        self.toggleCantDef100Action.setChecked(True)
-        self.toggleCantDef100Action.triggered.connect(self.toggleCantDef100Visibility)
-        self.viewMenu.addAction(self.toggleCantDef100Action)
+        # Layout action
+        self.resetLayoutAction = QAction(lan.get("resetLayout", "Reset layout"), self)
+        self.resetLayoutAction.triggered.connect(self.resetLayout)
 
-        self.toggleCantDef130Action = QAction(lan["cant_def_130"], self)
-        self.toggleCantDef130Action.setCheckable(True)
-        self.toggleCantDef130Action.setChecked(True)
-        self.toggleCantDef130Action.triggered.connect(self.toggleCantDef130Visibility)
-        self.viewMenu.addAction(self.toggleCantDef130Action)
+        # XML folding actions
+        self.foldAllAction = QAction(lan.get("foldAll", "Fold all"), self)
+        self.foldAllAction.triggered.connect(self.foldAllXml)
+        self.unfoldAllAction = QAction(lan.get("unfoldAll", "Unfold all"), self)
+        self.unfoldAllAction.triggered.connect(self.unfoldAllXml)
 
-        self.toggleCantDef150Action = QAction(lan["cant_def_150"], self)
-        self.toggleCantDef150Action.setCheckable(True)
-        self.toggleCantDef150Action.setChecked(True)
-        self.toggleCantDef150Action.triggered.connect(self.toggleCantDef150Visibility)
-        self.viewMenu.addAction(self.toggleCantDef150Action)
-
-        self.toggleCantDefKAction = QAction(lan["cant_def_K"], self)
-        self.toggleCantDefKAction.setCheckable(True)
-        self.toggleCantDefKAction.setChecked(True)
-        self.toggleCantDefKAction.triggered.connect(self.toggleCantDefKVisibility)
-        self.viewMenu.addAction(self.toggleCantDefKAction)
-        
-        self.toggleCurvatureAction = QAction(lan["curvature"], self)
-        self.toggleCurvatureAction.setCheckable(True)
-        self.toggleCurvatureAction.setChecked(True)
-        self.toggleCurvatureAction.triggered.connect(self.toggleCurvatureVisibility)
-        self.viewMenu.addAction(self.toggleCurvatureAction)
-
-        self.toggleCurvatureNewAction = QAction(lan["curvature_new"], self)
-        self.toggleCurvatureNewAction.setCheckable(True)
-        self.toggleCurvatureNewAction.setChecked(True)
-        self.toggleCurvatureNewAction.triggered.connect(self.toggleCurvatureNewVisibility)
-        self.viewMenu.addAction(self.toggleCurvatureNewAction)
-
-        self.viewMenu.addSeparator()
-
-        self.toggleSpeedAction = QAction(lan["speed_lim"], self)
-        self.toggleSpeedAction.setCheckable(True)
-        self.toggleSpeedAction.setChecked(True)
-        self.toggleSpeedAction.triggered.connect(self.toggleSpeedVisibility)
-        self.viewMenu.addAction(self.toggleSpeedAction)
-
-        self.toggleSpeed100Action = QAction(lan["speed_lim_100"], self)
-        self.toggleSpeed100Action.setCheckable(True)
-        self.toggleSpeed100Action.setChecked(True)
-        self.toggleSpeed100Action.triggered.connect(self.toggleSpeed100Visibility)
-        self.viewMenu.addAction(self.toggleSpeed100Action)
-
-        self.toggleSpeed130Action = QAction(lan["speed_lim_130"], self)
-        self.toggleSpeed130Action.setCheckable(True)
-        self.toggleSpeed130Action.setChecked(True)
-        self.toggleSpeed130Action.triggered.connect(self.toggleSpeed130Visibility)
-        self.viewMenu.addAction(self.toggleSpeed130Action)
-
-        self.toggleSpeed150Action = QAction(lan["speed_lim_150"], self)
-        self.toggleSpeed150Action.setCheckable(True)
-        self.toggleSpeed150Action.setChecked(True)
-        self.toggleSpeed150Action.triggered.connect(self.toggleSpeed150Visibility)
-        self.viewMenu.addAction(self.toggleSpeed150Action)
-
-        self.toggleSpeedKAction = QAction(lan["speed_lim_K"], self)
-        self.toggleSpeedKAction.setCheckable(True)
-        self.toggleSpeedKAction.setChecked(True)
-        self.toggleSpeedKAction.triggered.connect(self.toggleSpeedKVisibility)
-        self.viewMenu.addAction(self.toggleSpeedKAction)
-
-        self.viewMenu.addSeparator()
-
-        self.toggleProfileAction = QAction(lan["profile"], self)
-        self.toggleProfileAction.setCheckable(True)
-        self.toggleProfileAction.setChecked(True)
-        self.toggleProfileAction.triggered.connect(self.toggleProfileVisibility)
-        self.viewMenu.addAction(self.toggleProfileAction)
-
-        self.viewMenu.addSeparator()
-
-        self.toggleKinematicsSpeedLimitTrackAction = QAction(lan["kinematicsSpeedLimitTrack"], self)
-        self.toggleKinematicsSpeedLimitTrackAction.setCheckable(True)
-        self.toggleKinematicsSpeedLimitTrackAction.setChecked(True)
-        self.toggleKinematicsSpeedLimitTrackAction.triggered.connect(self.toggleKinematicsSpeedLimitTrackVisibility)
-        self.viewMenu.addAction(self.toggleKinematicsSpeedLimitTrackAction)
-
-        self.toggleKinematicsSpeedLimitTimeAction = QAction(lan["kinematicsSpeedLimitTime"], self)
-        self.toggleKinematicsSpeedLimitTimeAction.setCheckable(True)
-        self.toggleKinematicsSpeedLimitTimeAction.setChecked(True)
-        self.toggleKinematicsSpeedLimitTimeAction.triggered.connect(self.toggleKinematicsSpeedLimitTimeVisibility)
-        self.viewMenu.addAction(self.toggleKinematicsSpeedLimitTimeAction)
-
-        self.toggleKinematicsDistanceTimeAction = QAction(lan["kinematicsDistanceTime"], self)
-        self.toggleKinematicsDistanceTimeAction.setCheckable(True)
-        self.toggleKinematicsDistanceTimeAction.setChecked(True)
-        self.toggleKinematicsDistanceTimeAction.triggered.connect(self.toggleKinematicsDistanceTimeVisibility)
-        self.viewMenu.addAction(self.toggleKinematicsDistanceTimeAction)
-
-        self.toggleKinematicsForcesAction = QAction(lan.get("kinematicsForces", "Forces Profile"), self)
-        self.toggleKinematicsForcesAction.setCheckable(True)
-        self.toggleKinematicsForcesAction.setChecked(True)
-        self.toggleKinematicsForcesAction.triggered.connect(self.toggleKinematicsForcesVisibility)
-        self.viewMenu.addAction(self.toggleKinematicsForcesAction)
-
-        # Submenu - Report
+        # Report actions
         self.reportGeometryAction = QAction(lan.get("reportGeometry", "Report - Geometry"), self)
-        self.reportMenu.addAction(self.reportGeometryAction)
         self.reportGeometryAction.triggered.connect(self.generateGeometryReport)
 
-        self.reportVehicleMenu = self.reportMenu.addMenu(lan.get("reportVehicle", "Report - Vehicle"))
-        self.reportVehicleAction1 = QAction(lan.get("vehicle", "Vehicle") + " 1", self)
-        self.reportVehicleAction2 = QAction(lan.get("vehicle", "Vehicle") + " 2", self)
-        self.reportVehicleAction3 = QAction(lan.get("vehicle", "Vehicle") + " 3", self)
-        self.reportVehicleMenu.addAction(self.reportVehicleAction1)
-        self.reportVehicleMenu.addAction(self.reportVehicleAction2)
-        self.reportVehicleMenu.addAction(self.reportVehicleAction3)
-        self.reportVehicleAction1.triggered.connect(lambda: self.generateVehicleReport(0))
-        self.reportVehicleAction2.triggered.connect(lambda: self.generateVehicleReport(1))
-        self.reportVehicleAction3.triggered.connect(lambda: self.generateVehicleReport(2))
+        self.reportVehicleActions = []
+        self.exportVehicleReportActions = []
+        for vehicleIndex in range(3):
+            reportAction = QAction(f'{lan.get("vehicle", "Vehicle")} {vehicleIndex + 1}', self)
+            reportAction.triggered.connect(
+                lambda checked=False, index=vehicleIndex: self.generateVehicleReport(index))
+            self.reportVehicleActions.append(reportAction)
 
-        self.reportMenu.addSeparator()
+            exportAction = QAction(f'{lan.get("vehicle", "Vehicle")} {vehicleIndex + 1}', self)
+            exportAction.triggered.connect(
+                lambda checked=False, index=vehicleIndex: self.exportVehicleReport(index))
+            self.exportVehicleReportActions.append(exportAction)
 
-        self.exportGeometryReportAction = QAction(lan.get("exportGeometryReport", "Export Geometry Report"), self)
-        self.reportMenu.addAction(self.exportGeometryReportAction)
+        self.exportGeometryReportAction = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton),
+            lan.get("exportGeometryReport", "Export Geometry Report"), self)
         self.exportGeometryReportAction.triggered.connect(self.exportGeometryReport)
 
-        self.exportVehicleReportMenu = self.reportMenu.addMenu(lan.get("exportVehicleReport", "Export Vehicle Report"))
-        self.exportVehicleReportAction1 = QAction(lan.get("vehicle", "Vehicle") + " 1", self)
-        self.exportVehicleReportAction2 = QAction(lan.get("vehicle", "Vehicle") + " 2", self)
-        self.exportVehicleReportAction3 = QAction(lan.get("vehicle", "Vehicle") + " 3", self)
-        self.exportVehicleReportMenu.addAction(self.exportVehicleReportAction1)
-        self.exportVehicleReportMenu.addAction(self.exportVehicleReportAction2)
-        self.exportVehicleReportMenu.addAction(self.exportVehicleReportAction3)
-        self.exportVehicleReportAction1.triggered.connect(lambda: self.exportVehicleReport(0))
-        self.exportVehicleReportAction2.triggered.connect(lambda: self.exportVehicleReport(1))
-        self.exportVehicleReportAction3.triggered.connect(lambda: self.exportVehicleReport(2))
+        self.buildSeriesActions()
 
-        # Submenu - Exit
-        exitAction = QAction(lan["exit"], self)
-        self.exitMenu.addAction(exitAction)
-        exitAction.triggered.connect(self.close)
-        
-        # Submenus - Help
-        helpAction = QAction(lan["help"], self)
-        self.helpMenu.addAction(helpAction)
-        helpAction.triggered.connect(self.openHelp)
+    # Create the checkable series visibility actions used by the View ribbon tab
+    def buildSeriesActions(self):
+        lan = lang.DIC[self.currentLanguage]
 
-        # Create toolbar for the most common actions
-        toolbar = self.addToolBar(lan["toolbar"])
-        toolbar.addAction(autodetectXMLAction)
-        toolbar.addAction(appendAutodetectXMLAction)
+        # Each entry maps an attribute name to its language key and handler
+        seriesDefinitions = [
+            ("toggleCantAction", "cant", self.toggleCantVisibility),
+            ("toggleCantPossibleAction", "cant_possible", self.toggleCantPossibleVisibility),
+            ("toggleCDef100Action", "cdef_100", self.toggleCDef100Visibility),
+            ("toggleCDef130Action", "cdef_130", self.toggleCDef130Visibility),
+            ("toggleCDef150Action", "cdef_150", self.toggleCDef150Visibility),
+            ("toggleCDefKAction", "cdef_K", self.toggleCDefKVisibility),
+            ("toggleCantDef100Action", "cant_def_100", self.toggleCantDef100Visibility),
+            ("toggleCantDef130Action", "cant_def_130", self.toggleCantDef130Visibility),
+            ("toggleCantDef150Action", "cant_def_150", self.toggleCantDef150Visibility),
+            ("toggleCantDefKAction", "cant_def_K", self.toggleCantDefKVisibility),
+            ("toggleCurvatureAction", "curvature", self.toggleCurvatureVisibility),
+            ("toggleCurvatureNewAction", "curvature_new", self.toggleCurvatureNewVisibility),
+            ("toggleSpeedAction", "speed_lim", self.toggleSpeedVisibility),
+            ("toggleSpeed100Action", "speed_lim_100", self.toggleSpeed100Visibility),
+            ("toggleSpeed130Action", "speed_lim_130", self.toggleSpeed130Visibility),
+            ("toggleSpeed150Action", "speed_lim_150", self.toggleSpeed150Visibility),
+            ("toggleSpeedKAction", "speed_lim_K", self.toggleSpeedKVisibility),
+            ("toggleProfileAction", "profile", self.toggleProfileVisibility),
+            ("toggleKinematicsSpeedLimitTrackAction", "kinematicsSpeedLimitTrack",
+             self.toggleKinematicsSpeedLimitTrackVisibility),
+            ("toggleKinematicsSpeedLimitTimeAction", "kinematicsSpeedLimitTime",
+             self.toggleKinematicsSpeedLimitTimeVisibility),
+            ("toggleKinematicsDistanceTimeAction", "kinematicsDistanceTime",
+             self.toggleKinematicsDistanceTimeVisibility),
+            ("toggleKinematicsForcesAction", "kinematicsForces",
+             self.toggleKinematicsForcesVisibility),
+        ]
 
-        # Settings shortcuts: Vehicle | Stops | Map | ── | Clean All
-        toolbar.addSeparator()
-        _sty = self.style()
+        # Keyed by attribute name so updateTexts can retranslate them generically
+        self.seriesActionKeys = {}
 
-        icon_vehicle = QIcon.fromTheme(
-            "preferences-system",
-            _sty.standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
-        self.vehicleToolAction = QAction(icon_vehicle, lan.get("vehicleSettings", "Vehicle Settings"), self)
-        self.vehicleToolAction.triggered.connect(self.openVehicleSettings)
-        toolbar.addAction(self.vehicleToolAction)
+        for attributeName, languageKey, handler in seriesDefinitions:
+            action = QAction(lan.get(languageKey, languageKey), self)
+            action.setCheckable(True)
+            action.setChecked(True)
+            action.triggered.connect(handler)
+            setattr(self, attributeName, action)
+            self.seriesActionKeys[attributeName] = languageKey
 
-        icon_stops = QIcon.fromTheme(
-            "appointment-new",
-            _sty.standardIcon(QStyle.StandardPixmap.SP_DialogResetButton))
-        self.stopsToolAction = QAction(icon_stops, lan.get("stopsSettings", "Stops Settings"), self)
-        self.stopsToolAction.triggered.connect(self.openStopsSettings)
-        toolbar.addAction(self.stopsToolAction)
+    # Give every ribbon action a generated vector icon or a short text badge
+    def applyActionIcons(self):
+        for attributeName, iconName in ACTION_ICONS.items():
+            action = getattr(self, attributeName, None)
+            if action is not None:
+                action.setIcon(icons.makeIcon(iconName))
 
-        icon_map = QIcon.fromTheme(
-            "internet-web-browser",
-            _sty.standardIcon(QStyle.StandardPixmap.SP_DialogYesButton))
-        self.mapToolAction = QAction(icon_map, lan.get("mapSettings", "Map Settings"), self)
-        self.mapToolAction.triggered.connect(self.openMapSettings)
-        toolbar.addAction(self.mapToolAction)
+        for attributeName, badgeText in SERIES_BADGES.items():
+            action = getattr(self, attributeName, None)
+            if action is not None:
+                action.setIcon(icons.makeBadge(badgeText))
 
-        toolbar.addSeparator()
+        for vehicleIndex in range(len(self.reportVehicleActions)):
+            self.reportVehicleActions[vehicleIndex].setIcon(icons.makeIcon("report"))
+            self.exportVehicleReportActions[vehicleIndex].setIcon(icons.makeIcon("export"))
 
-        icon_trash = QIcon.fromTheme(
-            "user-trash",
-            _sty.standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
-        self.cleanToolAction = QAction(icon_trash, lan.get("cleanAll", "Clean All"), self)
-        self.cleanToolAction.triggered.connect(self.cleanData)
-        toolbar.addAction(self.cleanToolAction)
+        for dock in self.allDocks():
+            dock.toggleViewAction().setIcon(icons.makeIcon("panel"))
 
-        toolbar.addSeparator()
-        toolbar.addAction(self.calculateTrainSpeedAction)
+    # Every dock of the main window in a stable order, empty before buildDocks runs
+    def allDocks(self):
+        dockNames = ("dockWorkflow", "dockGraphs", "dockProfile", "dockKinematics",
+                     "dockLandXmlRaw", "dockLandXmlParsed", "dockTtpRaw",
+                     "dockTtpParsed", "dockHelp")
+        return tuple(getattr(self, name) for name in dockNames if hasattr(self, name))
 
-        # Widgets for XML parsing tabs
-        # Raw data
-        self.textboxRawLandXML = QPlainTextEdit()
-        self.textboxRawTTP = QPlainTextEdit()
-        self.textboxRawLandXML.setReadOnly(True)
-        self.textboxRawTTP.setReadOnly(True)
+    # Build the central stacked viewport holding the map and the report page
+    def buildCentralViews(self):
+        self.centralStack = QStackedWidget()
 
-        # Parsed data tables
-        self.tableTTP = pg.TableWidget(sortable = False)
-        self.tableLandXML = pg.TableWidget(sortable = False)
+        # View 1 is the interactive alignment map
+        self.mapWidget = MapWidget(self, lang.DIC[self.currentLanguage])
+        self.centralStack.addWidget(self.mapWidget)
 
-        # Layout and containers for XML tabs
-        layoutXMLTTP_container = QWidget()
-        layoutXMLLand_container = QWidget()
-                
-        layoutXMLTTP = QVBoxLayout(layoutXMLTTP_container)
-        layoutXMLTTP.setContentsMargins(0,0,0,0)
-        layoutXMLTTP.setSpacing(0)
-        layoutXMLLand = QVBoxLayout(layoutXMLLand_container)
-        layoutXMLLand.setContentsMargins(0,0,0,0)
-        layoutXMLLand.setSpacing(0)
+        # View 2 is the generated calculation report
+        reportPage = QWidget()
+        reportLayout = QVBoxLayout(reportPage)
+        reportLayout.setContentsMargins(0, 0, 0, 0)
+        reportLayout.setSpacing(0)
 
-        splitterXMLTTP = QSplitter(Qt.Orientation.Vertical)
-        splitterXMLLand = QSplitter(Qt.Orientation.Vertical)
-        
-        layoutXMLTTPRaw_container = QWidget()
-        layoutXMLTTPRaw = QVBoxLayout(layoutXMLTTPRaw_container)
-        layoutXMLTTPRaw.setContentsMargins(0,0,0,0)
-        layoutXMLTTPRaw.setSpacing(0)
-        layoutXMLLandRaw_container = QWidget()
-        layoutXMLLandRaw = QVBoxLayout(layoutXMLLandRaw_container)
-        layoutXMLLandRaw.setContentsMargins(0,0,0,0)
-        layoutXMLLandRaw.setSpacing(0)
-        layoutXMLTTPParsed_container =QWidget()
-        layoutXMLTTPParsed = QVBoxLayout(layoutXMLTTPParsed_container)
-        layoutXMLTTPParsed.setContentsMargins(0,0,0,0)
-        layoutXMLTTPParsed.setSpacing(0)    
-        layoutXMLLandParsed_container = QWidget()
-        layoutXMLLandParsed = QVBoxLayout(layoutXMLLandParsed_container)
-        layoutXMLLandParsed.setContentsMargins(0,0,0,0)
-        layoutXMLLandParsed.setSpacing(0)
-
-        self.labelXMLTTPRaw = QLabel(lan["raw_data"])
-        self.labelXMLTTPParsed = QLabel(lan["parsed_data"])
-        self.labelLandXMLRaw = QLabel(lan["raw_data"])
-        self.labelLandXMLParsed = QLabel(lan["parsed_data"])
-
-        layoutXMLTTPRaw.addWidget(self.labelXMLTTPRaw, stretch=0)
-        layoutXMLTTPRaw.addWidget(self.textboxRawTTP, stretch=1)
-        layoutXMLTTPParsed.addWidget(self.labelXMLTTPParsed, stretch=0)
-        layoutXMLTTPParsed.addWidget(self.tableTTP, stretch=1)
-    
-        layoutXMLLandRaw.addWidget(self.labelLandXMLRaw, stretch=0)
-        layoutXMLLandRaw.addWidget(self.textboxRawLandXML, stretch=1)
-        layoutXMLLandParsed.addWidget(self.labelLandXMLParsed, stretch=0)
-        layoutXMLLandParsed.addWidget(self.tableLandXML, stretch=1)
-
-        splitterXMLTTP.addWidget(layoutXMLTTPRaw_container)
-        splitterXMLTTP.addWidget(layoutXMLTTPParsed_container)
-        splitterXMLLand.addWidget(layoutXMLLandRaw_container)
-        splitterXMLLand.addWidget(layoutXMLLandParsed_container)
-
-        layoutXMLTTP.addWidget(splitterXMLTTP)
-        layoutXMLLand.addWidget(splitterXMLLand)
-
-        # Tabs for XML parsing
-        layoutTabsXML.setTabPosition(QTabWidget.TabPosition.West)
-        layoutTabsXML.addTab(layoutXMLLand_container, "LandXML")
-        layoutTabsXML.addTab(layoutXMLTTP_container, "XML TTP")
-
-        # Plots, report and map tabs
-        self.layoutTabsPlotsAlignment_container = QWidget()
-        layoutPlotsAlignment = QVBoxLayout(self.layoutTabsPlotsAlignment_container)
-        layoutPlotsAlignment.setContentsMargins(0,0,0,0)
-        layoutPlotsAlignment.setSpacing(0)
-
-        self.layoutTabsPlotsProfile_container = QWidget()
-        layoutPlotsProfile = QVBoxLayout(self.layoutTabsPlotsProfile_container)
-        layoutPlotsProfile.setContentsMargins(0,0,0,0)
-        layoutPlotsProfile.setSpacing(0)
-
-        self.layoutTabsPlotsKinematics_container = QWidget()
-        layoutPlotsKinematics = QVBoxLayout(self.layoutTabsPlotsKinematics_container)
-        layoutPlotsKinematics.setContentsMargins(0,0,0,0)
-        layoutPlotsKinematics.setSpacing(0)
-
-        self.layoutTabsPlotsReport_container = QWidget()
-        layoutPlotsReport = QVBoxLayout(self.layoutTabsPlotsReport_container)
-        layoutPlotsReport.setContentsMargins(0,0,0,0)
-        layoutPlotsReport.setSpacing(0)
-
-        self.layoutTabsPlotsMap_container = QWidget()
-        layoutPlotsMap = QVBoxLayout(self.layoutTabsPlotsMap_container)
-        layoutPlotsMap.setContentsMargins(0,0,0,0)
-        layoutPlotsMap.setSpacing(0)
-
-        # Matplotlib canvas - add widget for plots
-        # Plots for Horizontal Alignment Data
-        self.canvasAlignment = AlignmentCanvas(self, width=5, height=4, dpi=100)
-        layoutPlotsAlignment.addWidget(self.canvasAlignment, stretch=3)
-        self.toolbar = NavigationToolbar(self.canvasAlignment, self)
-        layoutPlotsAlignment.addWidget(self.toolbar)
-
-        # Plots for Vertical Alignment Data
-        self.canvasProfile = ProfileCanvas(self, width=5, height=4, dpi=100)
-        layoutPlotsProfile.addWidget(self.canvasProfile, stretch=3)
-        self.toolbar = NavigationToolbar(self.canvasProfile, self)
-        layoutPlotsProfile.addWidget(self.toolbar)
-
-        # Plots for Train Kinematics
-        self.canvasKinematics = KinematicsCanvas(self, width=5, height=8, dpi=100)
-        layoutPlotsKinematics.addWidget(self.canvasKinematics, stretch=3)
-        self.toolbar = NavigationToolbar(self.canvasKinematics, self)
-        layoutPlotsKinematics.addWidget(self.toolbar)
-
-        # Right-click context menu: open any graph in a standalone pop-up window.
-        # References kept in _popup_windows so Qt does not garbage-collect the dialogs.
-        self._popup_windows = []
-        for _canvas in (self.canvasAlignment, self.canvasProfile, self.canvasKinematics):
-            _canvas.mpl_connect('button_press_event', self._on_canvas_right_click)
-
-        # Report - add widget for plotting reports
         self.reportSplitter = QSplitter(Qt.Orientation.Horizontal)
-        
         self.reportGeometryWidget = QPlainTextEdit()
         self.reportGeometryWidget.setReadOnly(True)
         self.reportSplitter.addWidget(self.reportGeometryWidget)
-        
         self.reportVehicleTable = pg.TableWidget(sortable=False)
         self.reportSplitter.addWidget(self.reportVehicleTable)
-        layoutPlotsReport.addWidget(self.reportSplitter)
+        reportLayout.addWidget(self.reportSplitter)
 
-        # Map - add widget for maps
-        self.mapWidget = MapWidget(self)
-        layoutPlotsMap.addWidget(self.mapWidget)
+        self.centralStack.addWidget(reportPage)
+        self.setCentralWidget(self.centralStack)
 
-        # Tabs for plots
-        self.layoutTabsPlots.setTabPosition(QTabWidget.TabPosition.East)
-        self.layoutTabsPlots.addTab(self.layoutTabsPlotsAlignment_container, lan["plotsAlignment"])
-        self.layoutTabsPlots.addTab(self.layoutTabsPlotsProfile_container, lan["plotsProfile"])
-        self.layoutTabsPlots.addTab(self.layoutTabsPlotsKinematics_container, lan["plotsKinematics"])
+    # Build every dockable panel and arrange the default layout
+    def buildDocks(self):
+        lan = lang.DIC[self.currentLanguage]
 
-        # Tab for report
-        self.layoutTabsPlots.addTab(self.layoutTabsPlotsReport_container, lan["report"])
-        
-        # Tab for map
-        self.layoutTabsPlots.addTab(self.layoutTabsPlotsMap_container,lan["map"])
+        self.setDockNestingEnabled(True)
+        self.setDockOptions(QMainWindow.DockOption.AllowNestedDocks |
+                            QMainWindow.DockOption.AllowTabbedDocks |
+                            QMainWindow.DockOption.AnimatedDocks)
 
-        # Change language function
-    def change_language(self, lang_code):
-        self.current_language = lang_code
-        self.update_texts()
+        # Dock 1 - interactive workflow guide
+        self.workflowWidget = WorkflowStepperWidget(lan)
+        self.workflowWidget.stepTriggered.connect(self.onWorkflowStep)
+        self.dockWorkflow = LazyDockWidget(lan.get("dockWorkflow", "Workflow"), "dockWorkflow")
+        self.dockWorkflow.setWidget(self.workflowWidget)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.dockWorkflow)
 
-    def update_texts(self):
-        lan = lang.DIC[self.current_language]
+        # XML source viewers with folding support
+        self.textboxRawLandXML = XmlCodeEditor()
+        self.dockLandXmlRaw = LazyDockWidget(lan.get("dockLandXmlRaw", "LandXML - source"),
+                                             "dockLandXmlRaw")
+        self.dockLandXmlRaw.setWidget(self.textboxRawLandXML)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.dockLandXmlRaw)
 
-        # Update menu texts
+        self.textboxRawTTP = XmlCodeEditor()
+        self.dockTtpRaw = LazyDockWidget(lan.get("dockTtpRaw", "XML TTP - source"), "dockTtpRaw")
+        self.dockTtpRaw.setWidget(self.textboxRawTTP)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.dockTtpRaw)
+
+        # Parsed XML tables
+        self.tableLandXML = pg.TableWidget(sortable=False)
+        self.dockLandXmlParsed = LazyDockWidget(lan.get("dockLandXmlParsed", "LandXML - data"),
+                                                "dockLandXmlParsed", self.renderTableLandXML)
+        self.dockLandXmlParsed.setWidget(self.tableLandXML)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.dockLandXmlParsed)
+
+        self.tableTTP = pg.TableWidget(sortable=False)
+        self.dockTtpParsed = LazyDockWidget(lan.get("dockTtpParsed", "XML TTP - data"),
+                                            "dockTtpParsed")
+        self.dockTtpParsed.setWidget(self.tableTTP)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.dockTtpParsed)
+
+        # Dock 2 - linked track geometry and speed profile graphs
+        self.graphsWidget = PerformanceGraphsWidget(lan)
+        self.dockGraphs = LazyDockWidget(lan.get("dockGraphs", "Track geometry and speed profile"),
+                                         "dockGraphs", self.refreshGraphsDock)
+        self.dockGraphs.setWidget(self.graphsWidget)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.dockGraphs)
+
+        # Remaining plot docks, all rendered with pyqtgraph
+        self.profileWidget = ProfilePlotWidget(lan)
+        self.dockProfile = LazyDockWidget(lan.get("dockProfile", "Plots - Profile"),
+                                          "dockProfile", self.renderProfile)
+        self.dockProfile.setWidget(self.profileWidget)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dockProfile)
+
+        self.kinematicsWidget = KinematicsPlotWidget(lan)
+        self.dockKinematics = LazyDockWidget(lan.get("dockKinematics", "Plots - Kinematics"),
+                                             "dockKinematics", self.renderKinematics)
+        self.dockKinematics.setWidget(self.kinematicsWidget)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dockKinematics)
+
+        # Documentation panel rendering the project README
+        self.helpWidget = HelpWidget(lan)
+        self.dockHelp = LazyDockWidget(lan.get("dockHelp", "Help"), "dockHelp")
+        self.dockHelp.setWidget(self.helpWidget)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dockHelp)
+        self.dockHelp.hide()
+
+        # Group related docks into tab stacks so the default layout stays readable
+        self.tabifyDockWidget(self.dockLandXmlRaw, self.dockTtpRaw)
+        self.tabifyDockWidget(self.dockLandXmlParsed, self.dockTtpParsed)
+        self.tabifyDockWidget(self.dockLandXmlParsed, self.dockGraphs)
+        self.tabifyDockWidget(self.dockProfile, self.dockKinematics)
+        self.tabifyDockWidget(self.dockProfile, self.dockHelp)
+
+        self.dockLandXmlRaw.raise_()
+        self.dockGraphs.raise_()
+        self.dockProfile.raise_()
+
+        # Every dock builds its own title bar menu from the active translations
+        for dock in self.allDocks():
+            dock.setLanguage(lan)
+
+        # Snapshot of the freshly built arrangement used by the reset action
+        self.defaultLayoutState = self.saveState()
+        self.defaultGeometry = self.saveGeometry()
+
+    # Assemble the ribbon tabs from the previously created actions
+    def buildRibbon(self):
+        lan = lang.DIC[self.currentLanguage]
+
+        self.ribbonBar = RibbonBar()
+
+        projectPage = self.ribbonBar.addPage("project", lan.get("ribbonProject", "Project"),
+                                             "ribbonProject")
+        openGroup = projectPage.addGroup(lan.get("groupOpen", "Open"), "groupOpen")
+        openGroup.addAction(self.autodetectXMLAction, shortKey="shortAutodetect")
+        openGroup.addAction(self.openParseLandXMLAction, shortKey="shortLandxml")
+        openGroup.addAction(self.openParseXMLTTPAction, shortKey="shortTtp")
+        openGroup.addAction(self.openFileAction, shortKey="shortOpenFile")
+
+        appendGroup = projectPage.addGroup(lan.get("groupAppend", "Append"), "groupAppend")
+        appendGroup.addAction(self.appendAutodetectXMLAction, shortKey="shortAutodetect")
+        appendGroup.addAction(self.appendLandXMLAction, shortKey="shortLandxml")
+        appendGroup.addAction(self.appendXMLTTPAction, shortKey="shortTtp")
+
+        cleanGroup = projectPage.addGroup(lan.get("groupClean", "Clean"), "groupClean")
+        cleanGroup.addAction(self.cleanDataAction, shortKey="shortCleanAll")
+        cleanGroup.addAction(self.cleanLandXMLDataAction, shortKey="shortLandxml")
+        cleanGroup.addAction(self.cleanTTPDataAction, shortKey="shortTtp")
+
+        exitGroup = projectPage.addGroup(lan.get("groupSession", "Session"), "groupSession")
+        exitGroup.addAction(self.helpAction, shortKey="shortHelp")
+        exitGroup.addAction(self.exitAction, shortKey="shortExit")
+
+        geometryPage = self.ribbonBar.addPage("geometry", lan.get("ribbonGeometry", "Geometry"),
+                                              "ribbonGeometry")
+        calculateGroup = geometryPage.addGroup(lan.get("groupCalculate", "Calculate"),
+                                               "groupCalculate")
+        calculateGroup.addAction(self.calculateGeometryAction, shortKey="shortCalcDesign")
+        calculateGroup.addAction(self.calculateGeometryIAction, shortKey="shortCalcAsBuilt")
+
+        geometryCleanGroup = geometryPage.addGroup(lan.get("groupClean", "Clean"), "groupClean")
+        geometryCleanGroup.addAction(self.cleanCalculatedCantsAction, shortKey="shortCleanCants")
+        geometryCleanGroup.addAction(self.cleanCalculatedSpeedsAction, shortKey="shortCleanSpeeds")
+
+        geometryConfigGroup = geometryPage.addGroup(lan.get("groupConfig", "Configuration"),
+                                                    "groupConfig")
+        geometryConfigGroup.addAction(self.geometrySettingsAction, shortKey="shortLimits")
+        geometryConfigGroup.addAction(self.designApproachAction, shortKey="shortApproach")
+        geometryConfigGroup.addAction(self.speedSettingsAction, shortKey="shortSpeeds")
+
+        geometryReportGroup = geometryPage.addGroup(lan.get("groupReport", "Report"), "groupReport")
+        geometryReportGroup.addAction(self.reportGeometryAction, shortKey="shortReport")
+        geometryReportGroup.addAction(self.exportGeometryReportAction, shortKey="shortExport")
+
+        simulationPage = self.ribbonBar.addPage("simulation", lan.get("ribbonSimulation", "Simulation"),
+                                                "ribbonSimulation")
+        runGroup = simulationPage.addGroup(lan.get("groupCalculate", "Calculate"), "groupCalculate")
+        runGroup.addAction(self.calculateTrainSpeedAction, shortKey="shortRunSimulation")
+
+        simulationConfigGroup = simulationPage.addGroup(lan.get("groupConfig", "Configuration"),
+                                                        "groupConfig")
+        simulationConfigGroup.addAction(self.vehicleSettingsAction, shortKey="shortVehicles")
+        simulationConfigGroup.addAction(self.stopsSettingsAction, shortKey="shortStops")
+        simulationConfigGroup.addAction(self.toggleUnitsAction, shortKey="shortUnits")
+
+        simulationReportGroup = simulationPage.addGroup(lan.get("groupReport", "Report"), "groupReport")
+        for reportAction in self.reportVehicleActions:
+            simulationReportGroup.addAction(reportAction, isLarge=False)
+
+        simulationExportGroup = simulationPage.addGroup(lan.get("groupExport", "Export"), "groupExport")
+        for exportAction in self.exportVehicleReportActions:
+            simulationExportGroup.addAction(exportAction, isLarge=False)
+
+        viewPage = self.ribbonBar.addPage("view", lan.get("ribbonView", "View"), "ribbonView")
+        centralGroup = viewPage.addGroup(lan.get("groupCentral", "Central view"), "groupCentral")
+        centralGroup.addAction(self.showMapAction, shortKey="viewMap")
+        centralGroup.addAction(self.showReportAction, shortKey="viewReport")
+
+        panelsGroup = viewPage.addGroup(lan.get("groupPanels", "Panels"), "groupPanels")
+        panelShortKeys = ("shortPanelWorkflow", "shortPanelGraphs", "shortPanelProfile",
+                          "shortPanelKinematics", "shortPanelLandxmlRaw", "shortPanelLandxmlData",
+                          "shortPanelTtpRaw", "shortPanelTtpData", "shortPanelHelp")
+        for dock, shortKey in zip(self.allDocks(), panelShortKeys):
+            panelsGroup.addAction(dock.toggleViewAction(), isLarge=False, shortKey=shortKey)
+
+        layoutGroup = viewPage.addGroup(lan.get("groupLayout", "Layout"), "groupLayout")
+        layoutGroup.addAction(self.resetLayoutAction, isLarge=False, shortKey="shortResetLayout")
+        layoutGroup.addAction(self.foldAllAction, isLarge=False, shortKey="foldAll")
+        layoutGroup.addAction(self.unfoldAllAction, isLarge=False, shortKey="unfoldAll")
+
+        seriesPage = self.ribbonBar.addPage("series", lan.get("groupSeries", "Data series"),
+                                            "groupSeries")
+        cantSeriesGroup = seriesPage.addGroup(lan.get("groupSeriesCant", "Cant"), "groupSeriesCant")
+        for attributeName in ("toggleCantAction", "toggleCantPossibleAction", "toggleCDef100Action",
+                              "toggleCDef130Action", "toggleCDef150Action", "toggleCDefKAction",
+                              "toggleCantDef100Action", "toggleCantDef130Action",
+                              "toggleCantDef150Action", "toggleCantDefKAction",
+                              "toggleCurvatureAction", "toggleCurvatureNewAction"):
+            cantSeriesGroup.addAction(getattr(self, attributeName), isLarge=False,
+                                      shortKey=SERIES_SHORT_KEYS[attributeName])
+
+        speedSeriesGroup = seriesPage.addGroup(lan.get("groupSeriesSpeed", "Speed"),
+                                               "groupSeriesSpeed")
+        for attributeName in ("toggleSpeedAction", "toggleSpeed100Action", "toggleSpeed130Action",
+                              "toggleSpeed150Action", "toggleSpeedKAction", "toggleProfileAction"):
+            speedSeriesGroup.addAction(getattr(self, attributeName), isLarge=False,
+                                       shortKey=SERIES_SHORT_KEYS[attributeName])
+
+        kinematicsSeriesGroup = seriesPage.addGroup(lan.get("plotsKinematics", "Kinematics"),
+                                                    "plotsKinematics")
+        for attributeName in ("toggleKinematicsSpeedLimitTrackAction",
+                              "toggleKinematicsSpeedLimitTimeAction",
+                              "toggleKinematicsDistanceTimeAction",
+                              "toggleKinematicsForcesAction"):
+            kinematicsSeriesGroup.addAction(getattr(self, attributeName), isLarge=False,
+                                            shortKey=SERIES_SHORT_KEYS[attributeName])
+
+        settingsPage = self.ribbonBar.addPage("settings", lan.get("ribbonSettings", "Settings"),
+                                              "ribbonSettings")
+        themeGroup = settingsPage.addGroup(lan.get("groupTheme", "Theme"), "groupTheme")
+        themeGroup.addAction(self.themeAutoAction, isLarge=False, shortKey="shortThemeAuto")
+        themeGroup.addAction(self.themeLightAction, isLarge=False, shortKey="shortThemeLight")
+        themeGroup.addAction(self.themeDarkAction, isLarge=False, shortKey="shortThemeDark")
+
+        languageGroup = settingsPage.addGroup(lan.get("groupLanguage", "Language"), "groupLanguage")
+        languageGroup.addAction(self.langCZAction, isLarge=False)
+        languageGroup.addAction(self.langENAction, isLarge=False)
+        languageGroup.addAction(self.langDEAction, isLarge=False)
+
+        settingsConfigGroup = settingsPage.addGroup(lan.get("groupConfig", "Configuration"),
+                                                    "groupConfig")
+        settingsConfigGroup.addAction(self.mapSettingsAction, shortKey="shortMap")
+        settingsConfigGroup.addAction(self.vehicleSettingsAction, shortKey="shortVehicles")
+        settingsConfigGroup.addAction(self.stopsSettingsAction, shortKey="shortStops")
+        settingsConfigGroup.addAction(self.geometrySettingsAction, shortKey="shortLimits")
+
+        # The ribbon replaces the classic menu bar at the top of the window
+        self.setMenuWidget(self.ribbonBar)
+
+    # Build the status bar showing engine state, chainage and active theme
+    def buildStatusBar(self):
+        lan = lang.DIC[self.currentLanguage]
+
+        self.statusBarWidget = QStatusBar()
+        self.setStatusBar(self.statusBarWidget)
+
+        self.statusEngineLabel = QLabel()
+        self.statusChainageLabel = QLabel()
+        self.statusThemeLabel = QLabel()
+
+        self.statusBarWidget.addWidget(self.statusEngineLabel, 1)
+        self.statusBarWidget.addPermanentWidget(self.statusChainageLabel)
+        self.statusBarWidget.addPermanentWidget(self.statusThemeLabel)
+
+        self.setEngineStatus(lan.get("statusReady", "Ready"))
+        self.updateStatusChainage(None)
+
+    # Connect the crosshair signals so graphs, profile, map and status bar stay in sync
+    def connectCursorSignals(self):
+        self.graphsWidget.cursorMoved.connect(self.onCursorMoved)
+        self.profileWidget.cursorMoved.connect(self.onCursorMoved)
+        self.mapWidget.cursorMoved.connect(self.onCursorMoved)
+
+    # Keep the map settings dialog and the floating map controls in agreement
+    def connectMapSignals(self):
+        self.mapWidget.controlsPanel.drawModeChanged.connect(self.onMapDrawModeChanged)
+        self.mapWidget.setStations(self.collectStations())
+
+    # Remember the style chosen from the floating map controls
+    def onMapDrawModeChanged(self, drawMode):
+        self.dataStorage.setdefault("settingsData", {})["mapDrawMode"] = drawMode
+
+    # Push the scheduled stops into every view that can show them
+    def refreshStations(self):
+        stations = self.collectStations()
+        self.mapWidget.setStations(stations)
+        self.graphsWidget.setStations(stations)
+        self.profileWidget.setStations(stations)
+
+    # Propagate a chainage to every view regardless of which one produced it
+    def onCursorMoved(self, stationKm):
+        self.updateStatusChainage(stationKm)
+        self.graphsWidget.setCursorStation(stationKm)
+        self.profileWidget.setCursorStation(stationKm)
+        self.mapWidget.setCursorStation(stationKm)
+
+    # Render the chainage readout in the status bar
+    def updateStatusChainage(self, stationKm):
+        lan = lang.DIC[self.currentLanguage]
+        label = lan.get("statusChainage", "Chainage")
+        if stationKm is None:
+            self.statusChainageLabel.setText(f"{label}: -")
+        else:
+            self.statusChainageLabel.setText(f"{label}: {stationKm:.3f} km")
+
+    # Render the core engine state in the status bar
+    def setEngineStatus(self, text):
+        lan = lang.DIC[self.currentLanguage]
+        self.statusEngineLabel.setText(f'{lan.get("statusEngine", "Engine")}: {text}')
+
+    # Render the active theme name in the status bar
+    def updateStatusTheme(self):
+        lan = lang.DIC[self.currentLanguage]
+        modeLabels = {
+            theme_manager.MODE_AUTO: lan.get("themeAuto", "System default (auto)"),
+            theme_manager.MODE_LIGHT: lan.get("themeLight", "Always light"),
+            theme_manager.MODE_DARK: lan.get("themeDark", "Always dark"),
+        }
+        activeName = lan.get("dark", "Dark") if self.themeManager.isDarkActive else lan.get("light", "Light")
+        modeName = modeLabels.get(self.themeManager.currentMode, activeName)
+        self.statusThemeLabel.setText(f'{lan.get("statusTheme", "Theme")}: {modeName}')
+
+    # Apply a theme mode and remember the choice for the next session
+    def applyThemeMode(self, mode):
+        self.themeManager.applyTheme(mode)
+        self.appSettings.setValue("theme/mode", mode)
+
+    # React to a theme switch by restyling widgets that hold their own colours
+    def onThemeChanged(self, mode):
+        isDark = self.themeManager.isDarkActive
+        tokens = self.themeManager.currentTokens
+
+        # Icons are regenerated so their strokes match the new foreground colour
+        icons.iconFactory.applyTheme(tokens)
+        self.applyActionIcons()
+
+        for editor in (self.textboxRawLandXML, self.textboxRawTTP):
+            editor.applyTheme(isDark, tokens)
+
+        self.workflowWidget.applyTheme(isDark, tokens)
+        self.graphsWidget.applyTheme(isDark, tokens)
+        self.profileWidget.applyTheme(isDark, tokens)
+        self.kinematicsWidget.applyTheme(isDark, tokens)
+        self.helpWidget.applyTheme(isDark, tokens)
+        self.mapWidget.applyTheme(isDark, tokens)
+        self.updateStatusTheme()
+
+    # Switch the central viewport to the map page
+    def showMapView(self):
+        self.centralStack.setCurrentIndex(VIEW_MAP)
+        self.showMapAction.setChecked(True)
+
+    # Switch the central viewport to the report page
+    def showReportView(self):
+        self.centralStack.setCurrentIndex(VIEW_REPORT)
+        self.showReportAction.setChecked(True)
+
+    # Collapse every node in both XML source viewers
+    def foldAllXml(self):
+        self.textboxRawLandXML.foldAll()
+        self.textboxRawTTP.foldAll()
+
+    # Expand every node in both XML source viewers
+    def unfoldAllXml(self):
+        self.textboxRawLandXML.unfoldAll()
+        self.textboxRawTTP.unfoldAll()
+
+    # Push the current data into the linked track geometry and speed graphs
+    def refreshGraphsDock(self):
+        self.graphsWidget.setStations(self.collectStations())
+        self.graphsWidget.updateGeometryData(self.dataStorage.get("LandXML", {}),
+                                             self.seriesVisibility())
+        self.graphsWidget.updateSpeedData(self.dataStorage, self.seriesVisibility())
+
+    # Map every series toggle action onto the series key used by the plots
+    def seriesVisibility(self):
+        visibilityKeys = {
+            "cant": self.toggleCantAction,
+            "cantPossible": self.toggleCantPossibleAction,
+            "cDef100": self.toggleCDef100Action,
+            "cDef130": self.toggleCDef130Action,
+            "cDef150": self.toggleCDef150Action,
+            "cDefK": self.toggleCDefKAction,
+            "cantDef100": self.toggleCantDef100Action,
+            "cantDef130": self.toggleCantDef130Action,
+            "cantDef150": self.toggleCantDef150Action,
+            "cantDefK": self.toggleCantDefKAction,
+            "curvature": self.toggleCurvatureAction,
+            "curvatureNew": self.toggleCurvatureNewAction,
+            "speedLimits": self.toggleSpeedAction,
+            "speedLimits100": self.toggleSpeed100Action,
+            "speedLimits130": self.toggleSpeed130Action,
+            "speedLimits150": self.toggleSpeed150Action,
+            "speedLimitsK": self.toggleSpeedKAction,
+            "kinematicsSpeedLimitTrack": self.toggleKinematicsSpeedLimitTrackAction,
+            "kinematicsSpeedLimitTime": self.toggleKinematicsSpeedLimitTimeAction,
+            "kinematicsDistanceTime": self.toggleKinematicsDistanceTimeAction,
+            "kinematicsForces": self.toggleKinematicsForcesAction,
+        }
+        return {seriesKey: action.isChecked() for seriesKey, action in visibilityKeys.items()}
+
+    # Build the chainage and name pairs of every scheduled stop
+    def collectStations(self):
+        stations = []
+        for stop in self.dataStorage.get("settingsData", {}).get("trainStops", []):
+            try:
+                stationKm = float(stop[0])
+            except (IndexError, ValueError, TypeError):
+                continue
+            stations.append((stationKm, str(stop[2]) if len(stop) > 2 else ""))
+        return stations
+
+    # Dispatchers keep the existing call sites while honouring the lazy docks
+    def plotCant(self):
+        self.dockGraphs.requestUpdate()
+
+    def plotCurvature(self):
+        self.dockGraphs.requestUpdate()
+
+    def plotSpeedLimits(self):
+        self.dockGraphs.requestUpdate()
+
+    def plotProfile(self):
+        self.dockProfile.requestUpdate()
+
+    def plotKinematics(self):
+        self.dockKinematics.requestUpdate()
+        self.dockGraphs.requestUpdate()
+
+    # Run the action belonging to a workflow step and mark it as completed
+    def onWorkflowStep(self, stepIndex):
+        stepHandlers = [
+            self.openLandXML,
+            self.openXMLTTP,
+            self.openStopsSettings,
+            self.openVehicleSettings,
+            self.calculateGeometry,
+            self.calculateTrainSpeed,
+            self.exportGeometryReport,
+        ]
+        if 0 <= stepIndex < len(stepHandlers):
+            stepHandlers[stepIndex]()
+            self.workflowWidget.markCompleted(stepIndex)
+
+    # Restore geometry, dock state, theme and language from the previous session
+    def restoreSession(self):
+        savedLanguage = self.appSettings.value("ui/language", "en")
+        if savedLanguage in lang.DIC:
+            self.currentLanguage = savedLanguage
+
+        savedGeometry = self.appSettings.value("layout/geometry")
+        if savedGeometry is not None:
+            self.restoreGeometry(savedGeometry)
+
+        savedState = self.appSettings.value("layout/state")
+        if savedState is not None:
+            self.restoreState(savedState)
+
+        savedMode = self.appSettings.value("theme/mode", theme_manager.MODE_AUTO)
+        if savedMode not in (theme_manager.MODE_AUTO, theme_manager.MODE_LIGHT,
+                             theme_manager.MODE_DARK):
+            savedMode = theme_manager.MODE_AUTO
+
+        for action in self.themeGroup.actions():
+            action.setChecked(action.data() == savedMode)
+
+        self.themeManager.applyTheme(savedMode)
+        self.updateTexts()
+
+    # Persist geometry and dock state so the next launch reopens the same layout
+    def saveSession(self):
+        self.appSettings.setValue("layout/geometry", self.saveGeometry())
+        self.appSettings.setValue("layout/state", self.saveState())
+        self.appSettings.setValue("ui/language", self.currentLanguage)
+        self.appSettings.setValue("theme/mode", self.themeManager.currentMode)
+
+    # Return every dock to the arrangement captured right after construction
+    def resetLayout(self):
+        self.restoreGeometry(self.defaultGeometry)
+        self.restoreState(self.defaultLayoutState)
+
+    def closeEvent(self, event):
+        self.saveSession()
+        super().closeEvent(event)
+
+    # Change language function
+    def changeLanguage(self, langCode):
+        self.currentLanguage = langCode
+        self.appSettings.setValue("ui/language", langCode)
+        self.updateTexts()
+
+    def updateTexts(self):
+        lan = lang.DIC[self.currentLanguage]
+
         self.setWindowTitle(lan["app_title"])
-        self.fileMenu.setTitle(lan["file"])
-        self.calculateMenu.setTitle(lan["calculate"])
-        self.settingsMenu.setTitle(lan["settings"])
-        self.languageMenu.setTitle(lan["language"])
-        self.viewMenu.setTitle(lan["view"])
-        self.reportMenu.setTitle(lan.get("reportMenu", "&Report"))
-        self.cleanMenu.setTitle(lan["clean"])
-        self.exitMenu.setTitle(lan["exit"])
-        self.helpMenu.setTitle(lan["help"])
 
-        self.calculateMenu.actions()[0].setText(lan["calculate_geometry"])
-        self.calculateMenu.actions()[1].setText(lan["calculate_geometry_I"])
+        # Ribbon tab captions
+        self.ribbonBar.setPageTitle("project", lan.get("ribbonProject", "Project"))
+        self.ribbonBar.setPageTitle("geometry", lan.get("ribbonGeometry", "Geometry"))
+        self.ribbonBar.setPageTitle("simulation", lan.get("ribbonSimulation", "Simulation"))
+        self.ribbonBar.setPageTitle("view", lan.get("ribbonView", "View"))
+        self.ribbonBar.setPageTitle("series", lan.get("groupSeries", "Data series"))
+        self.ribbonBar.setPageTitle("settings", lan.get("ribbonSettings", "Settings"))
+
+        # File actions
+        self.openFileAction.setText(lan["open_file"])
+        self.autodetectXMLAction.setText(lan["autodetect"])
+        self.autodetectXMLAction.setStatusTip(lan["autodetect_tip"])
+        self.appendAutodetectXMLAction.setText(lan.get("append_autodetect", "Append Autodetect"))
+        self.appendAutodetectXMLAction.setStatusTip(lan.get("append_autodetect_tip", "Autodetect and append"))
+        self.openParseLandXMLAction.setText(lan["open_parse_landxml"])
+        self.appendLandXMLAction.setText(lan.get("append_landxml", "Append LandXML"))
+        self.openParseXMLTTPAction.setText(lan["open_parse_xmlttp"])
+        self.appendXMLTTPAction.setText(lan.get("append_xmlttp", "Append XML TTP"))
+        self.exitAction.setText(lan["exit"])
+        self.helpAction.setText(lan["help"])
+
+        # Calculate actions
+        self.calculateGeometryAction.setText(lan["calculate_geometry"])
+        self.calculateGeometryIAction.setText(lan["calculate_geometry_I"])
         self.calculateTrainSpeedAction.setText(lan["calculate_train_speed"])
 
-        self.fileMenu.actions()[0].setText(lan["open_file"])
-        self.fileMenu.actions()[1].setText(lan["autodetect"])
-        self.fileMenu.actions()[1].setStatusTip(lan["autodetect_tip"])
-        self.fileMenu.actions()[2].setText(lan.get("append_autodetect", "Append Autodetect"))
-        self.fileMenu.actions()[2].setStatusTip(lan.get("append_autodetect_tip", "Autodetect and append"))
-        self.fileMenu.actions()[3].setText(lan["open_parse_landxml"])
-        self.fileMenu.actions()[4].setText(lan.get("append_landxml", "Append LandXML"))
-        self.fileMenu.actions()[5].setText(lan["open_parse_xmlttp"])
-        self.fileMenu.actions()[6].setText(lan.get("append_xmlttp", "Append XML TTP"))
-        # self.fileMenu.actions()[4].setText(lan.get("importStopsTTP", "Import Stops from XML TTP"))
+        # Clean actions
+        self.cleanTTPDataAction.setText(lan["cleanTTP"])
+        self.cleanLandXMLDataAction.setText(lan["cleanLandXML"])
+        self.cleanDataAction.setText(lan["cleanAll"])
+        self.cleanCalculatedCantsAction.setText(lan["cleanCants"])
+        self.cleanCalculatedSpeedsAction.setText(lan["cleanSpeeds"])
 
-        self.settingsMenu.actions()[2].setText(lan["mapSettings"])
-        self.settingsMenu.actions()[3].setText(lan["geometrySettings"])
-        self.settingsMenu.actions()[4].setText(lan.get("vehicleSettings", "Vehicle Settings"))
-        self.settingsMenu.actions()[5].setText(lan.get("stopsSettings", "Stops Settings"))
-        self.settingsMenu.actions()[6].setText(lan.get("speedSettings", "Speed Limits Settings"))
-        self.settingsMenu.actions()[7].setText(lan["designApproach"])
-
-        self.viewMenu.actions()[0].setText(lan["cant"])
-        self.viewMenu.actions()[1].setText(lan["cant_possible"])
-        self.viewMenu.actions()[2].setText(lan["cdef_100"])
-        self.viewMenu.actions()[3].setText(lan["cdef_130"])
-        self.viewMenu.actions()[4].setText(lan["cdef_150"])
-        self.viewMenu.actions()[5].setText(lan["cdef_K"])
-        self.viewMenu.actions()[6].setText(lan["cant_def_100"])
-        self.viewMenu.actions()[7].setText(lan["cant_def_130"])
-        self.viewMenu.actions()[8].setText(lan["cant_def_150"])
-        self.viewMenu.actions()[9].setText(lan["cant_def_K"])
-        self.viewMenu.actions()[10].setText(lan["curvature"])
-        self.viewMenu.actions()[11].setText(lan["curvature_new"])
-        self.viewMenu.actions()[13].setText(lan["speed_lim"])
-        self.viewMenu.actions()[14].setText(lan["speed_lim_100"])
-        self.viewMenu.actions()[15].setText(lan["speed_lim_130"])
-        self.viewMenu.actions()[16].setText(lan["speed_lim_150"])
-        self.viewMenu.actions()[17].setText(lan["speed_lim_K"])
-
-        self.cleanMenu.actions()[0].setText(lan["cleanTTP"])
-        self.cleanMenu.actions()[1].setText(lan["cleanLandXML"])
-        self.cleanMenu.actions()[2].setText(lan["cleanAll"])
-        self.cleanMenu.actions()[3].setText(lan["cleanCants"])
-        self.cleanMenu.actions()[4].setText(lan["cleanSpeeds"])
-
-        self.reportGeometryAction.setText(lan.get("reportGeometry", "Report - Geometry"))
-        self.reportVehicleMenu.setTitle(lan.get("reportVehicle", "Report - Vehicle"))
-        self.exportGeometryReportAction.setText(lan.get("exportGeometryReport", "Export Geometry Report"))
-        self.exportVehicleReportMenu.setTitle(lan.get("exportVehicleReport", "Export Vehicle Report"))
-
-        self.reportVehicleAction1.setText(lan.get("vehicle", "Vehicle") + " 1")
-        self.reportVehicleAction2.setText(lan.get("vehicle", "Vehicle") + " 2")
-        self.reportVehicleAction3.setText(lan.get("vehicle", "Vehicle") + " 3")
-        self.exportVehicleReportAction1.setText(lan.get("vehicle", "Vehicle") + " 1")
-        self.exportVehicleReportAction2.setText(lan.get("vehicle", "Vehicle") + " 2")
-        self.exportVehicleReportAction3.setText(lan.get("vehicle", "Vehicle") + " 3")
-
-        self.exitMenu.actions()[0].setText(lan["exit"])
-
-        self.helpMenu.actions()[0].setText(lan["help"])
-
-        # Toolbar shortcut labels (used as tooltip text)
-        self.vehicleToolAction.setText(lan.get("vehicleSettings", "Vehicle Settings"))
-        self.stopsToolAction.setText(lan.get("stopsSettings", "Stops Settings"))
-        self.mapToolAction.setText(lan.get("mapSettings", "Map Settings"))
-        self.cleanToolAction.setText(lan.get("cleanAll", "Clean All"))
-
+        # Settings actions
+        self.mapSettingsAction.setText(lan["mapSettings"])
+        self.geometrySettingsAction.setText(lan["geometrySettings"])
+        self.vehicleSettingsAction.setText(lan.get("vehicleSettings", "Vehicle Settings"))
+        self.stopsSettingsAction.setText(lan.get("stopsSettings", "Stops Settings"))
+        self.speedSettingsAction.setText(lan.get("speedSettings", "Speed Limits Settings"))
+        self.designApproachAction.setText(lan["designApproach"])
         self.toggleUnitsAction.setText(lan["units_kmh"])
-        self.toggleKinematicsSpeedLimitTrackAction.setText(lan["kinematicsSpeedLimitTrack"])
-        self.toggleKinematicsSpeedLimitTimeAction.setText(lan["kinematicsSpeedLimitTime"])
-        self.toggleKinematicsDistanceTimeAction.setText(lan["kinematicsDistanceTime"])
-        self.toggleKinematicsForcesAction.setText(lan.get("kinematicsForces", "Forces Profile"))
 
-        # Update labels
-        self.labelXMLTTPRaw.setText(lan["raw_data"])
-        self.labelXMLTTPParsed.setText(lan["parsed_data"])
-        self.labelLandXMLRaw.setText(lan["raw_data"])
-        self.labelLandXMLParsed.setText(lan["parsed_data"])
+        # Theme, view and layout actions
+        self.themeAutoAction.setText(lan.get("themeAuto", "System default (auto)"))
+        self.themeLightAction.setText(lan.get("themeLight", "Always light"))
+        self.themeDarkAction.setText(lan.get("themeDark", "Always dark"))
+        self.showMapAction.setText(lan.get("viewMap", "Map"))
+        self.showReportAction.setText(lan.get("viewReport", "Report"))
+        self.resetLayoutAction.setText(lan.get("resetLayout", "Reset layout"))
+        self.foldAllAction.setText(lan.get("foldAll", "Fold all"))
+        self.unfoldAllAction.setText(lan.get("unfoldAll", "Unfold all"))
 
-        # Update matplotlib canvas
-        self.canvasAlignment.ax_speed.set_xlabel(lan["station"])
-        self.canvasAlignment.ax_speed.set_ylabel(lan["speed_lim"])
-        self.canvasAlignment.ax_speed.set_title(f'{lan["speed_lim"]} vs {lan["station"]}')
-        
-        self.canvasAlignment.ax_cant.set_xlabel(lan["station"])
-        self.canvasAlignment.ax_cant.set_ylabel(lan["cant"])
-        self.canvasAlignment.ax_cant.set_title(f'{lan["cant"]} vs {lan["station"]}', loc = 'left')
+        # Series visibility actions are translated from their recorded keys
+        for attributeName, languageKey in self.seriesActionKeys.items():
+            getattr(self, attributeName).setText(lan.get(languageKey, languageKey))
 
-        self.canvasAlignment.ax_curvature.set_xlabel(lan["station"])
-        self.canvasAlignment.ax_curvature.set_ylabel(lan["curvature"])
-        self.canvasAlignment.ax_curvature.set_title(f'{lan["curvature"]} vs {lan["station"]}', loc ='right')
+        # Report actions
+        self.reportGeometryAction.setText(lan.get("reportGeometry", "Report - Geometry"))
+        self.exportGeometryReportAction.setText(lan.get("exportGeometryReport", "Export Geometry Report"))
+        for vehicleIndex in range(3):
+            caption = f'{lan.get("vehicle", "Vehicle")} {vehicleIndex + 1}'
+            self.reportVehicleActions[vehicleIndex].setText(caption)
+            self.exportVehicleReportActions[vehicleIndex].setText(caption)
 
-        # Update legends
-        if self.canvasAlignment.ax_speed.lines:
-            self.canvasAlignment.ax_speed.lines[0].set_label(lan["speed_lim"])
-            self.canvasAlignment.ax_speed.legend()
+        # Dock titles
+        self.dockWorkflow.setWindowTitle(lan.get("dockWorkflow", "Workflow"))
+        self.dockGraphs.setWindowTitle(lan.get("dockGraphs", "Track geometry and speed profile"))
+        self.dockProfile.setWindowTitle(lan.get("dockProfile", "Plots - Profile"))
+        self.dockKinematics.setWindowTitle(lan.get("dockKinematics", "Plots - Kinematics"))
+        self.dockLandXmlRaw.setWindowTitle(lan.get("dockLandXmlRaw", "LandXML - source"))
+        self.dockLandXmlParsed.setWindowTitle(lan.get("dockLandXmlParsed", "LandXML - data"))
+        self.dockTtpRaw.setWindowTitle(lan.get("dockTtpRaw", "XML TTP - source"))
+        self.dockTtpParsed.setWindowTitle(lan.get("dockTtpParsed", "XML TTP - data"))
+        self.dockHelp.setWindowTitle(lan.get("dockHelp", "Help"))
 
-        if self.canvasAlignment.ax_cant.lines:
-            self.canvasAlignment.ax_cant.lines[0].set_label(lan["cant"])
-            self.canvasAlignment.ax_cant.legend(loc = 'upper left')
+        for dock in self.allDocks():
+            dock.setLanguage(lan)
 
-        if self.canvasAlignment.ax_curvature.lines:
-            self.canvasAlignment.ax_curvature.lines[0].set_label(lan["curvature"])
-            self.canvasAlignment.ax_curvature.legend(loc = 'upper right')
+        # Child widgets holding their own captions
+        self.workflowWidget.updateTexts(lan)
+        self.graphsWidget.updateLabels(lan)
+        self.profileWidget.updateLabels(lan)
+        self.kinematicsWidget.updateLabels(lan)
+        self.helpWidget.updateTexts(lan)
+        self.mapWidget.updateTexts(lan)
+        self.ribbonBar.retranslate(lan)
 
-        self.canvasAlignment.draw()
+        self.setEngineStatus(lan.get("statusReady", "Ready"))
+        self.updateStatusChainage(None)
+        self.updateStatusTheme()
 
-    def _get_vehicle_name(self, v_idx: int) -> str:
-        """trainParam[0][0] from vehicle settings; returns '' when not available."""
+    def getVehicleName(self, vehicleIndex):
+        # trainParam[0][0] from vehicle settings, returns an empty string when not available
         vehicles = self.dataStorage.get("settingsData", {}).get("vehicles", [])
         try:
-            return str(vehicles[v_idx]["trainParam"][0][0]).strip()
+            return str(vehicles[vehicleIndex]["trainParam"][0][0]).strip()
         except (IndexError, KeyError, TypeError):
             return ""
 
@@ -764,26 +1023,26 @@ class MainWindow(QMainWindow):
             return
         
         # Read file content
-        file_content = readfile.ReadFile().Read(filepath)
-        return file_content
+        fileContent = readfile.ReadFile().Read(filepath)
+        return fileContent
     
     def openFile(self):
-        file_content = self.getFileContent()
-        if file_content is not None:
-            self.textboxRawLandXML.setPlainText(file_content)
+        fileContent = self.getFileContent()
+        if fileContent is not None:
+            self.textboxRawLandXML.setXmlText(fileContent)
 
     def openAutodetectXML(self):
-        file_content = self.getFileContent()
-        if file_content is None:
+        fileContent = self.getFileContent()
+        if fileContent is None:
             return
         
-        xml_type = readfile.ReadFile().XMLType(file_content)
-        if xml_type == 1:
-            self.parseLandXML(file_content)
-        elif xml_type == 2:
-            self.parseXMLTTP(file_content)
+        xmlType = readfile.ReadFile().XMLType(fileContent)
+        if xmlType == 1:
+            self.parseLandXML(fileContent)
+        elif xmlType == 2:
+            self.parseXMLTTP(fileContent)
         else:
-            lan = lang.DIC[self.current_language]
+            lan = lang.DIC[self.currentLanguage]
             err = QMessageBox()
             err.setWindowTitle(lan["error"])
             err.setText(lan.get("unknown_xml_file", "Unknown XML file format."))
@@ -791,17 +1050,17 @@ class MainWindow(QMainWindow):
             err.exec()
 
     def appendAutodetectXML(self):
-        file_content = self.getFileContent()
-        if file_content is None:
+        fileContent = self.getFileContent()
+        if fileContent is None:
             return
         
-        xml_type = readfile.ReadFile().XMLType(file_content)
-        if xml_type == 1:
-            self.appendLandXMLContent(file_content)
-        elif xml_type == 2:
-            self.appendXMLTTPContent(file_content)
+        xmlType = readfile.ReadFile().XMLType(fileContent)
+        if xmlType == 1:
+            self.appendLandXMLContent(fileContent)
+        elif xmlType == 2:
+            self.appendXMLTTPContent(fileContent)
         else:
-            lan = lang.DIC[self.current_language]
+            lan = lang.DIC[self.currentLanguage]
             err = QMessageBox()
             err.setWindowTitle(lan["error"])
             err.setText(lan.get("unknown_xml_file", "Unknown XML format."))
@@ -809,16 +1068,16 @@ class MainWindow(QMainWindow):
             err.exec()
 
     def openLandXML(self):
-        file_content = self.getFileContent()
-        self.parseLandXML(file_content)
+        fileContent = self.getFileContent()
+        self.parseLandXML(fileContent)
 
     def openXMLTTP(self):
-        file_content = self.getFileContent()
-        self.parseXMLTTP(file_content)
+        fileContent = self.getFileContent()
+        self.parseXMLTTP(fileContent)
 
     def appendXMLTTP(self):
         if "stationSpeedLimits" not in self.dataStorage or len(self.dataStorage.get("stationSpeedLimits", [])) == 0:
-            lan = lang.DIC[self.current_language]
+            lan = lang.DIC[self.currentLanguage]
             err = QMessageBox()
             err.setWindowTitle(lan["error"])
             err.setText(lan.get("no_data", "No data available. Calculate values first."))
@@ -826,14 +1085,14 @@ class MainWindow(QMainWindow):
             err.exec()
             return
 
-        file_content = self.getFileContent()
-        if not file_content:
+        fileContent = self.getFileContent()
+        if not fileContent:
             return
-        self.appendXMLTTPContent(file_content)
+        self.appendXMLTTPContent(fileContent)
 
-    def appendXMLTTPContent(self, file_content):
+    def appendXMLTTPContent(self, fileContent):
         if "stationSpeedLimits" not in self.dataStorage or len(self.dataStorage.get("stationSpeedLimits", [])) == 0:
-            lan = lang.DIC[self.current_language]
+            lan = lang.DIC[self.currentLanguage]
             err = QMessageBox()
             err.setWindowTitle(lan["error"])
             err.setText(lan.get("no_data", "No data available. Calculate values first."))
@@ -841,16 +1100,16 @@ class MainWindow(QMainWindow):
             err.exec()
             return
 
-        XMLTTPData = readfile.ReadFile().ParseXMLTTP(file_content)
-        new_stations = XMLTTPData["stationSpeedLimits"]
-        new_speeds = XMLTTPData["speedLimits"]
+        XMLTTPData = readfile.ReadFile().ParseXMLTTP(fileContent)
+        newStations = XMLTTPData["stationSpeedLimits"]
+        newSpeeds = XMLTTPData["speedLimits"]
 
-        valid_mask = (new_speeds != 0) & ~np.isnan(new_speeds)
-        new_stations = new_stations[valid_mask]
-        new_speeds = new_speeds[valid_mask]
+        validMask = (newSpeeds != 0) & ~np.isnan(newSpeeds)
+        newStations = newStations[validMask]
+        newSpeeds = newSpeeds[validMask]
 
-        lan = lang.DIC[self.current_language]
-        sections = self.TTPSections(new_stations)
+        lan = lang.DIC[self.currentLanguage]
+        sections = self.TTPSections(newStations)
         
         if len(sections) > 0:
             sectionsInfo = []
@@ -861,7 +1120,7 @@ class MainWindow(QMainWindow):
 
             dialog = gui_overlay.TTPSelectSectionDialog(sectionsInfo, HasLandXML, lan, self)
             if dialog.exec():
-                selectedSectionIDs, cropToLandXML, loadAll = dialog.get_selected_section()
+                selectedSectionIDs, cropToLandXML, loadAll = dialog.getSelectedSection()
             else:
                 return
         else:
@@ -870,8 +1129,8 @@ class MainWindow(QMainWindow):
             cropToLandXML = False
             loadAll = True
 
-        stationsRaw = np.array(new_stations)
-        speedLimitsRaw = np.array(new_speeds)
+        stationsRaw = np.array(newStations)
+        speedLimitsRaw = np.array(newSpeeds)
 
         if not loadAll:
             if not selectedSectionIDs:
@@ -882,37 +1141,37 @@ class MainWindow(QMainWindow):
                 currentSection = sections[sectionID]
                 startID = currentSection["startID"]
                 endID = currentSection["endID"]+1
-                sec_st = stationsRaw[startID:endID]
-                sec_sp = speedLimitsRaw[startID:endID]
+                secSt = stationsRaw[startID:endID]
+                secSp = speedLimitsRaw[startID:endID]
                 # Correct reversed (descending km) sections so that
                 # getSpeedLimitAt() post-step semantics give the right limit.
-                sec_st, sec_sp = self._correctReversedTTPSection(sec_st, sec_sp)
-                tempStations.append(sec_st)
-                tempSpeedLimits.append(sec_sp)
+                secSt, secSp = self.correctReversedTTPSection(secSt, secSp)
+                tempStations.append(secSt)
+                tempSpeedLimits.append(secSp)
             stationsRaw = np.concatenate(tempStations)
             speedLimitsRaw = np.concatenate(tempSpeedLimits)
 
             # Sort by station so the step plot is always monotonically increasing
-            sort_idx = np.argsort(stationsRaw, kind='stable')
-            stationsRaw    = stationsRaw[sort_idx]
-            speedLimitsRaw = speedLimitsRaw[sort_idx]
+            sortIdx = np.argsort(stationsRaw, kind='stable')
+            stationsRaw    = stationsRaw[sortIdx]
+            speedLimitsRaw = speedLimitsRaw[sortIdx]
 
         else:
             # loadAll=True — correct any reversed sections in the raw data.
-            all_sections = self.TTPSections(stationsRaw)
+            allSections = self.TTPSections(stationsRaw)
             tempStations = []
             tempSpeedLimits = []
-            for section in all_sections:
-                sec_st = stationsRaw[section["startID"]:section["endID"] + 1]
-                sec_sp = speedLimitsRaw[section["startID"]:section["endID"] + 1]
-                sec_st, sec_sp = self._correctReversedTTPSection(sec_st, sec_sp)
-                tempStations.append(sec_st)
-                tempSpeedLimits.append(sec_sp)
+            for section in allSections:
+                secSt = stationsRaw[section["startID"]:section["endID"] + 1]
+                secSp = speedLimitsRaw[section["startID"]:section["endID"] + 1]
+                secSt, secSp = self.correctReversedTTPSection(secSt, secSp)
+                tempStations.append(secSt)
+                tempSpeedLimits.append(secSp)
             stationsRaw = np.concatenate(tempStations)
             speedLimitsRaw = np.concatenate(tempSpeedLimits)
-            sort_idx = np.argsort(stationsRaw, kind='stable')
-            stationsRaw    = stationsRaw[sort_idx]
-            speedLimitsRaw = speedLimitsRaw[sort_idx]
+            sortIdx = np.argsort(stationsRaw, kind='stable')
+            stationsRaw    = stationsRaw[sortIdx]
+            speedLimitsRaw = speedLimitsRaw[sortIdx]
 
         if cropToLandXML and HasLandXML:
             LandXMLMin = np.nanmin(self.dataStorage.get("LandXML",{}).get("stationHorizontal"))
@@ -942,54 +1201,54 @@ class MainWindow(QMainWindow):
         if len(stationsRaw) == 0:
             return
 
-        old_text = self.textboxRawTTP.toPlainText()
-        self.textboxRawTTP.setPlainText(old_text + "\n\n<!-- MERGED XML TTP -->\n\n" + file_content)
+        oldText = self.textboxRawTTP.toPlainText()
+        self.textboxRawTTP.setXmlText(oldText + "\n\n<!-- MERGED XML TTP -->\n\n" + fileContent)
 
-        old_stations = self.dataStorage["stationSpeedLimits"]
-        old_speeds = self.dataStorage["speedLimits"]
+        oldStations = self.dataStorage["stationSpeedLimits"]
+        oldSpeeds = self.dataStorage["speedLimits"]
 
-        old_start = np.nanmin(old_stations)
-        old_end = np.nanmax(old_stations)
-        new_start = np.nanmin(stationsRaw)
-        new_end = np.nanmax(stationsRaw)
+        oldStart = np.nanmin(oldStations)
+        oldEnd = np.nanmax(oldStations)
+        newStart = np.nanmin(stationsRaw)
+        newEnd = np.nanmax(stationsRaw)
 
         # Kontrola mezery (ve staničení TTP používáme [km], proto 0.1 je 100 m)
-        if new_start >= old_end or (abs(new_start - old_end) <= abs(new_end - old_start)):
-            is_append = True
-            crop_station = old_end
-            if abs(new_start - old_end) > 0.1:
+        if newStart >= oldEnd or (abs(newStart - oldEnd) <= abs(newEnd - oldStart)):
+            isAppend = True
+            cropStation = oldEnd
+            if abs(newStart - oldEnd) > 0.1:
                 QMessageBox.warning(self, lan.get("merge_gap_warning_title", "Warning"), lan.get("merge_gap_warning_desc", "Gap > 100m"))
         else:
-            is_append = False
-            crop_station = old_start
-            if abs(old_start - new_end) > 0.1:
+            isAppend = False
+            cropStation = oldStart
+            if abs(oldStart - newEnd) > 0.1:
                 QMessageBox.warning(self, lan.get("merge_gap_warning_title", "Warning"), lan.get("merge_gap_warning_desc", "Gap > 100m"))
 
-        if is_append:
-            mask = stationsRaw > crop_station
-            merged_stations = np.concatenate((old_stations, stationsRaw[mask]))
-            merged_speeds = np.concatenate((old_speeds, speedLimitsRaw[mask]))
+        if isAppend:
+            mask = stationsRaw > cropStation
+            mergedStations = np.concatenate((oldStations, stationsRaw[mask]))
+            mergedSpeeds = np.concatenate((oldSpeeds, speedLimitsRaw[mask]))
         else:
-            mask = stationsRaw < crop_station
-            merged_stations = np.concatenate((stationsRaw[mask], old_stations))
-            merged_speeds = np.concatenate((speedLimitsRaw[mask], old_speeds))
+            mask = stationsRaw < cropStation
+            mergedStations = np.concatenate((stationsRaw[mask], oldStations))
+            mergedSpeeds = np.concatenate((speedLimitsRaw[mask], oldSpeeds))
 
-        self.dataStorage["stationSpeedLimits"] = merged_stations
-        self.dataStorage["speedLimits"] = merged_speeds
+        self.dataStorage["stationSpeedLimits"] = mergedStations
+        self.dataStorage["speedLimits"] = mergedSpeeds
 
         TTPData = {
-            "stationSpeedLimits": merged_stations,
-            "speedLimits": merged_speeds
+            "stationSpeedLimits": mergedStations,
+            "speedLimits": mergedSpeeds
         }
         self.tableTTP.setData(TTPData)
         
         self.cleanCalculatedSpeeds()
         self.plotSpeedLimits()
-        self.update_map_with_speeds()
+        self.updateMapWithSpeeds()
 
     def appendLandXML(self):
         if "LandXML" not in self.dataStorage or len(self.dataStorage.get("LandXML", {}).get("stationHorizontal", [])) == 0:
-            lan = lang.DIC[self.current_language]
+            lan = lang.DIC[self.currentLanguage]
             err = QMessageBox()
             err.setWindowTitle(lan["error"])
             err.setText(lan.get("no_data", "No data available. Calculate values first."))
@@ -997,14 +1256,14 @@ class MainWindow(QMainWindow):
             err.exec()
             return
 
-        file_content = self.getFileContent()
-        if not file_content:
+        fileContent = self.getFileContent()
+        if not fileContent:
             return
-        self.appendLandXMLContent(file_content)
+        self.appendLandXMLContent(fileContent)
 
-    def appendLandXMLContent(self, file_content):
+    def appendLandXMLContent(self, fileContent):
         if "LandXML" not in self.dataStorage or len(self.dataStorage.get("LandXML", {}).get("stationHorizontal", [])) == 0:
-            lan = lang.DIC[self.current_language]
+            lan = lang.DIC[self.currentLanguage]
             err = QMessageBox()
             err.setWindowTitle(lan["error"])
             err.setText(lan.get("no_data", "No data available. Calculate values first."))
@@ -1012,20 +1271,20 @@ class MainWindow(QMainWindow):
             err.exec()
             return
 
-        alignments = readfile.ReadFile().GetAlignments(file_content)
-        selected_idx = 0
+        alignments = readfile.ReadFile().GetAlignments(fileContent)
+        selectedIdx = 0
         if len(alignments) > 1:
-            lan = lang.DIC[self.current_language]
+            lan = lang.DIC[self.currentLanguage]
             dialog = gui_overlay.AlignmentSelectDialog(alignments, lan, self)
             if dialog.exec():
-                selected_idx = dialog.get_selected_index()
+                selectedIdx = dialog.getSelectedIndex()
             else:
                 return
 
-        newLandXMLData = readfile.ReadFile().ParseLandXML(file_content, self.epsgInput, selected_idx)
+        newLandXMLData = readfile.ReadFile().ParseLandXML(fileContent, self.epsgInput, selectedIdx)
         
-        old_text = self.textboxRawLandXML.toPlainText()
-        self.textboxRawLandXML.setPlainText(old_text + "\n\n<!-- MERGED XML -->\n\n" + file_content)
+        oldText = self.textboxRawLandXML.toPlainText()
+        self.textboxRawLandXML.setXmlText(oldText + "\n\n<!-- MERGED XML -->\n\n" + fileContent)
 
         self.mergeLandXMLData(newLandXMLData)
 
@@ -1035,35 +1294,35 @@ class MainWindow(QMainWindow):
         if len(newData.get("stationHorizontal", [])) == 0:
             return
             
-        old_start = np.nanmin(oldData["stationHorizontal"])
-        old_end = np.nanmax(oldData["stationHorizontal"])
-        new_start = np.nanmin(newData["stationHorizontal"])
-        new_end = np.nanmax(newData["stationHorizontal"])
+        oldStart = np.nanmin(oldData["stationHorizontal"])
+        oldEnd = np.nanmax(oldData["stationHorizontal"])
+        newStart = np.nanmin(newData["stationHorizontal"])
+        newEnd = np.nanmax(newData["stationHorizontal"])
 
-        lan = lang.DIC[self.current_language]
+        lan = lang.DIC[self.currentLanguage]
 
-        if new_start >= old_end or (abs(new_start - old_end) <= abs(new_end - old_start)):
-            is_append = True
-            crop_station = old_end
+        if newStart >= oldEnd or (abs(newStart - oldEnd) <= abs(newEnd - oldStart)):
+            isAppend = True
+            cropStation = oldEnd
             if "keyX" in oldData and "keyY" in oldData and "keyX" in newData and "keyY" in newData:
                 if len(oldData["keyX"]) > 0 and len(newData["keyX"]) > 0:
-                    old_last_x, old_last_y = oldData["keyX"][-1], oldData["keyY"][-1]
-                    new_first_x, new_first_y = newData["keyX"][0], newData["keyY"][0]
-                    dist = np.sqrt((new_first_x - old_last_x)**2 + (new_first_y - old_last_y)**2)
+                    oldLastX, oldLastY = oldData["keyX"][-1], oldData["keyY"][-1]
+                    newFirstX, newFirstY = newData["keyX"][0], newData["keyY"][0]
+                    dist = np.sqrt((newFirstX - oldLastX)**2 + (newFirstY - oldLastY)**2)
                     if dist > 100:
                         QMessageBox.warning(self, lan.get("merge_gap_warning_title", "Warning"), lan.get("merge_gap_warning_desc", "Gap > 100m"))
         else:
-            is_append = False
-            crop_station = old_start
+            isAppend = False
+            cropStation = oldStart
             if "keyX" in oldData and "keyY" in oldData and "keyX" in newData and "keyY" in newData:
                 if len(oldData["keyX"]) > 0 and len(newData["keyX"]) > 0:
-                    old_first_x, old_first_y = oldData["keyX"][0], oldData["keyY"][0]
-                    new_last_x, new_last_y = newData["keyX"][-1], newData["keyY"][-1]
-                    dist = np.sqrt((new_last_x - old_first_x)**2 + (new_last_y - old_first_y)**2)
+                    oldFirstX, oldFirstY = oldData["keyX"][0], oldData["keyY"][0]
+                    newLastX, newLastY = newData["keyX"][-1], newData["keyY"][-1]
+                    dist = np.sqrt((newLastX - oldFirstX)**2 + (newLastY - oldFirstY)**2)
                     if dist > 100:
                         QMessageBox.warning(self, lan.get("merge_gap_warning_title", "Warning"), lan.get("merge_gap_warning_desc", "Gap > 100m"))
 
-        station_map = {
+        stationMap = {
             "cant": "stationCant",
             "stationCant": "stationCant",
             "stationHorizontal": "stationHorizontal",
@@ -1075,77 +1334,77 @@ class MainWindow(QMainWindow):
             "elevation": "stationVertical"
         }
 
-        def merge_arrays(key):
+        def mergeArrays(key):
             if key not in oldData or key not in newData:
                 return oldData.get(key, newData.get(key, []))
             
-            old_arr = oldData[key]
-            new_arr = newData[key]
+            oldArr = oldData[key]
+            newArr = newData[key]
 
             if key == "denseAlignment":
-                if is_append:
-                    new_arr_cropped = [p for p in new_arr if p[0] > crop_station]
-                    return old_arr + new_arr_cropped
+                if isAppend:
+                    newArrCropped = [p for p in newArr if p[0] > cropStation]
+                    return oldArr + newArrCropped
                 else:
-                    new_arr_cropped = [p for p in new_arr if p[0] < crop_station]
-                    return new_arr_cropped + old_arr
+                    newArrCropped = [p for p in newArr if p[0] < cropStation]
+                    return newArrCropped + oldArr
 
             if key in ["keyStations", "keyTypes", "keyX", "keyY", "keyLat", "keyLon"]:
-                new_stations = np.array(newData["keyStations"])
-                mask = new_stations > crop_station if is_append else new_stations < crop_station
-            elif key in station_map:
-                s_key = station_map[key]
-                new_stations = np.array(newData[s_key])
+                newStations = np.array(newData["keyStations"])
+                mask = newStations > cropStation if isAppend else newStations < cropStation
+            elif key in stationMap:
+                sKey = stationMap[key]
+                newStations = np.array(newData[sKey])
                 
-                if s_key == "stationHorizontal":
-                    mask = np.zeros(len(new_stations), dtype=bool)
+                if sKey == "stationHorizontal":
+                    mask = np.zeros(len(newStations), dtype=bool)
                     # Zpracování polí definovaných v párech (počátek-konec segmentu)
-                    for i in range(0, len(new_stations), 2):
-                        if is_append: keep = new_stations[i+1] > crop_station
-                        else: keep = new_stations[i] < crop_station
+                    for i in range(0, len(newStations), 2):
+                        if isAppend: keep = newStations[i+1] > cropStation
+                        else: keep = newStations[i] < cropStation
                         mask[i] = keep
-                        if i+1 < len(new_stations): mask[i+1] = keep
+                        if i+1 < len(newStations): mask[i+1] = keep
                             
                     if key == "stationHorizontal":
-                        if isinstance(new_arr, np.ndarray): new_arr = np.copy(new_arr)
-                        else: new_arr = list(new_arr)
+                        if isinstance(newArr, np.ndarray): newArr = np.copy(newArr)
+                        else: newArr = list(newArr)
                             
-                        for i in range(0, len(new_stations), 2):
+                        for i in range(0, len(newStations), 2):
                             if mask[i]:
-                                if is_append and new_arr[i] < crop_station: new_arr[i] = crop_station
-                                elif not is_append and (i+1) < len(new_arr) and new_arr[i+1] > crop_station: new_arr[i+1] = crop_station
+                                if isAppend and newArr[i] < cropStation: newArr[i] = cropStation
+                                elif not isAppend and (i+1) < len(newArr) and newArr[i+1] > cropStation: newArr[i+1] = cropStation
                 else:
-                    mask = new_stations > crop_station if is_append else new_stations < crop_station
+                    mask = newStations > cropStation if isAppend else newStations < cropStation
             elif key in ["alignmentCoordinates", "alignmentCoordsOriginal"]:
-                if is_append: return old_arr + new_arr
-                else: return new_arr + old_arr
+                if isAppend: return oldArr + newArr
+                else: return newArr + oldArr
             else:
-                if isinstance(old_arr, np.ndarray) and isinstance(new_arr, np.ndarray):
-                    if is_append: return np.concatenate((old_arr, new_arr))
-                    else: return np.concatenate((new_arr, old_arr))
-                elif isinstance(old_arr, list) and isinstance(new_arr, list):
-                    if is_append: return old_arr + new_arr
-                    else: return new_arr + old_arr
-                return old_arr
+                if isinstance(oldArr, np.ndarray) and isinstance(newArr, np.ndarray):
+                    if isAppend: return np.concatenate((oldArr, newArr))
+                    else: return np.concatenate((newArr, oldArr))
+                elif isinstance(oldArr, list) and isinstance(newArr, list):
+                    if isAppend: return oldArr + newArr
+                    else: return newArr + oldArr
+                return oldArr
 
-            if isinstance(new_arr, np.ndarray):
-                new_arr_cropped = new_arr[mask]
-                if is_append:
-                    return np.concatenate((old_arr, new_arr_cropped))
+            if isinstance(newArr, np.ndarray):
+                newArrCropped = newArr[mask]
+                if isAppend:
+                    return np.concatenate((oldArr, newArrCropped))
                 else:
-                    return np.concatenate((new_arr_cropped, old_arr))
-            elif isinstance(new_arr, list):
-                new_arr_cropped = [item for i, item in enumerate(new_arr) if mask[i]]
-                if is_append:
-                    return old_arr + new_arr_cropped
+                    return np.concatenate((newArrCropped, oldArr))
+            elif isinstance(newArr, list):
+                newArrCropped = [item for i, item in enumerate(newArr) if mask[i]]
+                if isAppend:
+                    return oldArr + newArrCropped
                 else:
-                    return new_arr_cropped + old_arr
-            return old_arr
+                    return newArrCropped + oldArr
+            return oldArr
 
         mergedData = {}
-        all_keys = set(list(oldData.keys()) + list(newData.keys()))
-        for k in all_keys:
-            mergedData[k] = merge_arrays(k)
+        allKeys = set(list(oldData.keys()) + list(newData.keys()))
+        for k in allKeys:
+            mergedData[k] = mergeArrays(k)
 
         if "stationVertical" in mergedData and "elevation" in mergedData:
             deltaZ = np.diff(np.array(mergedData["elevation"], dtype=float))
@@ -1165,22 +1424,22 @@ class MainWindow(QMainWindow):
         self.plotProfile()
         self.mapWidget.drawAlignment(mergedData.get("alignmentCoordinates",[]), mergedData)
 
-    def parseLandXML(self, file_content):
-        if file_content is not None:
-            self.textboxRawLandXML.setPlainText(file_content)
+    def parseLandXML(self, fileContent):
+        if fileContent is not None:
+            self.textboxRawLandXML.setXmlText(fileContent)
             
             # Check for multiple alignments and prompt the user if needed
-            alignments = readfile.ReadFile().GetAlignments(file_content)
-            selected_idx = 0
+            alignments = readfile.ReadFile().GetAlignments(fileContent)
+            selectedIdx = 0
             if len(alignments) > 1:
-                lan = lang.DIC[self.current_language]
+                lan = lang.DIC[self.currentLanguage]
                 dialog = gui_overlay.AlignmentSelectDialog(alignments, lan, self)
                 if dialog.exec():
-                    selected_idx = dialog.get_selected_index()
+                    selectedIdx = dialog.getSelectedIndex()
                 else:
                     return  # User cancelled the dialog, do nothing
 
-            LandXMLData = readfile.ReadFile().ParseLandXML(file_content, self.epsgInput, selected_idx)
+            LandXMLData = readfile.ReadFile().ParseLandXML(fileContent, self.epsgInput, selectedIdx)
             self.updateTableLandXML(LandXMLData)
 
             # Save data to central data storage
@@ -1193,20 +1452,24 @@ class MainWindow(QMainWindow):
             self.plotProfile()
             self.mapWidget.drawAlignment(lxml.get("alignmentCoordinates",[]), lxml)
 
+            # Step 1 of the workflow guide is done once LandXML is parsed
+            self.workflowWidget.markCompleted(0)
+            self.setEngineStatus(lang.DIC[self.currentLanguage].get("dockLandXmlParsed", "LandXML"))
+
         else:
-            lan = lang.DIC[self.current_language]
+            lan = lang.DIC[self.currentLanguage]
             err = QMessageBox()
             err.setWindowTitle(lan["error"])
             err.setText(lan["no_file"])
             err.setIcon(QMessageBox.Icon.Warning)
             err.exec()
 
-    def parseXMLTTP(self, file_content):
-        if file_content is not None:
-            self.textboxRawTTP.setPlainText(file_content)
-            XMLTTPData = readfile.ReadFile().ParseXMLTTP(file_content)
+    def parseXMLTTP(self, fileContent):
+        if fileContent is not None:
+            self.textboxRawTTP.setXmlText(fileContent)
+            XMLTTPData = readfile.ReadFile().ParseXMLTTP(fileContent)
 
-            lan = lang.DIC[self.current_language]
+            lan = lang.DIC[self.currentLanguage]
 
             self.dataStorage["stationSpeedLimits"] = XMLTTPData["stationSpeedLimits"]
             self.dataStorage["speedLimits"] = XMLTTPData["speedLimits"]
@@ -1231,7 +1494,7 @@ class MainWindow(QMainWindow):
                 # Show the section selection dialog
                 dialog = gui_overlay.TTPSelectSectionDialog(sectionsInfo, HasLandXML, lan, self)
                 if dialog.exec():
-                    selectedSectionIDs, cropToLandXML, loadAll = dialog.get_selected_section()
+                    selectedSectionIDs, cropToLandXML, loadAll = dialog.getSelectedSection()
                 else:
                     return  # User cancelled the dialog, do nothing
             
@@ -1258,13 +1521,13 @@ class MainWindow(QMainWindow):
                     startID = currentSection["startID"]
                     endID = currentSection["endID"]+1
 
-                    sec_st = stationsRaw[startID:endID]
-                    sec_sp = speedLimitsRaw[startID:endID]
+                    secSt = stationsRaw[startID:endID]
+                    secSp = speedLimitsRaw[startID:endID]
                     # Correct reversed (descending km) sections so that
                     # getSpeedLimitAt() post-step semantics give the right limit.
-                    sec_st, sec_sp = self._correctReversedTTPSection(sec_st, sec_sp)
-                    tempStations.append(sec_st)
-                    tempSpeedLimits.append(sec_sp)
+                    secSt, secSp = self.correctReversedTTPSection(secSt, secSp)
+                    tempStations.append(secSt)
+                    tempSpeedLimits.append(secSp)
 
                 stationsRaw = np.concatenate(tempStations)
                 speedLimitsRaw = np.concatenate(tempSpeedLimits)
@@ -1272,27 +1535,27 @@ class MainWindow(QMainWindow):
                 # Sort by station so the step plot is always monotonically increasing.
                 # This acts as a safety net for any edge case the section detector may miss
                 # (e.g. non-standard TTP layouts or multiple selected sections).
-                sort_idx = np.argsort(stationsRaw, kind='stable')
-                stationsRaw    = stationsRaw[sort_idx]
-                speedLimitsRaw = speedLimitsRaw[sort_idx]
+                sortIdx = np.argsort(stationsRaw, kind='stable')
+                stationsRaw    = stationsRaw[sortIdx]
+                speedLimitsRaw = speedLimitsRaw[sortIdx]
 
             else:
                 # loadAll=True — apply the same reversed-section correction to every
                 # monotone section present in the raw data before storing.
-                all_sections = self.TTPSections(stationsRaw)
+                allSections = self.TTPSections(stationsRaw)
                 tempStations = []
                 tempSpeedLimits = []
-                for section in all_sections:
-                    sec_st = stationsRaw[section["startID"]:section["endID"] + 1]
-                    sec_sp = speedLimitsRaw[section["startID"]:section["endID"] + 1]
-                    sec_st, sec_sp = self._correctReversedTTPSection(sec_st, sec_sp)
-                    tempStations.append(sec_st)
-                    tempSpeedLimits.append(sec_sp)
+                for section in allSections:
+                    secSt = stationsRaw[section["startID"]:section["endID"] + 1]
+                    secSp = speedLimitsRaw[section["startID"]:section["endID"] + 1]
+                    secSt, secSp = self.correctReversedTTPSection(secSt, secSp)
+                    tempStations.append(secSt)
+                    tempSpeedLimits.append(secSp)
                 stationsRaw = np.concatenate(tempStations)
                 speedLimitsRaw = np.concatenate(tempSpeedLimits)
-                sort_idx = np.argsort(stationsRaw, kind='stable')
-                stationsRaw    = stationsRaw[sort_idx]
-                speedLimitsRaw = speedLimitsRaw[sort_idx]
+                sortIdx = np.argsort(stationsRaw, kind='stable')
+                stationsRaw    = stationsRaw[sortIdx]
+                speedLimitsRaw = speedLimitsRaw[sortIdx]
 
             if cropToLandXML and HasLandXML:
                 LandXMLMin = np.nanmin(self.dataStorage.get("LandXML",{}).get("stationHorizontal"))
@@ -1342,9 +1605,9 @@ class MainWindow(QMainWindow):
 
             self.tableTTP.setData(TTPData)
             self.plotSpeedLimits()
-            self.update_map_with_speeds()
+            self.updateMapWithSpeeds()
         else:
-            lan = lang.DIC[self.current_language]
+            lan = lang.DIC[self.currentLanguage]
             err = QMessageBox()
             err.setWindowTitle(lan["error"])
             err.setText(lan["no_file"])
@@ -1361,466 +1624,42 @@ class MainWindow(QMainWindow):
     #         defaultDwell = float(settings.get("defaultDwellTime", 30.0))
     #         for st in stations:
     #             trainStops.append([float(st), defaultDwell])
-    #         lan = lang.DIC[self.current_language]
+    #         lan = lang.DIC[self.currentLanguage]
     #         msg = QMessageBox()
     #         msg.setWindowTitle(lan.get("importStopsTTP", "Import Stops"))
     #         msg.setText(f"Imported {len(stations)} stops.")
     #         msg.setIcon(QMessageBox.Icon.Information)
     #         msg.exec()
     #     else:
-    #         lan = lang.DIC[self.current_language]
+    #         lan = lang.DIC[self.currentLanguage]
     #         err = QMessageBox()
     #         err.setWindowTitle(lan["error"])
     #         err.setText(lan["no_file"])
     #         err.setIcon(QMessageBox.Icon.Warning)
     #         err.exec()
 
-    def plotCant(self):
-        lan = lang.DIC[self.current_language]
-        lxml = self.dataStorage.get("LandXML",{})
-
-        self.canvasAlignment.ax_cant.clear()
-        self.plotCantData.clear()
-
-        stationCant = lxml.get("stationCant")
-        stationCantPossible = lxml.get("stationCantPossible")
-
-        if (stationCant is None or len(stationCant) == 0) and (stationCantPossible is None or len(stationCantPossible) == 0):
-            self.canvasAlignment.draw()
-            return
-
-        cant = lxml.get("cant")
-        if (cant is not None and len(cant)>0) and (stationCant is not None and len(stationCant)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCant, cant, marker='o', linestyle='-', color='black', label=lan["cant"])
-            self.plotCantData["cant"] = line
-            line.set_visible(self.toggleCantAction.isChecked())
-
-        cantPossible = lxml.get("cantPossible")
-        if (cantPossible is not None and len(cantPossible)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cantPossible, marker='o', linestyle='-', color='green', label=lan["cant_possible"])
-            self.plotCantData["cantPossible"] = line
-            line.set_visible(self.toggleCantPossibleAction.isChecked())
-
-        cDef100 = lxml.get("cDef100")
-        if (cDef100 is not None and len(cDef100)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cDef100, marker='o', linestyle='-', color='red', label=lan["cdef_100"])
-            self.plotCantData["cDef100"] = line
-            line.set_visible(self.toggleCDef100Action.isChecked())
-
-        cDef130 = lxml.get("cDef130")
-        if (cDef130 is not None and len(cDef130)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cDef130, marker='o', linestyle='-', color='teal', label=lan["cdef_130"])
-            self.plotCantData["cDef130"] = line
-            line.set_visible(self.toggleCDef130Action.isChecked())
-
-        cDef150 = lxml.get("cDef150")
-        if (cDef150 is not None and len(cDef150)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cDef150, marker='o', linestyle='-', color='darkorchid', label=lan["cdef_150"])
-            self.plotCantData["cDef150"] = line
-            line.set_visible(self.toggleCDef150Action.isChecked())
-
-        cDefK = lxml.get("cDefK")
-        if (cDefK is not None and len(cDefK)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cDefK, marker='o', linestyle='-', color='cornflowerblue', label=lan["cdef_K"])
-            self.plotCantData["cDefK"] = line
-            line.set_visible(self.toggleCDefKAction.isChecked())
-
-        cantDef100 = lxml.get("cantDef100")
-        if (cantDef100 is not None and len(cantDef100)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cantDef100, marker='o', linestyle='-', color='tomato', label=lan["cant_def_100"])
-            self.plotCantData["cantDef100"] = line
-            line.set_visible(self.toggleCantDef100Action.isChecked())
-
-        cantDef130 = lxml.get("cantDef130")
-        if (cantDef130 is not None and len(cantDef130)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cantDef130, marker='o', linestyle='-', color='aqua', label=lan["cant_def_130"])
-            self.plotCantData["cantDef130"] = line
-            line.set_visible(self.toggleCantDef130Action.isChecked())
-
-        cantDef150 = lxml.get("cantDef150")
-        if (cantDef150 is not None and len(cantDef150)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cantDef150, marker='o', linestyle='-', color='mediumorchid', label=lan["cant_def_150"])
-            self.plotCantData["cantDef150"] = line
-            line.set_visible(self.toggleCantDef150Action.isChecked())
-
-        cantDefK = lxml.get("cantDefK")
-        if (cantDefK is not None and len(cantDefK)>0) and (stationCantPossible is not None and len(stationCantPossible)>0):
-            line, = self.canvasAlignment.ax_cant.plot(stationCantPossible, cantDefK, marker='o', linestyle='-', color='royalblue', label=lan["cant_def_K"])
-            self.plotCantData["cantDefK"] = line
-            line.set_visible(self.toggleCantDefKAction.isChecked())
-
-        self.canvasAlignment.ax_cant.grid(True)
-        self.canvasAlignment.ax_cant.autoscale(enable=True, axis='x', tight=True)
-        
-        # Srovnání osy y tak, aby 0 byla přesně uprostřed grafu
-        ymin, ymax = self.canvasAlignment.ax_cant.get_ylim()
-        y_limit = 500
-        self.canvasAlignment.ax_cant.set_ylim(-y_limit, y_limit)
-
-        self.canvasAlignment.ax_cant.set_xlabel(lan["station"])
-        self.canvasAlignment.ax_cant.set_ylabel(lan["cant"])
-        self.canvasAlignment.ax_cant.set_title(f'{lan["cant"]} vs {lan["station"]}', loc = 'left')
-        self.canvasAlignment.ax_cant.tick_params(axis='y', labelcolor='tab:blue')
-        if self.canvasAlignment.ax_cant.lines:
-            self.canvasAlignment.ax_cant.legend(loc = 'upper left')
-        self.canvasAlignment.draw()
-
-    def plotCurvature(self):
-        lan = lang.DIC[self.current_language]
-        lxml = self.dataStorage.get("LandXML",{})
-
-        self.canvasAlignment.ax_curvature.clear()
-        self.plotCurvatureData.clear()
-
-        # Initial check to avoid plotting data without station available
-        stationHorizontal = lxml.get("stationHorizontal")
-        stationHorizontalNew = lxml.get("stationHorizontalNew")
-        if (stationHorizontal is None or len(stationHorizontal) == 0) and (stationHorizontalNew is None or len(stationHorizontalNew) == 0):
-            self.canvasAlignment.draw()
-            return  # No data to plot
-        
-        def fractionFormatter(x, pos = None):
-            if np.isclose(x, 0, atol=1e-6):
-                return "0"
-            else:
-                sign = "-" if x < 0 else ""
-                return f"{sign}1/{abs(int(round(1/x)))}"
-
-        curvature = lxml.get("curvature")
-        if (curvature is not None and len(curvature) > 0) and (stationHorizontal is not None and len(stationHorizontal) > 0):
-            line, = self.canvasAlignment.ax_curvature.plot(stationHorizontal, curvature, marker='o', linestyle='-', color='tab:gray', label=lan["curvature"])
-            self.plotCurvatureData["curvature"] = line
-            line.set_visible(self.toggleCurvatureAction.isChecked())
-
-        curvatureNew = lxml.get("curvatureNew")
-        if (curvatureNew is not None and len(curvatureNew) > 0) and (stationHorizontalNew is not None and len(stationHorizontalNew) > 0):
-            line, = self.canvasAlignment.ax_curvature.plot(stationHorizontalNew, curvatureNew, marker='o', linestyle='-', color='tab:gray', label=lan["curvature"])
-            self.plotCurvatureData["curvatureNew"] = line
-            line.set_visible(self.toggleCurvatureNewAction.isChecked())
-        
-        self.canvasAlignment.ax_curvature.yaxis.set_label_position("right")
-        self.canvasAlignment.ax_curvature.yaxis.tick_right()
-        self.canvasAlignment.ax_curvature.grid(False)
-        self.canvasAlignment.ax_curvature.autoscale(enable=True, axis='x', tight=True)
-        
-        # Srovnání osy y tak, aby 0 byla přesně uprostřed grafu (sladění s ax_cant)
-        ymin, ymax = self.canvasAlignment.ax_curvature.get_ylim()
-        y_limit = max(abs(ymin), abs(ymax))
-        self.canvasAlignment.ax_curvature.set_ylim(-y_limit, y_limit)
-
-        self.canvasAlignment.ax_curvature.set_xlabel(lan["station"])
-        self.canvasAlignment.ax_curvature.set_ylabel(lan["curvature"])
-        self.canvasAlignment.ax_curvature.set_title(f'{lan["curvature"]} vs {lan["station"]}', loc ='right')
-        self.canvasAlignment.ax_curvature.tick_params(axis='y', labelcolor='tab:orange')
-        self.canvasAlignment.ax_curvature.yaxis.set_major_formatter(FuncFormatter(fractionFormatter))
-        self.canvasAlignment.ax_curvature.legend(loc = 'upper right')
-        self.canvasAlignment.draw()
-
-    def plotProfile(self):
-        lan = lang.DIC[self.current_language]
-        lxml = self.dataStorage.get("LandXML",{})
-
-        self.canvasProfile.ax_profile.clear()
-        self.plotProfileData.clear()
-
-        # Initial check to avoid plotting data without station available
-        stationVertical = lxml.get("stationVertical")
-        if (stationVertical is None or len(stationVertical) == 0):
-            self.canvasProfile.draw()
-            return  # No data to plot
-        
-        elevation = lxml.get("elevation")
-        slope = lxml.get("slope")
-        midX = (stationVertical[:-1] + stationVertical[1:]) / 2
-        midZ = (elevation[:-1] + elevation[1:]) / 2
-
-        if (elevation is not None and len(elevation) > 0) and (stationVertical is not None and len(stationVertical) > 0):
-            line, = self.canvasProfile.ax_profile.plot(stationVertical, elevation, marker='o', linestyle='-', color='tab:gray', label=lan["profile"])
-            self.plotCurvatureData["profile"] = line
-            line.set_visible(self.toggleProfileAction.isChecked())
-            
-            if self.toggleProfileAction.isChecked():
-                for i in range(len(midX)):
-                    self.canvasProfile.ax_profile.text(midX[i], midZ[i] + 0.1, f"{slope[i]:.2f} ‰", fontsize = 6)
-
-        self.canvasProfile.ax_profile.grid(True)
-        self.canvasProfile.ax_profile.autoscale(enable=True, axis='x', tight=True)
-        self.canvasProfile.ax_profile.set_xlabel(lan["station"])
-        self.canvasProfile.ax_profile.set_ylabel(lan["elevation"])
-        self.canvasProfile.ax_profile.set_title(f'{lan["profile"]}')
-        self.canvasProfile.ax_profile.legend()
-        self.canvasProfile.draw()
-
-    def plotSpeedLimits(self):
-        lan = lang.DIC[self.current_language]
-
-        self.canvasAlignment.ax_speed.clear()
-        self.plotSpeedData.clear()
-
-        stationSpeedLimits = self.dataStorage.get("stationSpeedLimits")
-        stationSpeed100 = self.dataStorage.get("stationSpeed100")
-        stationSpeed130 = self.dataStorage.get("stationSpeed130")
-        stationSpeed150 = self.dataStorage.get("stationSpeed150")
-        stationSpeedK = self.dataStorage.get("stationSpeedK")
-
-        if (stationSpeedLimits is None or len(stationSpeedLimits) == 0) and (stationSpeed100 is None or len(stationSpeed100) == 0) and (stationSpeed130 is None or len(stationSpeed130) == 0) and (stationSpeed150 is None or len(stationSpeed150) == 0) and (stationSpeedK is None or len(stationSpeedK) == 0):
-            self.canvasAlignment.draw()
-            return  # No data to plot
-        
-        speedLimits = self.dataStorage.get("speedLimits")
-        if (speedLimits is not None and len(speedLimits) > 0) and (stationSpeedLimits is not None and len(stationSpeedLimits) > 0):
-            line, = self.canvasAlignment.ax_speed.step(stationSpeedLimits, speedLimits, where="post", marker='s', linestyle='-', color = 'black', label=lan["speed_lim"])
-            self.plotSpeedData["speedLimits"] = line
-            line.set_visible(self.toggleSpeedAction.isChecked())
-
-        speedLimits100 = self.dataStorage.get("speedLimits100")
-        if (speedLimits100 is not None and len(speedLimits100) > 0) and (stationSpeed100 is not None and len(stationSpeed100) > 0):
-            line, = self.canvasAlignment.ax_speed.step(stationSpeed100, speedLimits100, where="post", marker='s', linestyle='-', color = 'red', label=lan["speed_lim_100"])
-            self.plotSpeedData["speedLimits100"] = line
-            line.set_visible(self.toggleSpeed100Action.isChecked())
-
-        speedLimits130 = self.dataStorage.get("speedLimits130")
-        if (speedLimits130 is not None and len(speedLimits130) > 0) and (stationSpeed130 is not None and len(stationSpeed130) > 0):
-            line, = self.canvasAlignment.ax_speed.step(stationSpeed130, speedLimits130, where="post", marker='s', linestyle='-', color = 'teal', label=lan["speed_lim_130"])
-            self.plotSpeedData["speedLimits130"] = line
-            line.set_visible(self.toggleSpeed130Action.isChecked())
-
-        speedLimits150 = self.dataStorage.get("speedLimits150")
-        if (speedLimits150 is not None and len(speedLimits150) > 0) and (stationSpeed150 is not None and len(stationSpeed150) > 0):
-            line, = self.canvasAlignment.ax_speed.step(stationSpeed150, speedLimits150, where="post", marker='s', linestyle='-', color = 'darkorchid', label=lan["speed_lim_150"])
-            self.plotSpeedData["speedLimits150"] = line
-            line.set_visible(self.toggleSpeed150Action.isChecked())
-
-        speedLimitsK = self.dataStorage.get("speedLimitsK")
-        if (speedLimitsK is not None and len(speedLimitsK) > 0) and (stationSpeedK is not None and len(stationSpeedK) > 0):
-            line, = self.canvasAlignment.ax_speed.step(stationSpeedK, speedLimitsK, where="post", marker='s', linestyle='-', color='cornflowerblue', label=lan["speed_lim_K"])
-            self.plotSpeedData["speedLimitsK"] = line
-            line.set_visible(self.toggleSpeedKAction.isChecked())
-
-        self.canvasAlignment.ax_speed.grid(True)
-        self.canvasAlignment.ax_speed.autoscale(enable=True, axis='x', tight=True)
-        self.canvasAlignment.ax_speed.set_xlabel(lan["station"])
-        self.canvasAlignment.ax_speed.set_ylabel(lan["speed_lim"])
-        self.canvasAlignment.ax_speed.set_title(f'{lan["speed_lim"]} vs {lan["station"]}')
-        self.canvasAlignment.ax_speed.legend()
-        self.canvasAlignment.draw()
-
-    def plotKinematics(self):
-        lan = lang.DIC[self.current_language]
-        self.canvasKinematics.ax_tacho_track.clear()
-        self.canvasKinematics.ax_tacho_time.clear()
-        self.canvasKinematics.ax_dist_time.clear()
-        self.canvasKinematics.ax_forces.clear()
-        self.plotKinematicsData.clear()
-
-        use_kmh = self.toggleUnitsAction.isChecked()
-        v_factor = 3.6 if use_kmh else 1.0
-        d_factor = 1000.0 if use_kmh else 1.0
-        t_factor = 60.0 if use_kmh else 1.0 # time in minutes
-
-        speed_lbl = lan.get("speedKmh", "Speed [km/h]") if use_kmh else lan.get("speedM", "Speed [m/s]")
-        speed_lim_lbl = lan.get("speedLimKmh", "Speed Limit [km/h]") if use_kmh else lan.get("speedLimM", "Speed Limit [m/s]")
-        dist_lbl = lan.get("distanceKm", "Distance [km]") if use_kmh else lan.get("distance", "Distance [m]")
-        time_lbl = lan.get("timeMin", "Time [min]") if use_kmh else lan.get("time", "Time [s]")
-
-        colors_speed = ['tab:red', 'tab:green', 'tab:blue']
-        colors_trac = ['green', 'lime', 'darkgreen']
-        colors_brake = ['red', 'darkred', 'salmon']
-        colors_res = ['orange', 'darkorange', 'gold']
-        limit_colors = ['lightcoral', 'lightgreen', 'lightskyblue']
-
-        num_vehicles = self.dataStorage.get("num_vehicles", 1)
-        vehicles_settings = self.dataStorage.get("settingsData", {}).get("vehicles", [])
-
-        for v_idx in range(num_vehicles):
-            stationSpeedLimits = self.dataStorage.get(f"stationSpeedLimitM_{v_idx}")
-            speedLimits = self.dataStorage.get(f"speedLimitsM_{v_idx}")
-            speedLimitsT = self.dataStorage.get(f"speedLimitsT_{v_idx}")
-            
-            if num_vehicles > 1:
-                _vname = self._get_vehicle_name(v_idx)
-                lbl_v = f" {_vname}" if _vname else f" V{v_idx+1}"
-            else:
-                lbl_v = ""
-
-            if (speedLimits is not None and len(speedLimits) > 0) and (stationSpeedLimits is not None and len(stationSpeedLimits) > 0):
-                # For reversed vehicles the stored arrays are descending; `where="post"` on a
-                # descending x shifts every limit one segment to the wrong side, so sort
-                # ascending for the visual only (stored data / time calcs are untouched).
-                is_rev_v = (v_idx < len(vehicles_settings) and
-                            vehicles_settings[v_idx].get("runReversed", False))
-                if is_rev_v and len(stationSpeedLimits) > 1:
-                    _si = np.argsort(stationSpeedLimits)
-                    _st_plot = stationSpeedLimits[_si]
-                    _sp_plot = speedLimits[_si]
-                else:
-                    _st_plot, _sp_plot = stationSpeedLimits, speedLimits
-                line, = self.canvasKinematics.ax_tacho_track.step(_st_plot / d_factor, _sp_plot * v_factor, where="post", marker='s', linestyle='--', alpha=0.7, color=limit_colors[v_idx], label=speed_lim_lbl + lbl_v)
-                self.plotKinematicsData[f"tachoTrack_{v_idx}"] = line
-                line.set_visible(self.toggleKinematicsSpeedLimitTrackAction.isChecked())
-
-            if (speedLimitsT is not None and len(speedLimitsT) > 0) and (speedLimits is not None and len(speedLimits) > 0):
-                line, = self.canvasKinematics.ax_tacho_time.step(speedLimitsT / t_factor, speedLimits * v_factor, where="post", marker='s', linestyle='--', alpha=0.7, color=limit_colors[v_idx], label=speed_lim_lbl + lbl_v)
-                self.plotKinematicsData[f"tachoTime_{v_idx}"] = line
-                line.set_visible(self.toggleKinematicsSpeedLimitTimeAction.isChecked())
-
-            if (speedLimitsT is not None and len(speedLimitsT) > 0) and (stationSpeedLimits is not None and len(stationSpeedLimits) > 0):
-                line, = self.canvasKinematics.ax_dist_time.plot(speedLimitsT / t_factor, stationSpeedLimits / d_factor, marker='s', linestyle='--', alpha=0.7, color=limit_colors[v_idx], label=speed_lim_lbl + lbl_v)
-                self.plotKinematicsData[f"distTime_{v_idx}"] = line
-                line.set_visible(self.toggleKinematicsDistanceTimeAction.isChecked())
-
-            kinematicsStation = self.dataStorage.get(f"kinematicsStationM_{v_idx}")
-            kinematicsSpeed = self.dataStorage.get(f"kinematicsSpeedM_{v_idx}")
-            kinematicsTime = self.dataStorage.get(f"kinematicsTimeS_{v_idx}")
-            kinematicsDwells = self.dataStorage.get(f"kinematicsDwellTimesS_{v_idx}")
-
-            if kinematicsStation is None or len(kinematicsStation) == 0:
-                continue
-
-            # Create copies for plotting time-based graphs, inserting arrival points for stops
-            plot_times = list(kinematicsTime)
-            plot_speeds = list(kinematicsSpeed)
-            plot_stations = list(kinematicsStation)
-            
-            if kinematicsDwells is not None:
-                stop_indices = np.where(kinematicsDwells > 0)[0]
-                offset = 0
-                for idx in stop_indices:
-                    actual_idx = idx + offset
-                    departure_time = plot_times[actual_idx]
-                    dwell_time = kinematicsDwells[idx]
-                    arrival_time = departure_time - dwell_time
-                    
-                    # Insert arrival point (arrival_time, 0 speed)
-                    plot_times.insert(actual_idx, arrival_time)
-                    plot_speeds.insert(actual_idx, 0.0)
-                    plot_stations.insert(actual_idx, plot_stations[actual_idx])
-                    offset += 1
-
-            plot_times_arr = np.array(plot_times)
-            plot_speeds_arr = np.array(plot_speeds)
-            plot_stations_arr = np.array(plot_stations)
-
-            if kinematicsSpeed is not None and len(kinematicsSpeed) > 0:
-                line2, = self.canvasKinematics.ax_tacho_track.plot(kinematicsStation / d_factor, kinematicsSpeed * v_factor, linestyle='-', color=colors_speed[v_idx], label=speed_lbl + lbl_v)
-                self.plotKinematicsData[f"simTrack_{v_idx}"] = line2
-                line2.set_visible(self.toggleKinematicsSpeedLimitTrackAction.isChecked())
-
-            if len(plot_times_arr) > 0 and len(plot_speeds_arr) > 0:
-                line2, = self.canvasKinematics.ax_tacho_time.plot(plot_times_arr / t_factor, plot_speeds_arr * v_factor, linestyle='-', color=colors_speed[v_idx], label=speed_lbl + lbl_v)
-                self.plotKinematicsData[f"simTime_{v_idx}"] = line2
-                line2.set_visible(self.toggleKinematicsSpeedLimitTimeAction.isChecked())
-
-            if len(plot_times_arr) > 0 and len(plot_stations_arr) > 0:
-                line2, = self.canvasKinematics.ax_dist_time.plot(plot_times_arr / t_factor, plot_stations_arr / d_factor, linestyle='-', color=colors_speed[v_idx], label=dist_lbl + lbl_v)
-                self.plotKinematicsData[f"distTimeSim_{v_idx}"] = line2
-                line2.set_visible(self.toggleKinematicsDistanceTimeAction.isChecked())
-
-            forceTrac = self.dataStorage.get(f"kinematicsForceTractionKN_{v_idx}")
-            forceBrake = self.dataStorage.get(f"kinematicsForceBrakingKN_{v_idx}")
-            forceRes = self.dataStorage.get(f"kinematicsForceResistanceKN_{v_idx}")
-
-            if forceTrac is not None and len(forceTrac) > 0 and kinematicsStation is not None and len(kinematicsStation) > 0:
-                line3, = self.canvasKinematics.ax_forces.plot(kinematicsStation / d_factor, forceTrac, linestyle='-', color=colors_trac[v_idx], label=lan.get("forceTraction", "Tractive Force [kN]") + lbl_v)
-                self.plotKinematicsData[f"forceTrac_{v_idx}"] = line3
-                line3.set_visible(self.toggleKinematicsForcesAction.isChecked())
-
-            if forceBrake is not None and len(forceBrake) > 0 and kinematicsStation is not None and len(kinematicsStation) > 0:
-                line4, = self.canvasKinematics.ax_forces.plot(kinematicsStation / d_factor, forceBrake, linestyle='-', color=colors_brake[v_idx], label=lan.get("forceBraking", "Braking Force [kN]") + lbl_v)
-                self.plotKinematicsData[f"forceBrake_{v_idx}"] = line4
-                line4.set_visible(self.toggleKinematicsForcesAction.isChecked())
-
-            if forceRes is not None and len(forceRes) > 0 and kinematicsStation is not None and len(kinematicsStation) > 0:
-                line5, = self.canvasKinematics.ax_forces.plot(kinematicsStation / d_factor, forceRes, linestyle='-', color=colors_res[v_idx], label=lan.get("forceResistance", "Resistance [kN]") + lbl_v)
-                self.plotKinematicsData[f"forceRes_{v_idx}"] = line5
-                line5.set_visible(self.toggleKinematicsForcesAction.isChecked())
-
-        # Add train stops markers
-        trainStops = self.dataStorage.get("settingsData", {}).get("trainStops", [])
-        if trainStops:
-            for stop in trainStops:
-                try:
-                    s_m = float(stop[0]) * 1000.0
-                    name = str(stop[2]) if len(stop) > 2 else ""
-                except (IndexError, ValueError):
-                    continue
-                
-                # Track-speed vertical line
-                self.canvasKinematics.ax_tacho_track.axvline(x=s_m / d_factor, color='gray', linestyle='--', alpha=0.7)
-                if name:
-                    self.canvasKinematics.ax_tacho_track.text(s_m / d_factor, 0, f" {name}", rotation=90, verticalalignment='bottom', color='black', fontsize=8, alpha=0.7)
-                
-                # Distance-time horizontal line
-                self.canvasKinematics.ax_dist_time.axhline(y=s_m / d_factor, color='gray', linestyle='--', alpha=0.7)
-                if name:
-                    self.canvasKinematics.ax_dist_time.text(0, s_m / d_factor, f" {name}", verticalalignment='bottom', color='black', fontsize=8, alpha=0.7)
-                
-                # Time-speed vertical line (individual per vehicle due to different arrival times)
-                for v_idx in range(num_vehicles):
-                    kinematicsStation = self.dataStorage.get(f"kinematicsStationM_{v_idx}")
-                    kinematicsTime = self.dataStorage.get(f"kinematicsTimeS_{v_idx}")
-
-                    is_reversed = False
-                    if v_idx < len(vehicles_settings):
-                        is_reversed = vehicles_settings[v_idx].get("runReversed", False)
-
-                    if kinematicsStation is not None and len(kinematicsStation) > 0:
-                        xp, fp = kinematicsStation, kinematicsTime
-                        if is_reversed:
-                            xp = kinematicsStation[::-1]
-                            fp = kinematicsTime[::-1]
-
-                        stop_time = np.interp(s_m, xp, fp)
-                        self.canvasKinematics.ax_tacho_time.axvline(x=stop_time / t_factor, color=limit_colors[v_idx], linestyle=':', alpha=0.5)
-                        if name:
-                            self.canvasKinematics.ax_tacho_time.text(stop_time / t_factor, 0, f" {name} (V{v_idx+1})", rotation=90, verticalalignment='bottom', color=limit_colors[v_idx], fontsize=7, alpha=0.7)
-
-        self.canvasKinematics.ax_tacho_track.grid(True)
-        self.canvasKinematics.ax_tacho_track.autoscale(enable=True, axis='x', tight=True)
-        self.canvasKinematics.ax_tacho_track.set_xlabel(dist_lbl)
-        self.canvasKinematics.ax_tacho_track.set_ylabel(speed_lim_lbl)
-        self.canvasKinematics.ax_tacho_track.set_title(f'{speed_lim_lbl} vs {dist_lbl}')
-        self.canvasKinematics.ax_tacho_track.legend()
-
-        self.canvasKinematics.ax_tacho_time.grid(True)
-        self.canvasKinematics.ax_tacho_time.autoscale(enable=True, axis='x', tight=True)
-        self.canvasKinematics.ax_tacho_time.set_xlabel(time_lbl)
-        self.canvasKinematics.ax_tacho_time.set_ylabel(speed_lim_lbl)
-        self.canvasKinematics.ax_tacho_time.set_title(f'{speed_lim_lbl} vs {time_lbl}')
-        self.canvasKinematics.ax_tacho_time.legend()
-
-        self.canvasKinematics.ax_dist_time.grid(True)
-        self.canvasKinematics.ax_dist_time.autoscale(enable=True, axis='x', tight=True)
-        self.canvasKinematics.ax_dist_time.set_xlabel(time_lbl)
-        self.canvasKinematics.ax_dist_time.set_ylabel(dist_lbl)
-        self.canvasKinematics.ax_dist_time.set_title(lan["kinematicsDistanceTime"])
-        self.canvasKinematics.ax_dist_time.legend()
-
-        self.canvasKinematics.ax_forces.grid(True)
-        self.canvasKinematics.ax_forces.autoscale(enable=True, axis='x', tight=True)
-        self.canvasKinematics.ax_forces.set_xlabel(dist_lbl)
-        self.canvasKinematics.ax_forces.set_ylabel(lan.get("forceKN", "Force [kN]"))
-        self.canvasKinematics.ax_forces.set_title(lan.get("kinematicsForces", "Forces Profile"))
-        self.canvasKinematics.ax_forces.legend()
-
-        self.canvasKinematics.draw()
+    # Redraw the vertical alignment plot from the parsed LandXML data
+    def renderProfile(self):
+        self.profileWidget.updateProfileData(self.dataStorage.get("LandXML", {}),
+                                             self.toggleProfileAction.isChecked())
+
+    # Redraw every kinematics plot from the latest simulation results
+    def renderKinematics(self):
+        self.kinematicsWidget.updateKinematicsData(
+            self.dataStorage,
+            self.toggleUnitsAction.isChecked(),
+            self.getVehicleName,
+            self.seriesVisibility())
 
     # ------------------------------------------------------------------
     # Pop-up plot windows (right-click context menu on any canvas)
     # ------------------------------------------------------------------
 
-    def _on_canvas_right_click(self, event):
-        """Called for every mouse button press on any of the three canvases.
-        Opens the graph context menu on right-click (button 3)."""
-        if event.button != 3:
-            return
-        self._show_graph_context_menu(QCursor.pos())
+    # Build and display the QMenu with a fixed list of all graphs
+    def showGraphContextMenu(self, globalPos):
+        lan = lang.DIC[self.currentLanguage]
 
-    def _show_graph_context_menu(self, global_pos):
-        """Build and display the QMenu with a fixed list of all graphs."""
-        lan = lang.DIC[self.current_language]
-
-        graph_defs = [
+        graphDefs = [
             ("speed",       lan.get("speed_lim",                   "Speed Limits")),
             ("cant_curv",   f'{lan.get("cant","Cant")} / {lan.get("curvature","Curvature")}'),
             ("profile",     lan.get("profile",                     "Profile")),
@@ -1832,79 +1671,79 @@ class MainWindow(QMainWindow):
 
         menu = QMenu(self)
         menu.addSection(lan.get("openGraphMenu", "Open graph in new window"))
-        for graph_id, graph_name in graph_defs:
-            action = menu.addAction(graph_name)
+        for graphId, graphName in graphDefs:
+            action = menu.addAction(graphName)
             # Default-argument binding prevents loop-variable capture issues
             action.triggered.connect(
-                lambda checked=False, gid=graph_id: self._open_popup_plot(gid)
+                lambda checked=False, gid=graphId: self.openPopupPlot(gid)
             )
-        menu.exec(global_pos)
+        menu.exec(globalPos)
 
-    def _open_popup_plot(self, graph_id: str):
-        """Collect data from dataStorage and open a PopupPlotWindow for *graph_id*."""
-        lan  = lang.DIC[self.current_language]
+    # Collect data from dataStorage and open a PopupPlotWindow for the given graph
+    def openPopupPlot(self, graphId):
+        lan  = lang.DIC[self.currentLanguage]
         lxml = self.dataStorage.get("LandXML", {})
 
         # Unit factors (shared with plotKinematics)
-        use_kmh   = self.toggleUnitsAction.isChecked()
-        v_factor  = 3.6    if use_kmh else 1.0
-        d_factor  = 1000.0 if use_kmh else 1.0
-        t_factor  = 60.0   if use_kmh else 1.0
-        spd_lbl   = lan.get("speedKmh",    "Speed [km/h]")  if use_kmh else lan.get("speedM",    "Speed [m/s]")
-        splim_lbl = lan.get("speedLimKmh", "Speed Limit [km/h]") if use_kmh else lan.get("speedLimM", "Speed Limit [m/s]")
-        dist_lbl  = lan.get("distanceKm",  "Distance [km]") if use_kmh else lan.get("distance",   "Distance [m]")
-        time_lbl  = lan.get("timeMin",     "Time [min]")    if use_kmh else lan.get("time",        "Time [s]")
+        useKmh   = self.toggleUnitsAction.isChecked()
+        vFactor  = 3.6    if useKmh else 1.0
+        dFactor  = 1000.0 if useKmh else 1.0
+        tFactor  = 60.0   if useKmh else 1.0
+        spdLbl   = lan.get("speedKmh",    "Speed [km/h]")  if useKmh else lan.get("speedM",    "Speed [m/s]")
+        splimLbl = lan.get("speedLimKmh", "Speed Limit [km/h]") if useKmh else lan.get("speedLimM", "Speed Limit [m/s]")
+        distLbl  = lan.get("distanceKm",  "Distance [km]") if useKmh else lan.get("distance",   "Distance [m]")
+        timeLbl  = lan.get("timeMin",     "Time [min]")    if useKmh else lan.get("time",        "Time [s]")
 
-        num_vehicles    = self.dataStorage.get("num_vehicles", 1)
-        colors_speed    = ['tab:red',   'tab:green',  'tab:blue']
-        colors_trac     = ['green',    'lime',       'darkgreen']
-        colors_brake    = ['red',      'darkred',    'salmon']
-        colors_res      = ['orange',   'darkorange', 'gold']
-        limit_colors    = ['lightcoral','lightgreen','lightskyblue']
+        numVehicles    = self.dataStorage.get("num_vehicles", 1)
+        colorsSpeed    = ['tab:red',   'tab:green',  'tab:blue']
+        colorsTrac     = ['green',    'lime',       'darkgreen']
+        colorsBrake    = ['red',      'darkred',    'salmon']
+        colorsRes      = ['orange',   'darkorange', 'gold']
+        limitColors    = ['lightcoral','lightgreen','lightskyblue']
 
-        def lbl_v(v_idx):
-            if num_vehicles <= 1:
+        def vehicleLabel(vIdx):
+            if numVehicles <= 1:
                 return ""
-            _vname = self._get_vehicle_name(v_idx)
-            return f" {_vname}" if _vname else f" V{v_idx+1}"
+            vname = self.getVehicleName(vIdx)
+            return f" {vname}" if vname else f" V{vIdx+1}"
 
         # ---- helper: build stop-expanded time/speed/station arrays ----------
-        def _expand_stops(v_idx, base_times, base_values):
-            """Insert arrival (t, 0-speed or same station) points for dwell stops."""
-            dwells = self.dataStorage.get(f"kinematicsDwellTimesS_{v_idx}")
+        # Insert arrival points with zero speed for dwell stops
+        def expandStops(vIdx, baseTimes, baseValues):
+            dwells = self.dataStorage.get(f"kinematicsDwellTimesS_{vIdx}")
             if dwells is None:
-                return np.array(base_times), np.array(base_values)
-            t_list = list(base_times)
-            v_list = list(base_values)
-            stop_idx = np.where(dwells > 0)[0]
+                return np.array(baseTimes), np.array(baseValues)
+            tList = list(baseTimes)
+            vList = list(baseValues)
+            stopIdx = np.where(dwells > 0)[0]
             offset = 0
-            for idx in stop_idx:
+            for idx in stopIdx:
                 ai = idx + offset
-                arrival = t_list[ai] - dwells[idx]
-                t_list.insert(ai, arrival)
-                v_list.insert(ai, 0.0)
+                arrival = tList[ai] - dwells[idx]
+                tList.insert(ai, arrival)
+                vList.insert(ai, 0.0)
                 offset += 1
-            return np.array(t_list), np.array(v_list)
+            return np.array(tList), np.array(vList)
 
-        def _expand_stops_station(v_idx, base_times, base_stations):
-            """Same but preserves station value (for distance-time)."""
-            dwells = self.dataStorage.get(f"kinematicsDwellTimesS_{v_idx}")
+        # Same as above but preserves the station value for the distance-time plot
+        def expandStopsStation(vIdx, baseTimes, baseStations):
+            dwells = self.dataStorage.get(f"kinematicsDwellTimesS_{vIdx}")
             if dwells is None:
-                return np.array(base_times), np.array(base_stations)
-            t_list = list(base_times)
-            s_list = list(base_stations)
-            stop_idx = np.where(dwells > 0)[0]
+                return np.array(baseTimes), np.array(baseStations)
+            tList = list(baseTimes)
+            sList = list(baseStations)
+            stopIdx = np.where(dwells > 0)[0]
             offset = 0
-            for idx in stop_idx:
+            for idx in stopIdx:
                 ai = idx + offset
-                arrival = t_list[ai] - dwells[idx]
-                t_list.insert(ai, arrival)
-                s_list.insert(ai, s_list[ai])
+                arrival = tList[ai] - dwells[idx]
+                tList.insert(ai, arrival)
+                sList.insert(ai, sList[ai])
                 offset += 1
-            return np.array(t_list), np.array(s_list)
+            return np.array(tList), np.array(sList)
 
         # ==================================================================
-        if graph_id == "speed":
+        if graphId == "speed":
             title   = lan.get("speed_lim", "Speed Limits")
             primary = []
             pairs = [
@@ -1920,19 +1759,19 @@ class MainWindow(QMainWindow):
                 if st is not None and sp is not None and len(st) > 0 and len(sp) > 0:
                     primary.append(dict(x=st, y=sp, label=lbl, color=col,
                                         step=True, marker='s'))
-            win = gui_overlay.PopupPlotWindow(title, self)
-            win.draw_data(primary,
+            win = gui_overlay.PopupPlotWindow(title, self, lan)
+            win.drawData(primary,
                           xlabel=lan.get("station","Station [km]"),
                           ylabel=lan.get("speed_lim","Speed Limits"),
                           title=title)
 
         # ------------------------------------------------------------------
-        elif graph_id == "cant_curv":
+        elif graphId == "cant_curv":
             title   = f'{lan.get("cant","Cant")} / {lan.get("curvature","Curvature")}'
             primary = []
             secondary = []
 
-            cant_series = [
+            cantSeries = [
                 ("stationCant",         "cant",       lan.get("cant"),         'black'),
                 ("stationCantPossible", "cantPossible",lan.get("cant_possible"),'green'),
                 ("stationCantPossible", "cDef100",    lan.get("cdef_100"),     'red'),
@@ -1944,7 +1783,7 @@ class MainWindow(QMainWindow):
                 ("stationCantPossible", "cantDef150", lan.get("cant_def_150"), 'mediumorchid'),
                 ("stationCantPossible", "cantDefK",   lan.get("cant_def_K"),   'royalblue'),
             ]
-            for sk, dk, lbl, col in cant_series:
+            for sk, dk, lbl, col in cantSeries:
                 x = lxml.get(sk)
                 y = lxml.get(dk)
                 if x is not None and y is not None and len(x) > 0 and len(y) > 0:
@@ -1961,221 +1800,224 @@ class MainWindow(QMainWindow):
                     secondary.append(dict(x=x, y=y, label=lbl, color=col,
                                           linestyle='-', marker='o'))
 
-            def _frac_fmt(x, pos=None):
+            def fracFmt(x, pos=None):
                 if np.isclose(x, 0, atol=1e-6):
                     return "0"
                 sign = "-" if x < 0 else ""
                 return f"{sign}1/{abs(int(round(1/x)))}"
 
-            win = gui_overlay.PopupPlotWindow(title, self)
-            win.draw_data(
+            win = gui_overlay.PopupPlotWindow(title, self, lan)
+            win.drawData(
                 primary,
                 xlabel=lan.get("station","Station [km]"),
                 ylabel=lan.get("cant","Cant [mm]"),
                 title=title,
-                secondary_series=secondary or None,
-                secondary_ylabel=lan.get("curvature","Curvature [1/m]"),
-                secondary_formatter=FuncFormatter(_frac_fmt),
-                symmetric_ylim=True,
+                secondarySeries=secondary or None,
+                secondaryYlabel=lan.get("curvature","Curvature [1/m]"),
+                secondaryFormatter=fracFmt,
+                symmetricYlim=True,
             )
 
         # ------------------------------------------------------------------
-        elif graph_id == "profile":
+        elif graphId == "profile":
             title   = lan.get("profile", "Profile")
             primary = []
             annotations = []
-            st_v = lxml.get("stationVertical")
+            stV = lxml.get("stationVertical")
             elev = lxml.get("elevation")
             slp  = lxml.get("slope")
-            if st_v is not None and elev is not None and len(st_v) > 0:
-                primary.append(dict(x=st_v, y=elev,
+            if stV is not None and elev is not None and len(stV) > 0:
+                primary.append(dict(x=stV, y=elev,
                                     label=lan.get("profile","Profile"),
                                     color='tab:gray', linestyle='-', marker='o'))
                 if slp is not None and len(slp) > 0:
-                    midX = (st_v[:-1] + st_v[1:]) / 2
+                    midX = (stV[:-1] + stV[1:]) / 2
                     midZ = (elev[:-1] + elev[1:]) / 2
                     for i in range(len(midX)):
                         annotations.append(dict(x=midX[i], y=float(midZ[i]) + 0.1,
                                                  text=f"{slp[i]:.2f} ‰", fontsize=6))
-            win = gui_overlay.PopupPlotWindow(title, self)
-            win.draw_data(primary,
+            win = gui_overlay.PopupPlotWindow(title, self, lan)
+            win.drawData(primary,
                           xlabel=lan.get("station","Station [km]"),
                           ylabel=lan.get("elevation","Elevation [m]"),
                           title=title,
-                          text_annotations=annotations)
+                          textAnnotations=annotations)
 
         # ------------------------------------------------------------------
-        elif graph_id == "tacho_track":
+        elif graphId == "tacho_track":
             title   = lan.get("kinematicsSpeedLimitTrack", "Speed–Distance")
             primary = []
-            vehicles_sett_tt = self.dataStorage.get("settingsData", {}).get("vehicles", [])
-            for v_idx in range(num_vehicles):
-                st_lim = self.dataStorage.get(f"stationSpeedLimitM_{v_idx}")
-                sp_lim = self.dataStorage.get(f"speedLimitsM_{v_idx}")
-                st_kin = self.dataStorage.get(f"kinematicsStationM_{v_idx}")
-                sp_kin = self.dataStorage.get(f"kinematicsSpeedM_{v_idx}")
-                if st_lim is not None and sp_lim is not None and len(st_lim) > 0:
+            vehiclesSettTt = self.dataStorage.get("settingsData", {}).get("vehicles", [])
+            for vIdx in range(numVehicles):
+                stLim = self.dataStorage.get(f"stationSpeedLimitM_{vIdx}")
+                spLim = self.dataStorage.get(f"speedLimitsM_{vIdx}")
+                stKin = self.dataStorage.get(f"kinematicsStationM_{vIdx}")
+                spKin = self.dataStorage.get(f"kinematicsSpeedM_{vIdx}")
+                if stLim is not None and spLim is not None and len(stLim) > 0:
                     # Same ascending-sort fix as plotKinematics tacho_track
-                    is_rev_tt = (v_idx < len(vehicles_sett_tt) and
-                                 vehicles_sett_tt[v_idx].get("runReversed", False))
-                    if is_rev_tt and len(st_lim) > 1:
-                        _si = np.argsort(st_lim)
-                        st_lim_p = st_lim[_si]
-                        sp_lim_p = sp_lim[_si]
+                    isRevTt = (vIdx < len(vehiclesSettTt) and
+                                 vehiclesSettTt[vIdx].get("runReversed", False))
+                    if isRevTt and len(stLim) > 1:
+                        si = np.argsort(stLim)
+                        stLimP = stLim[si]
+                        spLimP = spLim[si]
                     else:
-                        st_lim_p, sp_lim_p = st_lim, sp_lim
-                    primary.append(dict(x=st_lim_p/d_factor, y=sp_lim_p*v_factor,
-                                        label=splim_lbl+lbl_v(v_idx),
-                                        color=limit_colors[v_idx], step=True, marker='s',
+                        stLimP, spLimP = stLim, spLim
+                    primary.append(dict(x=stLimP/dFactor, y=spLimP*vFactor,
+                                        label=splimLbl+vehicleLabel(vIdx),
+                                        color=limitColors[vIdx], step=True, marker='s',
                                         linestyle='--', alpha=0.7))
-                if st_kin is not None and sp_kin is not None and len(st_kin) > 0:
-                    primary.append(dict(x=st_kin/d_factor, y=sp_kin*v_factor,
-                                        label=spd_lbl+lbl_v(v_idx),
-                                        color=colors_speed[v_idx]))
+                if stKin is not None and spKin is not None and len(stKin) > 0:
+                    primary.append(dict(x=stKin/dFactor, y=spKin*vFactor,
+                                        label=spdLbl+vehicleLabel(vIdx),
+                                        color=colorsSpeed[vIdx]))
             # Stop markers – vertical line at each station position
             axlines = []
             trainStops = self.dataStorage.get("settingsData", {}).get("trainStops", [])
             for stop in trainStops:
                 try:
-                    s_m  = float(stop[0]) * 1000.0
+                    sM  = float(stop[0]) * 1000.0
                     name = str(stop[2]) if len(stop) > 2 else ""
                 except (IndexError, ValueError):
                     continue
-                al = dict(axis="x", pos=s_m/d_factor,
+                al = dict(axis="x", pos=sM/dFactor,
                           color="gray", linestyle="--", alpha=0.7)
                 if name:
                     al.update(label_text=f" {name}", label_rotation=90,
                               label_va="bottom", label_color="black",
                               label_fontsize=8, label_alpha=0.7, label_y=0)
                 axlines.append(al)
-            win = gui_overlay.PopupPlotWindow(title, self)
-            win.draw_data(primary, xlabel=dist_lbl, ylabel=splim_lbl,
+            win = gui_overlay.PopupPlotWindow(title, self, lan)
+            win.drawData(primary, xlabel=distLbl, ylabel=splimLbl,
                           title=title, axlines=axlines or None)
 
         # ------------------------------------------------------------------
-        elif graph_id == "tacho_time":
+        elif graphId == "tacho_time":
             title   = lan.get("kinematicsSpeedLimitTime", "Speed–Time")
             primary = []
-            for v_idx in range(num_vehicles):
-                sp_lim_t = self.dataStorage.get(f"speedLimitsT_{v_idx}")
-                sp_lim   = self.dataStorage.get(f"speedLimitsM_{v_idx}")
-                kin_t    = self.dataStorage.get(f"kinematicsTimeS_{v_idx}")
-                kin_sp   = self.dataStorage.get(f"kinematicsSpeedM_{v_idx}")
-                if sp_lim_t is not None and sp_lim is not None and len(sp_lim_t) > 0:
-                    primary.append(dict(x=sp_lim_t/t_factor, y=sp_lim*v_factor,
-                                        label=splim_lbl+lbl_v(v_idx),
-                                        color=limit_colors[v_idx], step=True, marker='s',
+            for vIdx in range(numVehicles):
+                spLimT = self.dataStorage.get(f"speedLimitsT_{vIdx}")
+                spLim   = self.dataStorage.get(f"speedLimitsM_{vIdx}")
+                kinT    = self.dataStorage.get(f"kinematicsTimeS_{vIdx}")
+                kinSp   = self.dataStorage.get(f"kinematicsSpeedM_{vIdx}")
+                if spLimT is not None and spLim is not None and len(spLimT) > 0:
+                    primary.append(dict(x=spLimT/tFactor, y=spLim*vFactor,
+                                        label=splimLbl+vehicleLabel(vIdx),
+                                        color=limitColors[vIdx], step=True, marker='s',
                                         linestyle='--', alpha=0.7))
-                if kin_t is not None and kin_sp is not None and len(kin_t) > 0:
-                    pt, pv = _expand_stops(v_idx, kin_t, kin_sp)
-                    primary.append(dict(x=pt/t_factor, y=pv*v_factor,
-                                        label=spd_lbl+lbl_v(v_idx),
-                                        color=colors_speed[v_idx]))
+                if kinT is not None and kinSp is not None and len(kinT) > 0:
+                    pt, pv = expandStops(vIdx, kinT, kinSp)
+                    primary.append(dict(x=pt/tFactor, y=pv*vFactor,
+                                        label=spdLbl+vehicleLabel(vIdx),
+                                        color=colorsSpeed[vIdx]))
             # Stop markers – vertical line at interpolated arrival time per vehicle
             axlines = []
             trainStops    = self.dataStorage.get("settingsData", {}).get("trainStops", [])
-            vehicles_sett = self.dataStorage.get("settingsData", {}).get("vehicles", [])
+            vehiclesSett = self.dataStorage.get("settingsData", {}).get("vehicles", [])
             for stop in trainStops:
                 try:
-                    s_m  = float(stop[0]) * 1000.0
+                    sM  = float(stop[0]) * 1000.0
                     name = str(stop[2]) if len(stop) > 2 else ""
                 except (IndexError, ValueError):
                     continue
-                for v_idx in range(num_vehicles):
-                    kin_st = self.dataStorage.get(f"kinematicsStationM_{v_idx}")
-                    kin_t2 = self.dataStorage.get(f"kinematicsTimeS_{v_idx}")
-                    is_rev = (vehicles_sett[v_idx].get("runReversed", False)
-                              if v_idx < len(vehicles_sett) else False)
-                    if kin_st is None or kin_t2 is None or len(kin_st) == 0:
+                for vIdx in range(numVehicles):
+                    kinSt = self.dataStorage.get(f"kinematicsStationM_{vIdx}")
+                    kinT2 = self.dataStorage.get(f"kinematicsTimeS_{vIdx}")
+                    isRev = (vehiclesSett[vIdx].get("runReversed", False)
+                              if vIdx < len(vehiclesSett) else False)
+                    if kinSt is None or kinT2 is None or len(kinSt) == 0:
                         continue
-                    xp, fp = kin_st, kin_t2
-                    if is_rev:
-                        xp, fp = kin_st[::-1], kin_t2[::-1]
-                    stop_time = np.interp(s_m, xp, fp)
-                    al = dict(axis="x", pos=stop_time/t_factor,
-                              color=limit_colors[v_idx], linestyle=":", alpha=0.5)
+                    xp, fp = kinSt, kinT2
+                    if isRev:
+                        xp, fp = kinSt[::-1], kinT2[::-1]
+                    stopTime = np.interp(sM, xp, fp)
+                    al = dict(axis="x", pos=stopTime/tFactor,
+                              color=limitColors[vIdx], linestyle=":", alpha=0.5)
                     if name:
-                        al.update(label_text=f" {name} (V{v_idx+1})",
+                        al.update(label_text=f" {name} (V{vIdx+1})",
                                   label_rotation=90, label_va="bottom",
-                                  label_color=limit_colors[v_idx],
+                                  label_color=limitColors[vIdx],
                                   label_fontsize=7, label_alpha=0.7, label_y=0)
                     axlines.append(al)
-            win = gui_overlay.PopupPlotWindow(title, self)
-            win.draw_data(primary, xlabel=time_lbl, ylabel=splim_lbl,
+            win = gui_overlay.PopupPlotWindow(title, self, lan)
+            win.drawData(primary, xlabel=timeLbl, ylabel=splimLbl,
                           title=title, axlines=axlines or None)
 
         # ------------------------------------------------------------------
-        elif graph_id == "dist_time":
+        elif graphId == "dist_time":
             title   = lan.get("kinematicsDistanceTime", "Distance–Time")
             primary = []
-            for v_idx in range(num_vehicles):
-                sp_lim_t = self.dataStorage.get(f"speedLimitsT_{v_idx}")
-                st_lim   = self.dataStorage.get(f"stationSpeedLimitM_{v_idx}")
-                kin_t    = self.dataStorage.get(f"kinematicsTimeS_{v_idx}")
-                kin_st   = self.dataStorage.get(f"kinematicsStationM_{v_idx}")
-                if sp_lim_t is not None and st_lim is not None and len(sp_lim_t) > 0:
-                    primary.append(dict(x=sp_lim_t/t_factor, y=st_lim/d_factor,
-                                        label=splim_lbl+lbl_v(v_idx),
-                                        color=limit_colors[v_idx], marker='s',
+            for vIdx in range(numVehicles):
+                spLimT = self.dataStorage.get(f"speedLimitsT_{vIdx}")
+                stLim   = self.dataStorage.get(f"stationSpeedLimitM_{vIdx}")
+                kinT    = self.dataStorage.get(f"kinematicsTimeS_{vIdx}")
+                kinSt   = self.dataStorage.get(f"kinematicsStationM_{vIdx}")
+                if spLimT is not None and stLim is not None and len(spLimT) > 0:
+                    primary.append(dict(x=spLimT/tFactor, y=stLim/dFactor,
+                                        label=splimLbl+vehicleLabel(vIdx),
+                                        color=limitColors[vIdx], marker='s',
                                         linestyle='--', alpha=0.7))
-                if kin_t is not None and kin_st is not None and len(kin_t) > 0:
-                    pt, ps = _expand_stops_station(v_idx, kin_t, kin_st)
-                    primary.append(dict(x=pt/t_factor, y=ps/d_factor,
-                                        label=dist_lbl+lbl_v(v_idx),
-                                        color=colors_speed[v_idx]))
+                if kinT is not None and kinSt is not None and len(kinT) > 0:
+                    pt, ps = expandStopsStation(vIdx, kinT, kinSt)
+                    primary.append(dict(x=pt/tFactor, y=ps/dFactor,
+                                        label=distLbl+vehicleLabel(vIdx),
+                                        color=colorsSpeed[vIdx]))
             # Stop markers – horizontal line at each station position
             axlines = []
             trainStops = self.dataStorage.get("settingsData", {}).get("trainStops", [])
             for stop in trainStops:
                 try:
-                    s_m  = float(stop[0]) * 1000.0
+                    sM  = float(stop[0]) * 1000.0
                     name = str(stop[2]) if len(stop) > 2 else ""
                 except (IndexError, ValueError):
                     continue
-                al = dict(axis="y", pos=s_m/d_factor,
+                al = dict(axis="y", pos=sM/dFactor,
                           color="gray", linestyle="--", alpha=0.7)
                 if name:
                     al.update(label_text=f" {name}", label_va="bottom",
                               label_color="black", label_fontsize=8,
                               label_alpha=0.7, label_x=0)
                 axlines.append(al)
-            win = gui_overlay.PopupPlotWindow(title, self)
-            win.draw_data(primary, xlabel=time_lbl, ylabel=dist_lbl,
+            win = gui_overlay.PopupPlotWindow(title, self, lan)
+            win.drawData(primary, xlabel=timeLbl, ylabel=distLbl,
                           title=title, axlines=axlines or None)
 
         # ------------------------------------------------------------------
-        elif graph_id == "forces":
+        elif graphId == "forces":
             title   = lan.get("kinematicsForces", "Forces Profile")
             primary = []
-            for v_idx in range(num_vehicles):
-                kin_st = self.dataStorage.get(f"kinematicsStationM_{v_idx}")
-                f_trac = self.dataStorage.get(f"kinematicsForceTractionKN_{v_idx}")
-                f_brk  = self.dataStorage.get(f"kinematicsForceBrakingKN_{v_idx}")
-                f_res  = self.dataStorage.get(f"kinematicsForceResistanceKN_{v_idx}")
-                if kin_st is None or len(kin_st) == 0:
+            for vIdx in range(numVehicles):
+                kinSt = self.dataStorage.get(f"kinematicsStationM_{vIdx}")
+                fTrac = self.dataStorage.get(f"kinematicsForceTractionKN_{vIdx}")
+                fBrk  = self.dataStorage.get(f"kinematicsForceBrakingKN_{vIdx}")
+                fRes  = self.dataStorage.get(f"kinematicsForceResistanceKN_{vIdx}")
+                if kinSt is None or len(kinSt) == 0:
                     continue
-                x = kin_st / d_factor
-                for arr, col, lbl_key in [
-                    (f_trac, colors_trac[v_idx],  "forceTraction"),
-                    (f_brk,  colors_brake[v_idx], "forceBraking"),
-                    (f_res,  colors_res[v_idx],   "forceResistance"),
+                x = kinSt / dFactor
+                for arr, col, lblKey in [
+                    (fTrac, colorsTrac[vIdx],  "forceTraction"),
+                    (fBrk,  colorsBrake[vIdx], "forceBraking"),
+                    (fRes,  colorsRes[vIdx],   "forceResistance"),
                 ]:
                     if arr is not None and len(arr) > 0:
                         primary.append(dict(x=x, y=arr,
-                                            label=lan.get(lbl_key, lbl_key)+lbl_v(v_idx),
+                                            label=lan.get(lblKey, lblKey)+vehicleLabel(vIdx),
                                             color=col))
-            win = gui_overlay.PopupPlotWindow(title, self)
-            win.draw_data(primary,
-                          xlabel=dist_lbl,
+            win = gui_overlay.PopupPlotWindow(title, self, lan)
+            win.drawData(primary,
+                          xlabel=distLbl,
                           ylabel=lan.get("forceKN", "Force [kN]"),
                           title=title)
 
         else:
             return  # unknown id — do nothing
 
+        # Adopt the active theme so the popup does not open with default colours
+        win.applyTheme(self.themeManager.isDarkActive, self.themeManager.currentTokens)
+
         # Show window and keep reference alive so Qt doesn't GC it
         win.show()
-        self._popup_windows.append(win)
+        self.popupWindows.append(win)
 
     def cleanData(self):
         self.cleanLandXMLData()
@@ -2189,22 +2031,26 @@ class MainWindow(QMainWindow):
             if key not in keep:
                 del self.dataStorage[key]
 
+        # Reset the workflow guide and every plot along with the data
+        self.workflowWidget.resetAll()
+        self.graphsWidget.clearAll()
+        self.profileWidget.clearAll()
+        self.kinematicsWidget.clearAll()
+        self.setEngineStatus(lang.DIC[self.currentLanguage].get("statusNoData", "No data"))
+        self.updateStatusChainage(None)
+
     def cleanTTPData(self):
-        self.textboxRawTTP.setPlainText("")
+        self.textboxRawTTP.setXmlText("")
         self.tableTTP.setData({})
         self.dataStorage["stationSpeedLimits"] = []
         self.dataStorage["speedLimits"] = []
-        self.plotSpeedData.clear()
         self.plotSpeedLimits()
         self.plotKinematics()
 
     def cleanLandXMLData(self):
-        self.textboxRawLandXML.setPlainText("")
+        self.textboxRawLandXML.setXmlText("")
         self.tableLandXML.setData({})
         self.dataStorage["LandXML"] = {}
-        self.plotCantData.clear()
-        self.plotCurvatureData.clear()
-        self.plotProfileData.clear()
         self.plotCant()
         self.plotCurvature()
         self.plotProfile()
@@ -2231,7 +2077,6 @@ class MainWindow(QMainWindow):
             lxml[f"limitReachedD_{profile}"] = []
             lxml[f"limitReachedI_{profile}"] = []
 
-        self.plotCantData.clear()
         self.reportGeometryWidget.setPlainText("")
         self.plotCant()
         self.plotSpeedLimits()
@@ -2243,164 +2088,104 @@ class MainWindow(QMainWindow):
             self.dataStorage[f"speedLimits{suffix}"]  = []
 
         # Per-vehicle kinematics and speed-limit arrays
-        for v_idx in range(3):
-            self.dataStorage[f"kinematicsStationM_{v_idx}"]        = []
-            self.dataStorage[f"kinematicsSpeedM_{v_idx}"]          = []
-            self.dataStorage[f"kinematicsTimeS_{v_idx}"]           = []
-            self.dataStorage[f"kinematicsAcceleration_{v_idx}"]    = []
-            self.dataStorage[f"kinematicsForceTractionKN_{v_idx}"] = []
-            self.dataStorage[f"kinematicsForceBrakingKN_{v_idx}"]  = []
-            self.dataStorage[f"kinematicsForceResistanceKN_{v_idx}"] = []
-            self.dataStorage[f"kinematicsDwellTimesS_{v_idx}"]     = []
-            self.dataStorage[f"stationSpeedLimitM_{v_idx}"]        = []
-            self.dataStorage[f"speedLimitsM_{v_idx}"]              = []
-            self.dataStorage[f"speedLimitsT_{v_idx}"]              = []
+        for vIdx in range(3):
+            self.dataStorage[f"kinematicsStationM_{vIdx}"]        = []
+            self.dataStorage[f"kinematicsSpeedM_{vIdx}"]          = []
+            self.dataStorage[f"kinematicsTimeS_{vIdx}"]           = []
+            self.dataStorage[f"kinematicsAcceleration_{vIdx}"]    = []
+            self.dataStorage[f"kinematicsForceTractionKN_{vIdx}"] = []
+            self.dataStorage[f"kinematicsForceBrakingKN_{vIdx}"]  = []
+            self.dataStorage[f"kinematicsForceResistanceKN_{vIdx}"] = []
+            self.dataStorage[f"kinematicsDwellTimesS_{vIdx}"]     = []
+            self.dataStorage[f"stationSpeedLimitM_{vIdx}"]        = []
+            self.dataStorage[f"speedLimitsM_{vIdx}"]              = []
+            self.dataStorage[f"speedLimitsT_{vIdx}"]              = []
             # Warning flag — remove entirely so downstream code gets None / missing key
-            self.dataStorage.pop(f"kinematicsWarning_{v_idx}", None)
+            self.dataStorage.pop(f"kinematicsWarning_{vIdx}", None)
 
-        self.plotSpeedData.clear()
-        self.plotKinematicsData.clear()
         self.reportVehicleTable.setData({})
         self.plotSpeedLimits()
         self.plotKinematics()
 
     # Set visibility
     def toggleCantVisibility(self, isChecked):
-        if 'cant' in self.plotCantData:
-            self.plotCantData["cant"].set_visible(isChecked)
-            self.canvasAlignment.draw()
+        self.graphsWidget.setSeriesVisible("geometry", "cant", isChecked)
 
     def toggleCantPossibleVisibility(self, isChecked):
-        if 'cantPossible' in self.plotCantData:
-            self.plotCantData["cantPossible"].set_visible(isChecked)
-            self.canvasAlignment.draw()
+        self.graphsWidget.setSeriesVisible("geometry", "cantPossible", isChecked)
 
     def toggleCDef100Visibility(self, isChecked):
-        if 'cDef100' in self.plotCantData:
-            self.plotCantData["cDef100"].set_visible(isChecked)
-            self.canvasAlignment.draw()
+        self.graphsWidget.setSeriesVisible("geometry", "cDef100", isChecked)
 
     def toggleCDef130Visibility(self, isChecked):
-        if 'cDef130' in self.plotCantData:
-            self.plotCantData["cDef130"].set_visible(isChecked)
-            self.canvasAlignment.draw()
+        self.graphsWidget.setSeriesVisible("geometry", "cDef130", isChecked)
 
     def toggleCDef150Visibility(self, isChecked):
-        if 'cDef150' in self.plotCantData:
-            self.plotCantData["cDef150"].set_visible(isChecked)
-            self.canvasAlignment.draw()
+        self.graphsWidget.setSeriesVisible("geometry", "cDef150", isChecked)
 
     def toggleCDefKVisibility(self, isChecked):
-        if 'cDefK' in self.plotCantData:
-            self.plotCantData["cDefK"].set_visible(isChecked)
-            self.canvasAlignment.draw()
+        self.graphsWidget.setSeriesVisible("geometry", "cDefK", isChecked)
 
     def toggleCantDef100Visibility(self, isChecked):
-        if 'cantDef100' in self.plotCantData:
-            self.plotCantData["cantDef100"].set_visible(isChecked)
-            self.canvasAlignment.draw()
+        self.graphsWidget.setSeriesVisible("geometry", "cantDef100", isChecked)
 
     def toggleCantDef130Visibility(self, isChecked):
-        if 'cantDef100' in self.plotCantData:
-            self.plotCantData["cantDef130"].set_visible(isChecked)
-            self.canvasAlignment.draw()
+        self.graphsWidget.setSeriesVisible("geometry", "cantDef130", isChecked)
 
     def toggleCantDef150Visibility(self, isChecked):
-        if 'cantDef150' in self.plotCantData:
-            self.plotCantData["cantDef150"].set_visible(isChecked)
-            self.canvasAlignment.draw()
+        self.graphsWidget.setSeriesVisible("geometry", "cantDef150", isChecked)
 
     def toggleCantDefKVisibility(self, isChecked):
-        if 'cantDefK' in self.plotCantData:
-            self.plotCantData["cantDefK"].set_visible(isChecked)
-            self.canvasAlignment.draw()
+        self.graphsWidget.setSeriesVisible("geometry", "cantDefK", isChecked)
 
     def toggleCurvatureVisibility(self, isChecked):
-        if 'curvature' in self.plotCurvatureData:
-            self.plotCurvatureData["curvature"].set_visible(isChecked)
-            self.canvasAlignment.draw()
+        self.graphsWidget.setSeriesVisible("geometry", "curvature", isChecked)
 
     def toggleCurvatureNewVisibility(self, isChecked):
-        if 'curvatureNew' in self.plotCurvatureData:
-            self.plotCurvatureData["curvatureNew"].set_visible(isChecked)
-            self.canvasAlignment.draw()
+        self.graphsWidget.setSeriesVisible("geometry", "curvatureNew", isChecked)
 
     def toggleSpeedVisibility(self, isChecked):
-        if 'speedLimits' in self.plotSpeedData:
-            self.plotSpeedData["speedLimits"].set_visible(isChecked)
-            self.canvasAlignment.draw()
+        self.graphsWidget.setSeriesVisible("speed", "speedLimits", isChecked)
 
     def toggleSpeed100Visibility(self, isChecked):
-        if 'speedLimits100' in self.plotSpeedData:
-            self.plotSpeedData["speedLimits100"].set_visible(isChecked)
-            self.canvasAlignment.draw()
+        self.graphsWidget.setSeriesVisible("speed", "speedLimits100", isChecked)
 
     def toggleSpeed130Visibility(self, isChecked):
-        if 'speedLimits130' in self.plotSpeedData:
-            self.plotSpeedData["speedLimits130"].set_visible(isChecked)
-            self.canvasAlignment.draw()
+        self.graphsWidget.setSeriesVisible("speed", "speedLimits130", isChecked)
 
     def toggleSpeed150Visibility(self, isChecked):
-        if 'speedLimits150' in self.plotSpeedData:
-            self.plotSpeedData["speedLimits150"].set_visible(isChecked)
-            self.canvasAlignment.draw()
-    
+        self.graphsWidget.setSeriesVisible("speed", "speedLimits150", isChecked)
+
     def toggleSpeedKVisibility(self, isChecked):
-        if 'speedLimitsK' in self.plotSpeedData:
-            self.plotSpeedData["speedLimitsK"].set_visible(isChecked)
-            self.canvasAlignment.draw()
+        self.graphsWidget.setSeriesVisible("speed", "speedLimitsK", isChecked)
 
     def toggleProfileVisibility(self, isChecked):
-        if 'profile' in self.plotProfileData:
-            self.plotProfileData["profile"].set_visible(isChecked)
-            self.canvasProfile.draw()
+        self.profileWidget.setProfileVisible(isChecked)
 
     def toggleKinematicsSpeedLimitTrackVisibility(self, isChecked):
-        for v_idx in range(3):
-            if f'tachoTrack_{v_idx}' in self.plotKinematicsData:
-                self.plotKinematicsData[f"tachoTrack_{v_idx}"].set_visible(isChecked)
-            if f'simTrack_{v_idx}' in self.plotKinematicsData:
-                self.plotKinematicsData[f"simTrack_{v_idx}"].set_visible(isChecked)
-        self.canvasKinematics.draw()
+        self.kinematicsWidget.setPlotVisible("tachoTrack", isChecked)
 
     def toggleKinematicsSpeedLimitTimeVisibility(self, isChecked):
-        for v_idx in range(3):
-            if f'tachoTime_{v_idx}' in self.plotKinematicsData:
-                self.plotKinematicsData[f"tachoTime_{v_idx}"].set_visible(isChecked)
-            if f'simTime_{v_idx}' in self.plotKinematicsData:
-                self.plotKinematicsData[f"simTime_{v_idx}"].set_visible(isChecked)
-        self.canvasKinematics.draw()
+        self.kinematicsWidget.setPlotVisible("tachoTime", isChecked)
 
     def toggleKinematicsDistanceTimeVisibility(self, isChecked):
-        for v_idx in range(3):
-            if f'distTime_{v_idx}' in self.plotKinematicsData:
-                self.plotKinematicsData[f"distTime_{v_idx}"].set_visible(isChecked)
-            if f'distTimeSim_{v_idx}' in self.plotKinematicsData:
-                self.plotKinematicsData[f"distTimeSim_{v_idx}"].set_visible(isChecked)
-        self.canvasKinematics.draw()
+        self.kinematicsWidget.setPlotVisible("distTime", isChecked)
 
     def toggleKinematicsForcesVisibility(self, isChecked):
-        for v_idx in range(3):
-            if f'forceTrac_{v_idx}' in self.plotKinematicsData:
-                self.plotKinematicsData[f"forceTrac_{v_idx}"].set_visible(isChecked)
-            if f'forceBrake_{v_idx}' in self.plotKinematicsData:
-                self.plotKinematicsData[f"forceBrake_{v_idx}"].set_visible(isChecked)
-            if f'forceRes_{v_idx}' in self.plotKinematicsData:
-                self.plotKinematicsData[f"forceRes_{v_idx}"].set_visible(isChecked)
-        self.canvasKinematics.draw()
+        self.kinematicsWidget.setPlotVisible("forces", isChecked)
 
     # Map settings
     def openMapSettings(self):
-        lan = lang.DIC[self.current_language]
+        lan = lang.DIC[self.currentLanguage]
         dialog = gui_overlay.MapSettingsDialog(self.epsgInput, self.mapWidget.currentBaseMap, self.mapWidget.drawMode, self.mapWidget.speedProfile, lan, self)
         if dialog.exec():
-            self.epsgInput, selected_map, draw_mode, speed_profile = dialog.getMapSettings()
-            self.mapWidget.setBaseMap(selected_map)
-            self.mapWidget.setDrawOptions(draw_mode, speed_profile)
+            self.epsgInput, selectedMap, drawMode, speedProfile = dialog.getMapSettings()
+            self.mapWidget.setBaseMap(selectedMap)
+            self.mapWidget.setDrawOptions(drawMode, speedProfile)
 
     # Geometry settings
     def openGeometrySettings(self):
-        lan = lang.DIC[self.current_language]
+        lan = lang.DIC[self.currentLanguage]
 
         dialog = gui_overlay.GeometrySettingsDialog(self.dataStorage.get("settingsData", {}), lan, self)
         if dialog.exec():
@@ -2408,122 +2193,129 @@ class MainWindow(QMainWindow):
 
     # Vehicle settings
     def openVehicleSettings(self):
-        lan = lang.DIC[self.current_language]
+        lan = lang.DIC[self.currentLanguage]
 
         dialog = gui_overlay.VehicleSettingsDialog(self.dataStorage.get("settingsData", {}), lan, self)
         if dialog.exec():
             self.dataStorage["settingsData"].update(dialog.getSettings())
+            # Step 4 of the workflow guide covers the vehicle definition
+            self.workflowWidget.markCompleted(3)
 
     # Stops settings
     def openStopsSettings(self):
-        lan = lang.DIC[self.current_language]
+        lan = lang.DIC[self.currentLanguage]
         dialog = gui_overlay.StopsSettingsDialog(self.dataStorage.get("settingsData", {}), lan, self)
         if dialog.exec():
             self.dataStorage["settingsData"].update(dialog.getSettings())
+            # Step 3 of the workflow guide covers the scheduled stops
+            self.workflowWidget.markCompleted(2)
+            # New stops must reach the map and both station aware plots
+            self.refreshStations()
+            self.plotKinematics()
 
     # Speed settings
     def openSpeedSettings(self):
-        lan = lang.DIC[self.current_language]
+        lan = lang.DIC[self.currentLanguage]
         dialog = gui_overlay.SpeedSettingsDialog(self.dataStorage.get("settingsData", {}), lan, self)
         if dialog.exec():
             self.dataStorage["settingsData"].update(dialog.getSettings())
 
     # Design approach settings
     def openDesignApproach(self):
-        lan = lang.DIC[self.current_language]
+        lan = lang.DIC[self.currentLanguage]
 
         dialog = gui_overlay.DesignApproachDialog(self.dataStorage.get("settingsData", {}), lan, self)
         if dialog.exec():
             self.dataStorage["settingsData"]["designApproach"] = dialog.getDesignApproach()
 
-    # Help
+    # Help, reveals the documentation dock instead of opening a modal dialog
     def openHelp(self):
-        lan = lang.DIC[self.current_language]
-        dialog = gui_overlay.HelpDialog(lan, self)
-        dialog.exec()
+        self.dockHelp.show()
+        self.dockHelp.raise_()
+        self.helpWidget.reloadDocument()
 
     # Reports
     def generateGeometryReport(self):
-        lan = lang.DIC[self.current_language]
+        lan = lang.DIC[self.currentLanguage]
         lxml = self.dataStorage.get("LandXML", {})
         if not lxml or "stationCantPossible" not in lxml or len(lxml.get("stationCantPossible", [])) < 2:
             self.reportGeometryWidget.setPlainText(lan.get("no_data", "No data available. Calculate values first."))
-            self.layoutTabsPlots.setCurrentWidget(self.layoutTabsPlotsReport_container)
+            self.showReportView()
             return
 
         stations = lxml["stationCantPossible"]
         geomType = lxml.get("geometryType", [])
 
         # Localised element-type names used in report headers
-        elem_type_names = {
+        elemTypeNames = {
             "Curve":  lan.get("elemCurve",  "Curve"),
             "Spiral": lan.get("elemSpiral", "Spiral"),
             "Line":   lan.get("elemLine",   "Line"),
         }
-        util_d_lbl = lan.get("utilD", "Util D")
-        util_i_lbl = lan.get("utilI", "Util I")
+        utilDLbl = lan.get("utilD", "Util D")
+        utilILbl = lan.get("utilI", "Util I")
         
         if len(geomType) != len(stations):
             self.reportGeometryWidget.setPlainText(lan.get("error", "Error") + ": Data lengths do not match. Please recalculate.")
-            self.layoutTabsPlots.setCurrentWidget(self.layoutTabsPlotsReport_container)
+            self.showReportView()
             return
 
-        def safe_get(d, key, fallback):
+        def safeGet(d, key, fallback):
             val = d.get(key)
             if val is None or len(val) != len(stations):
                 return fallback
             return val
 
-        cant = safe_get(lxml, "cantPossible", np.zeros_like(stations))
-        cDef100 = safe_get(lxml, "cDef100", np.zeros_like(stations))
-        cDef130 = safe_get(lxml, "cDef130", np.zeros_like(stations))
-        cDef150 = safe_get(lxml, "cDef150", np.zeros_like(stations))
-        cDefK = safe_get(lxml, "cDefK", np.zeros_like(stations))
+        cant = safeGet(lxml, "cantPossible", np.zeros_like(stations))
+        cDef100 = safeGet(lxml, "cDef100", np.zeros_like(stations))
+        cDef130 = safeGet(lxml, "cDef130", np.zeros_like(stations))
+        cDef150 = safeGet(lxml, "cDef150", np.zeros_like(stations))
+        cDefK = safeGet(lxml, "cDefK", np.zeros_like(stations))
 
-        v100 = safe_get(self.dataStorage, "speedLimits100", np.zeros_like(stations))
-        v130 = safe_get(self.dataStorage, "speedLimits130", np.zeros_like(stations))
-        v150 = safe_get(self.dataStorage, "speedLimits150", np.zeros_like(stations))
-        vK = safe_get(self.dataStorage, "speedLimitsK", np.zeros_like(stations))
+        v100 = safeGet(self.dataStorage, "speedLimits100", np.zeros_like(stations))
+        v130 = safeGet(self.dataStorage, "speedLimits130", np.zeros_like(stations))
+        v150 = safeGet(self.dataStorage, "speedLimits150", np.zeros_like(stations))
+        vK = safeGet(self.dataStorage, "speedLimitsK", np.zeros_like(stations))
 
-        dDdt100 = safe_get(lxml, "dDdt100", np.zeros_like(stations))
-        dIdt100 = safe_get(lxml, "dIdt100", np.zeros_like(stations))
-        dDdt130 = safe_get(lxml, "dDdt130", np.zeros_like(stations))
-        dIdt130 = safe_get(lxml, "dIdt130", np.zeros_like(stations))
-        dDdt150 = safe_get(lxml, "dDdt150", np.zeros_like(stations))
-        dIdt150 = safe_get(lxml, "dIdt150", np.zeros_like(stations))
-        dDdtK = safe_get(lxml, "dDdtK", np.zeros_like(stations))
-        dIdtK = safe_get(lxml, "dIdtK", np.zeros_like(stations))
+        dDdt100 = safeGet(lxml, "dDdt100", np.zeros_like(stations))
+        dIdt100 = safeGet(lxml, "dIdt100", np.zeros_like(stations))
+        dDdt130 = safeGet(lxml, "dDdt130", np.zeros_like(stations))
+        dIdt130 = safeGet(lxml, "dIdt130", np.zeros_like(stations))
+        dDdt150 = safeGet(lxml, "dDdt150", np.zeros_like(stations))
+        dIdt150 = safeGet(lxml, "dIdt150", np.zeros_like(stations))
+        dDdtK = safeGet(lxml, "dDdtK", np.zeros_like(stations))
+        dIdtK = safeGet(lxml, "dIdtK", np.zeros_like(stations))
 
-        limD100 = safe_get(lxml, "limitReachedD_I100", np.zeros(len(stations), dtype=bool))
-        limI100 = safe_get(lxml, "limitReachedI_I100", np.zeros(len(stations), dtype=bool))
-        limD130 = safe_get(lxml, "limitReachedD_I130", np.zeros(len(stations), dtype=bool))
-        limI130 = safe_get(lxml, "limitReachedI_I130", np.zeros(len(stations), dtype=bool))
-        limD150 = safe_get(lxml, "limitReachedD_I150", np.zeros(len(stations), dtype=bool))
-        limI150 = safe_get(lxml, "limitReachedI_I150", np.zeros(len(stations), dtype=bool))
-        limDK = safe_get(lxml, "limitReachedD_K", np.zeros(len(stations), dtype=bool))
-        limIK = safe_get(lxml, "limitReachedI_K", np.zeros(len(stations), dtype=bool))
+        limD100 = safeGet(lxml, "limitReachedD_I100", np.zeros(len(stations), dtype=bool))
+        limI100 = safeGet(lxml, "limitReachedI_I100", np.zeros(len(stations), dtype=bool))
+        limD130 = safeGet(lxml, "limitReachedD_I130", np.zeros(len(stations), dtype=bool))
+        limI130 = safeGet(lxml, "limitReachedI_I130", np.zeros(len(stations), dtype=bool))
+        limD150 = safeGet(lxml, "limitReachedD_I150", np.zeros(len(stations), dtype=bool))
+        limI150 = safeGet(lxml, "limitReachedI_I150", np.zeros(len(stations), dtype=bool))
+        limDK = safeGet(lxml, "limitReachedD_K", np.zeros(len(stations), dtype=bool))
+        limIK = safeGet(lxml, "limitReachedI_K", np.zeros(len(stations), dtype=bool))
         
-        radius = safe_get(lxml, "radius", np.full(len(stations), np.inf))
-        curvature = safe_get(lxml, "curvature", np.zeros_like(stations))
+        radius = safeGet(lxml, "radius", np.full(len(stations), np.inf))
+        curvature = safeGet(lxml, "curvature", np.zeros_like(stations))
 
-        util_D_100 = safe_get(lxml, "util_D_I100", np.zeros_like(stations))
-        util_I_100 = safe_get(lxml, "util_I_I100", np.zeros_like(stations))
-        util_D_130 = safe_get(lxml, "util_D_I130", np.zeros_like(stations))
-        util_I_130 = safe_get(lxml, "util_I_I130", np.zeros_like(stations))
-        util_D_150 = safe_get(lxml, "util_D_I150", np.zeros_like(stations))
-        util_I_150 = safe_get(lxml, "util_I_I150", np.zeros_like(stations))
-        util_D_K = safe_get(lxml, "util_D_K", np.zeros_like(stations))
-        util_I_K = safe_get(lxml, "util_I_K", np.zeros_like(stations))
+        utilD100 = safeGet(lxml, "util_D_I100", np.zeros_like(stations))
+        utilI100 = safeGet(lxml, "util_I_I100", np.zeros_like(stations))
+        utilD130 = safeGet(lxml, "util_D_I130", np.zeros_like(stations))
+        utilI130 = safeGet(lxml, "util_I_I130", np.zeros_like(stations))
+        utilD150 = safeGet(lxml, "util_D_I150", np.zeros_like(stations))
+        utilI150 = safeGet(lxml, "util_I_I150", np.zeros_like(stations))
+        utilDK = safeGet(lxml, "util_D_K", np.zeros_like(stations))
+        utilIK = safeGet(lxml, "util_I_K", np.zeros_like(stations))
 
-        report_lines = [lan.get("reportGeometryTitle", "=== Geometry Report ==="), ""]
+        reportLines = [lan.get("reportGeometryTitle", "=== Geometry Report ==="), ""]
 
-        def calc_n(L_m, d_val, v):
-            if abs(d_val) < 1e-3 or v < 1e-3: return "INF"
-            return f"{L_m * 1000 / (abs(d_val) * v):.2f}"
+        def calcN(LM, dVal, v):
+            if abs(dVal) < 1e-3 or v < 1e-3: return "INF"
+            return f"{LM * 1000 / (abs(dVal) * v):.2f}"
             
-        def format_r(r_val):
-            if np.isinf(r_val) or np.isnan(r_val): return "INF"
-            return f"{r_val:.0f}"
+        def formatR(rVal):
+            if np.isinf(rVal) or np.isnan(rVal): return "INF"
+            return f"{rVal:.0f}"
 
         stats = {
             "V100": {"limit_D": 0, "limit_I": 0},
@@ -2531,244 +2323,244 @@ class MainWindow(QMainWindow):
             "V150": {"limit_D": 0, "limit_I": 0},
             "VK":   {"limit_D": 0, "limit_I": 0}
         }
-        profile_stats = {
+        profileStats = {
             "V100": {"min_n": float('inf'), "min_nI": float('inf'), "min_nI_all": float('inf'), "min_nI_all_dI": 0.0, "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0, "weighted_util_sum_D": 0.0, "weighted_util_sum_I": 0.0, "total_length": 0.0},
             "V130": {"min_n": float('inf'), "min_nI": float('inf'), "min_nI_all": float('inf'), "min_nI_all_dI": 0.0, "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0, "weighted_util_sum_D": 0.0, "weighted_util_sum_I": 0.0, "total_length": 0.0},
             "V150": {"min_n": float('inf'), "min_nI": float('inf'), "min_nI_all": float('inf'), "min_nI_all_dI": 0.0, "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0, "weighted_util_sum_D": 0.0, "weighted_util_sum_I": 0.0, "total_length": 0.0},
             "VK":   {"min_n": float('inf'), "min_nI": float('inf'), "min_nI_all": float('inf'), "min_nI_all_dI": 0.0, "max_dd_dt": 0.0, "max_di_dt": 0.0, "max_D": 0.0, "max_I": 0.0, "max_deltaI": 0.0, "weighted_util_sum_D": 0.0, "weighted_util_sum_I": 0.0, "total_length": 0.0}
         }
-        total_elements = 0
+        totalElements = 0
         
-        limits_dI = self.dataStorage.get("settingsData", {}).get("dI", [])
+        limitsDI = self.dataStorage.get("settingsData", {}).get("dI", [])
         approach = self.dataStorage.get("settingsData", {}).get("designApproach", "standard")
-        curr_app_dI = approach.get("dI", "standard") if isinstance(approach, dict) else approach
-        col_dI = {"standard": 2, "limit": 3, "minmax": 4}.get(curr_app_dI, 3)
+        currAppDI = approach.get("dI", "standard") if isinstance(approach, dict) else approach
+        colDI = {"standard": 2, "limit": 3, "minmax": 4}.get(currAppDI, 3)
 
-        def get_dI_lim(v):
-            for row in limits_dI:
-                if row[0] < v <= row[1]: return row[col_dI]
-            return limits_dI[-1][col_dI] if limits_dI else 0
+        def getDeficiencyLimit(v):
+            for row in limitsDI:
+                if row[0] < v <= row[1]: return row[colDI]
+            return limitsDI[-1][colDI] if limitsDI else 0
 
         for i in range(len(stations) - 1):
             L = (stations[i+1] - stations[i]) * 1000
 
             profiles = [
-                ("V100", v100, cDef100, dDdt100, dIdt100, limD100, limI100, util_D_100, util_I_100),
-                ("V130", v130, cDef130, dDdt130, dIdt130, limD130, limI130, util_D_130, util_I_130),
-                ("V150", v150, cDef150, dDdt150, dIdt150, limD150, limI150, util_D_150, util_I_150),
-                ("VK", vK, cDefK, dDdtK, dIdtK, limDK, limIK, util_D_K, util_I_K),
+                ("V100", v100, cDef100, dDdt100, dIdt100, limD100, limI100, utilD100, utilI100),
+                ("V130", v130, cDef130, dDdt130, dIdt130, limD130, limI130, utilD130, utilI130),
+                ("V150", v150, cDef150, dDdt150, dIdt150, limD150, limI150, utilD150, utilI150),
+                ("VK", vK, cDefK, dDdtK, dIdtK, limDK, limIK, utilDK, utilIK),
             ]
 
             if L <= 0:
-                transition_data = []
-                any_deltaI = False
+                transitionData = []
+                anyDeltaI = False
                 dKappa = abs(curvature[i+1] - curvature[i])
-                for p_name, v_arr, i_arr, dD_arr, dI_arr, lD_arr, lI_arr, util_D_arr, util_I_arr in profiles:
-                    v_min = min(v_arr[i], v_arr[i+1])
+                for pName, vArr, iArr, dDArr, dIArr, lDArr, lIArr, utilDArr, utilIArr in profiles:
+                    vMin = min(vArr[i], vArr[i+1])
                     # Physical deltaI: D is continuous at L=0 boundary (Stage 3), so D cancels
-                    deltaI = 11.8 * v_min**2 * dKappa if v_min > 1e-3 else 0.0
-                    dI_lim = get_dI_lim(v_min)
-                    exceeded = deltaI > dI_lim + 1e-3
-                    profile_stats[p_name]["max_deltaI"] = max(profile_stats[p_name]["max_deltaI"], deltaI)
-                    transition_data.append((p_name, deltaI, v_min, dI_lim, exceeded))
+                    deltaI = 11.8 * vMin**2 * dKappa if vMin > 1e-3 else 0.0
+                    dILim = getDeficiencyLimit(vMin)
+                    exceeded = deltaI > dILim + 1e-3
+                    profileStats[pName]["max_deltaI"] = max(profileStats[pName]["max_deltaI"], deltaI)
+                    transitionData.append((pName, deltaI, vMin, dILim, exceeded))
                     if deltaI > 1e-3:
-                        any_deltaI = True
+                        anyDeltaI = True
                 
-                g_type_from = geomType[i] if i < len(geomType) else "-"
-                g_type_to = geomType[i+1] if i+1 < len(geomType) else "-"
-                if any_deltaI and g_type_from != "Spiral" and g_type_to != "Spiral":
-                    lbl_from = elem_type_names.get(g_type_from, g_type_from)
-                    lbl_to   = elem_type_names.get(g_type_to,   g_type_to)
-                    report_lines.append(f"--- {lan.get('reportTransition', 'Transition')} | {lan['station']}: {stations[i]:.3f} | {lbl_from} -> {lbl_to} ---")
-                    for p_name, dI_val, v_val, dI_lim_val, exceeded in transition_data:
+                gTypeFrom = geomType[i] if i < len(geomType) else "-"
+                gTypeTo = geomType[i+1] if i+1 < len(geomType) else "-"
+                if anyDeltaI and gTypeFrom != "Spiral" and gTypeTo != "Spiral":
+                    lblFrom = elemTypeNames.get(gTypeFrom, gTypeFrom)
+                    lblTo   = elemTypeNames.get(gTypeTo,   gTypeTo)
+                    reportLines.append(f"--- {lan.get('reportTransition', 'Transition')} | {lan['station']}: {stations[i]:.3f} | {lblFrom} -> {lblTo} ---")
+                    for pName, dIVal, vVal, dILimVal, exceeded in transitionData:
                         flag = " (!)" if exceeded else ""
-                        line_str = f"  [{p_name}] V: {v_val:.0f} km/h | deltaI: {dI_val:.0f} mm (limit {dI_lim_val:.0f} mm){flag}"
-                        report_lines.append(line_str)
-                    report_lines.append("")
+                        lineStr = f"  [{pName}] V: {vVal:.0f} km/h | deltaI: {dIVal:.0f} mm (limit {dILimVal:.0f} mm){flag}"
+                        reportLines.append(lineStr)
+                    reportLines.append("")
                 continue
             
-            g_type = geomType[i]
-            if g_type in ["Curve", "Spiral"]:
-                total_elements += 1
+            gType = geomType[i]
+            if gType in ["Curve", "Spiral"]:
+                totalElements += 1
 
-            r_start = radius[i] if i < len(radius) else float('inf')
-            r_end = radius[i+1] if i+1 < len(radius) else float('inf')
+            rStart = radius[i] if i < len(radius) else float('inf')
+            rEnd = radius[i+1] if i+1 < len(radius) else float('inf')
             
-            max_v_elem = max(v100[i], v100[i+1], v130[i], v130[i+1], v150[i], v150[i+1], vK[i], vK[i+1])
-            x_val = L / max_v_elem if max_v_elem > 0 else float('inf')
-            str_x = f"{x_val:.2f}" if max_v_elem > 0 else "INF"
+            maxVElem = max(v100[i], v100[i+1], v130[i], v130[i+1], v150[i], v150[i+1], vK[i], vK[i+1])
+            xVal = L / maxVElem if maxVElem > 0 else float('inf')
+            strX = f"{xVal:.2f}" if maxVElem > 0 else "INF"
             
-            g_type_lbl  = elem_type_names.get(g_type, g_type)
-            header_line = f"--- {g_type_lbl} | {lan['station']}: {stations[i]:.3f} - {stations[i+1]:.3f} | L = {L:.2f} m ({str_x}*V)"
-            if g_type == "Curve":
-                header_line += f" | R: {format_r(r_start)} m"
-            elif g_type == "Spiral":
-                header_line += f" | R: {format_r(r_start)} -> {format_r(r_end)} m"
-            header_line += " ---"
-            report_lines.append(header_line)
+            gTypeLbl  = elemTypeNames.get(gType, gType)
+            headerLine = f"--- {gTypeLbl} | {lan['station']}: {stations[i]:.3f} - {stations[i+1]:.3f} | L = {L:.2f} m ({strX}*V)"
+            if gType == "Curve":
+                headerLine += f" | R: {formatR(rStart)} m"
+            elif gType == "Spiral":
+                headerLine += f" | R: {formatR(rStart)} -> {formatR(rEnd)} m"
+            headerLine += " ---"
+            reportLines.append(headerLine)
 
-            for p_name, v_arr, i_arr, dD_arr, dI_arr, lD_arr, lI_arr, util_D_arr, util_I_arr in profiles:
-                v_start, v_end = v_arr[i], v_arr[i+1]
-                sign_d_start = np.sign(cant[i]) if cant[i] != 0 else 1.0
-                sign_d_end = np.sign(cant[i+1]) if cant[i+1] != 0 else 1.0
-                d_start = sign_d_start * np.floor(np.abs(cant[i]))
-                d_end = sign_d_end * np.floor(np.abs(cant[i+1]))
-                sign_i_start = np.sign(i_arr[i]) if i_arr[i] != 0 else 1.0
-                sign_i_end = np.sign(i_arr[i+1]) if i_arr[i+1] != 0 else 1.0
-                i_start = sign_i_start * np.ceil(np.abs(i_arr[i]))
-                i_end = sign_i_end * np.ceil(np.abs(i_arr[i+1]))
-                dd_dt = dD_arr[i]
-                di_dt = dI_arr[i]
+            for pName, vArr, iArr, dDArr, dIArr, lDArr, lIArr, utilDArr, utilIArr in profiles:
+                vStart, vEnd = vArr[i], vArr[i+1]
+                signDStart = np.sign(cant[i]) if cant[i] != 0 else 1.0
+                signDEnd = np.sign(cant[i+1]) if cant[i+1] != 0 else 1.0
+                dStart = signDStart * np.floor(np.abs(cant[i]))
+                dEnd = signDEnd * np.floor(np.abs(cant[i+1]))
+                signIStart = np.sign(iArr[i]) if iArr[i] != 0 else 1.0
+                signIEnd = np.sign(iArr[i+1]) if iArr[i+1] != 0 else 1.0
+                iStart = signIStart * np.ceil(np.abs(iArr[i]))
+                iEnd = signIEnd * np.ceil(np.abs(iArr[i+1]))
+                ddDt = dDArr[i]
+                diDt = dIArr[i]
 
-                profile_stats[p_name]["max_D"] = max(profile_stats[p_name]["max_D"], abs(d_start), abs(d_end))
-                profile_stats[p_name]["max_I"] = max(profile_stats[p_name]["max_I"], abs(i_start), abs(i_end))
-                profile_stats[p_name]["max_dd_dt"] = max(profile_stats[p_name]["max_dd_dt"], abs(dd_dt))
-                profile_stats[p_name]["max_di_dt"] = max(profile_stats[p_name]["max_di_dt"], abs(di_dt))
+                profileStats[pName]["max_D"] = max(profileStats[pName]["max_D"], abs(dStart), abs(dEnd))
+                profileStats[pName]["max_I"] = max(profileStats[pName]["max_I"], abs(iStart), abs(iEnd))
+                profileStats[pName]["max_dd_dt"] = max(profileStats[pName]["max_dd_dt"], abs(ddDt))
+                profileStats[pName]["max_di_dt"] = max(profileStats[pName]["max_di_dt"], abs(diDt))
 
-                line_str = f"  [{p_name}] V: {v_start:.0f} -> {v_end:.0f} km/h"
-                if g_type == "Curve":
-                    line_str += f" | D: {d_start:.0f} mm | I: {i_start:.0f} mm"
-                elif g_type == "Spiral":
-                    dD = abs(d_end - d_start)
-                    dI = abs(i_end - i_start)
+                lineStr = f"  [{pName}] V: {vStart:.0f} -> {vEnd:.0f} km/h"
+                if gType == "Curve":
+                    lineStr += f" | D: {dStart:.0f} mm | I: {iStart:.0f} mm"
+                elif gType == "Spiral":
+                    dD = abs(dEnd - dStart)
+                    dI = abs(iEnd - iStart)
                     
-                    if dD > 1e-3 and v_start > 1e-3:
-                        n_val_f = L * 1000 / (dD * v_start)
-                        profile_stats[p_name]["min_n"] = min(profile_stats[p_name]["min_n"], n_val_f)
-                    if dI > 1e-3 and v_start > 1e-3:
-                        nI_val_f = L * 1000 / (dI * v_start)
-                        if dI > get_dI_lim(v_start):
-                            profile_stats[p_name]["min_nI"] = min(profile_stats[p_name]["min_nI"], nI_val_f)
-                        if nI_val_f < profile_stats[p_name]["min_nI_all"]:
-                            profile_stats[p_name]["min_nI_all"] = nI_val_f
-                            profile_stats[p_name]["min_nI_all_dI"] = dI
+                    if dD > 1e-3 and vStart > 1e-3:
+                        nValF = L * 1000 / (dD * vStart)
+                        profileStats[pName]["min_n"] = min(profileStats[pName]["min_n"], nValF)
+                    if dI > 1e-3 and vStart > 1e-3:
+                        nIValF = L * 1000 / (dI * vStart)
+                        if dI > getDeficiencyLimit(vStart):
+                            profileStats[pName]["min_nI"] = min(profileStats[pName]["min_nI"], nIValF)
+                        if nIValF < profileStats[pName]["min_nI_all"]:
+                            profileStats[pName]["min_nI_all"] = nIValF
+                            profileStats[pName]["min_nI_all_dI"] = dI
                         
-                    n_val = calc_n(L, dD, v_start)
-                    nI_val = calc_n(L, dI, v_start)
-                    line_str += f" | D: {d_start:.0f} -> {d_end:.0f} mm | I: {i_start:.0f} -> {i_end:.0f} mm | n: {n_val} | nI: {nI_val} | deltaI: {dI:.0f} mm | dD/dt: {dd_dt:.2f} mm/s | dI/dt: {di_dt:.2f} mm/s"
+                    nVal = calcN(L, dD, vStart)
+                    nIVal = calcN(L, dI, vStart)
+                    lineStr += f" | D: {dStart:.0f} -> {dEnd:.0f} mm | I: {iStart:.0f} -> {iEnd:.0f} mm | n: {nVal} | nI: {nIVal} | deltaI: {dI:.0f} mm | dD/dt: {ddDt:.2f} mm/s | dI/dt: {diDt:.2f} mm/s"
 
-                util_D_val = max(util_D_arr[i], util_D_arr[i+1])
-                util_I_val = max(util_I_arr[i], util_I_arr[i+1])
-                line_str += f" | {util_d_lbl}: {util_D_val*100:.1f}% | {util_i_lbl}: {util_I_val*100:.1f}%"
+                utilDVal = max(utilDArr[i], utilDArr[i+1])
+                utilIVal = max(utilIArr[i], utilIArr[i+1])
+                lineStr += f" | {utilDLbl}: {utilDVal*100:.1f}% | {utilILbl}: {utilIVal*100:.1f}%"
 
-                if g_type in ["Curve", "Spiral"]:
-                    profile_stats[p_name]["weighted_util_sum_D"] += util_D_val * L
-                    profile_stats[p_name]["weighted_util_sum_I"] += util_I_val * L
-                    profile_stats[p_name]["total_length"] += L
+                if gType in ["Curve", "Spiral"]:
+                    profileStats[pName]["weighted_util_sum_D"] += utilDVal * L
+                    profileStats[pName]["weighted_util_sum_I"] += utilIVal * L
+                    profileStats[pName]["total_length"] += L
 
-                if g_type in ["Curve", "Spiral"]:
-                    if lD_arr[i] or lD_arr[i+1]: stats[p_name]["limit_D"] += 1
-                    if lI_arr[i] or lI_arr[i+1]: stats[p_name]["limit_I"] += 1
+                if gType in ["Curve", "Spiral"]:
+                    if lDArr[i] or lDArr[i+1]: stats[pName]["limit_D"] += 1
+                    if lIArr[i] or lIArr[i+1]: stats[pName]["limit_I"] += 1
 
-                report_lines.append(line_str)
-            report_lines.append("")
+                reportLines.append(lineStr)
+            reportLines.append("")
 
-        report_lines.append(lan.get("reportStatisticsTitle", "=== Limiting Factors Statistics ==="))
-        report_lines.append(f"{lan.get('totalElements', 'Total evaluated elements (Curve/Spiral)')}: {total_elements}")
-        report_lines.append("")
+        reportLines.append(lan.get("reportStatisticsTitle", "=== Limiting Factors Statistics ==="))
+        reportLines.append(f"{lan.get('totalElements', 'Total evaluated elements (Curve/Spiral)')}: {totalElements}")
+        reportLines.append("")
 
-        for p_name in ["V100", "V130", "V150", "VK"]:
-            report_lines.append(f"--- {p_name} ---")
-            report_lines.append(f"  {lan.get('lim_D', 'D (Cant)')} limit: {stats[p_name]['limit_D']}x")
-            report_lines.append(f"  {lan.get('lim_I', 'I (Cant Deficiency)')} limit: {stats[p_name]['limit_I']}x")
-            report_lines.append("")
+        for pName in ["V100", "V130", "V150", "VK"]:
+            reportLines.append(f"--- {pName} ---")
+            reportLines.append(f"  {lan.get('lim_D', 'D (Cant)')} limit: {stats[pName]['limit_D']}x")
+            reportLines.append(f"  {lan.get('lim_I', 'I (Cant Deficiency)')} limit: {stats[pName]['limit_I']}x")
+            reportLines.append("")
 
-        report_lines.append(lan.get("reportExtremesTitle", "=== Extremes of Geometric Parameters ==="))
-        report_lines.append("")
+        reportLines.append(lan.get("reportExtremesTitle", "=== Extremes of Geometric Parameters ==="))
+        reportLines.append("")
 
-        for p_name in ["V100", "V130", "V150", "VK"]:
-            report_lines.append(f"--- {p_name} ---")
-            p_stats = profile_stats[p_name]
+        for pName in ["V100", "V130", "V150", "VK"]:
+            reportLines.append(f"--- {pName} ---")
+            pStats = profileStats[pName]
             
-            str_n = f"{p_stats['min_n']:.2f}" if p_stats['min_n'] != float('inf') else "-"
-            str_nI = f"{p_stats['min_nI']:.2f}" if p_stats['min_nI'] != float('inf') else "-"
-            str_nI_all = f"{p_stats['min_nI_all']:.2f} (deltaI = {p_stats['min_nI_all_dI']:.0f} mm)" if p_stats['min_nI_all'] != float('inf') else "-"
+            strN = f"{pStats['min_n']:.2f}" if pStats['min_n'] != float('inf') else "-"
+            strNI = f"{pStats['min_nI']:.2f}" if pStats['min_nI'] != float('inf') else "-"
+            strNIAll = f"{pStats['min_nI_all']:.2f} (deltaI = {pStats['min_nI_all_dI']:.0f} mm)" if pStats['min_nI_all'] != float('inf') else "-"
             
-            weighted_avg_util_D = p_stats["weighted_util_sum_D"] / p_stats["total_length"] if p_stats["total_length"] > 0 else 0.0
-            weighted_avg_util_I = p_stats["weighted_util_sum_I"] / p_stats["total_length"] if p_stats["total_length"] > 0 else 0.0
-            report_lines.append(f"  {lan.get('stat_weighted_avg_util_D', 'Weighted Avg Util D [-]')}: {weighted_avg_util_D*100:.2f}%")
-            report_lines.append(f"  {lan.get('stat_weighted_avg_util_I', 'Weighted Avg Util I [-]')}: {weighted_avg_util_I*100:.2f}%")
+            weightedAvgUtilD = pStats["weighted_util_sum_D"] / pStats["total_length"] if pStats["total_length"] > 0 else 0.0
+            weightedAvgUtilI = pStats["weighted_util_sum_I"] / pStats["total_length"] if pStats["total_length"] > 0 else 0.0
+            reportLines.append(f"  {lan.get('stat_weighted_avg_util_D', 'Weighted Avg Util D [-]')}: {weightedAvgUtilD*100:.2f}%")
+            reportLines.append(f"  {lan.get('stat_weighted_avg_util_I', 'Weighted Avg Util I [-]')}: {weightedAvgUtilI*100:.2f}%")
 
-            report_lines.append(f"  {lan.get('stat_min_n', 'Min n [-]')}: {str_n}")
-            report_lines.append(f"  {lan.get('stat_min_nI', 'Min nI [-]')}: {str_nI}")
-            report_lines.append(f"  {lan.get('stat_min_nI_all', 'Min nI (all) [-]')}: {str_nI_all}")
-            report_lines.append(f"  {lan.get('stat_max_dDdt', 'Max dD/dt [mm/s]')}: {p_stats['max_dd_dt']:.2f}")
-            report_lines.append(f"  {lan.get('stat_max_dIdt', 'Max dI/dt [mm/s]')}: {p_stats['max_di_dt']:.2f}")
-            report_lines.append(f"  {lan.get('stat_max_D', 'Max D [mm]')}: {p_stats['max_D']:.0f}")
-            report_lines.append(f"  {lan.get('stat_max_I', 'Max I [mm]')}: {p_stats['max_I']:.0f}")
-            report_lines.append(f"  {lan.get('stat_max_deltaI', 'Max deltaI [mm]')}: {p_stats['max_deltaI']:.0f}")
-            report_lines.append("")
+            reportLines.append(f"  {lan.get('stat_min_n', 'Min n [-]')}: {strN}")
+            reportLines.append(f"  {lan.get('stat_min_nI', 'Min nI [-]')}: {strNI}")
+            reportLines.append(f"  {lan.get('stat_min_nI_all', 'Min nI (all) [-]')}: {strNIAll}")
+            reportLines.append(f"  {lan.get('stat_max_dDdt', 'Max dD/dt [mm/s]')}: {pStats['max_dd_dt']:.2f}")
+            reportLines.append(f"  {lan.get('stat_max_dIdt', 'Max dI/dt [mm/s]')}: {pStats['max_di_dt']:.2f}")
+            reportLines.append(f"  {lan.get('stat_max_D', 'Max D [mm]')}: {pStats['max_D']:.0f}")
+            reportLines.append(f"  {lan.get('stat_max_I', 'Max I [mm]')}: {pStats['max_I']:.0f}")
+            reportLines.append(f"  {lan.get('stat_max_deltaI', 'Max deltaI [mm]')}: {pStats['max_deltaI']:.0f}")
+            reportLines.append("")
 
-        self.reportGeometryWidget.setPlainText("\n".join(report_lines))
-        self.layoutTabsPlots.setCurrentWidget(self.layoutTabsPlotsReport_container)
+        self.reportGeometryWidget.setPlainText("\n".join(reportLines))
+        self.showReportView()
 
-    def generateVehicleReport(self, v_idx=0):
-        lan = lang.DIC[self.current_language]
-        stations = self.dataStorage.get(f"kinematicsStationM_{v_idx}", [])
+    def generateVehicleReport(self, vIdx=0):
+        lan = lang.DIC[self.currentLanguage]
+        stations = self.dataStorage.get(f"kinematicsStationM_{vIdx}", [])
         if len(stations) == 0:
             self.reportVehicleTable.setData([{"Info": lan.get("no_data", "No data available. Calculate values first.")}])
-            self.layoutTabsPlots.setCurrentWidget(self.layoutTabsPlotsReport_container)
+            self.showReportView()
             return
 
-        speeds = self.dataStorage.get(f"kinematicsSpeedM_{v_idx}", np.zeros_like(stations))
-        accels = self.dataStorage.get(f"kinematicsAcceleration_{v_idx}", np.zeros_like(stations))
-        f_trac = self.dataStorage.get(f"kinematicsForceTractionKN_{v_idx}", np.zeros_like(stations))
-        f_brake = self.dataStorage.get(f"kinematicsForceBrakingKN_{v_idx}", np.zeros_like(stations))
-        f_res = self.dataStorage.get(f"kinematicsForceResistanceKN_{v_idx}", np.zeros_like(stations))
-        times = self.dataStorage.get(f"kinematicsTimeS_{v_idx}", [])
-        has_times = len(times) == len(stations)
+        speeds = self.dataStorage.get(f"kinematicsSpeedM_{vIdx}", np.zeros_like(stations))
+        accels = self.dataStorage.get(f"kinematicsAcceleration_{vIdx}", np.zeros_like(stations))
+        fTrac = self.dataStorage.get(f"kinematicsForceTractionKN_{vIdx}", np.zeros_like(stations))
+        fBrake = self.dataStorage.get(f"kinematicsForceBrakingKN_{vIdx}", np.zeros_like(stations))
+        fRes = self.dataStorage.get(f"kinematicsForceResistanceKN_{vIdx}", np.zeros_like(stations))
+        times = self.dataStorage.get(f"kinematicsTimeS_{vIdx}", [])
+        hasTimes = len(times) == len(stations)
 
         # Shorthand column key names (keeps dict literals concise and order consistent)
-        k_sta   = lan.get("station", "Station [km]")
-        k_time  = lan.get("time", "Time [s]")
-        k_spd   = lan.get("speed", "Speed [km/h]")
-        k_acc   = lan.get("accel", "Accel [m/s²]")
-        k_trac  = lan.get("forceTraction", "Tractive Force [kN]")
-        k_brake = lan.get("forceBraking", "Braking Force [kN]")
-        k_res   = lan.get("forceResistance", "Resistance [kN]")
+        kSta   = lan.get("station", "Station [km]")
+        kTime  = lan.get("time", "Time [s]")
+        kSpd   = lan.get("speed", "Speed [km/h]")
+        kAcc   = lan.get("accel", "Accel [m/s²]")
+        kTrac  = lan.get("forceTraction", "Tractive Force [kN]")
+        kBrake = lan.get("forceBraking", "Braking Force [kN]")
+        kRes   = lan.get("forceResistance", "Resistance [kN]")
 
         tableData = []
 
         # Vehicle name for report header
-        vehicle_name = self._get_vehicle_name(v_idx)
-        summary_title = lan.get('run_summary_title', 'RUN SUMMARY')
-        if vehicle_name:
-            summary_title = f"{summary_title} — {vehicle_name}"
+        vehicleName = self.getVehicleName(vIdx)
+        summaryTitle = lan.get('run_summary_title', 'RUN SUMMARY')
+        if vehicleName:
+            summaryTitle = f"{summaryTitle} — {vehicleName}"
 
         # Travel time, average speed, and maximum speed
         if len(stations) > 1 and len(times) > 1:
-            total_distance_m = abs(stations[-1] - stations[0])
-            total_time_s = times[-1]
-            avg_speed_ms = total_distance_m / total_time_s if total_time_s > 0 else 0
-            avg_speed_kmh = avg_speed_ms * 3.6
-            max_speed_kmh = float(np.max(speeds)) * 3.6 if len(speeds) > 0 else 0.0
-            minutes, seconds = divmod(total_time_s, 60)
+            totalDistanceM = abs(stations[-1] - stations[0])
+            totalTimeS = times[-1]
+            avgSpeedMs = totalDistanceM / totalTimeS if totalTimeS > 0 else 0
+            avgSpeedKmh = avgSpeedMs * 3.6
+            maxSpeedKmh = float(np.max(speeds)) * 3.6 if len(speeds) > 0 else 0.0
+            minutes, seconds = divmod(totalTimeS, 60)
 
             tableData.append({
-                k_sta:   f"=== {summary_title} ===",
-                k_time:  "",
-                k_spd:   lan.get('total_travel_time', 'Total travel time:'),
-                k_acc:   f"{int(minutes):02d} min {int(seconds):02d} s",
-                k_trac:  lan.get('average_speed', 'Average speed:'),
-                k_brake: f"{avg_speed_kmh:.2f} km/h",
-                k_res:   f"{lan.get('max_speed_achieved', 'Max speed:')} {max_speed_kmh:.0f} km/h"
+                kSta:   f"=== {summaryTitle} ===",
+                kTime:  "",
+                kSpd:   lan.get('total_travel_time', 'Total travel time:'),
+                kAcc:   f"{int(minutes):02d} min {int(seconds):02d} s",
+                kTrac:  lan.get('average_speed', 'Average speed:'),
+                kBrake: f"{avgSpeedKmh:.2f} km/h",
+                kRes:   f"{lan.get('maxSpeed_achieved', 'Max speed:')} {maxSpeedKmh:.0f} km/h"
             })
             tableData.append({k: "---" for k in tableData[0].keys()})
 
         # Energy calculation (use abs(dx) so reversed vehicles give positive values)
         dx = np.abs(np.diff(stations))
         dx = np.append(dx, 0)
-        energy_kwh = np.sum(f_trac * dx) / 3600.0
-        brake_energy_kwh = np.sum(f_brake * dx) / 3600.0
+        energyKwh = np.sum(fTrac * dx) / 3600.0
+        brakeEnergyKwh = np.sum(fBrake * dx) / 3600.0
 
         tableData.append({
-            k_sta:   f"=== {lan.get('energy_title', 'ENERGY')} ===",
-            k_time:  "",
-            k_spd:   f"{lan.get('energyTraction', 'Traction [kWh]')}:",
-            k_acc:   f"{energy_kwh:.2f}",
-            k_trac:  f"{lan.get('energyBraking', 'Braking [kWh]')}:",
-            k_brake: f"{brake_energy_kwh:.2f}",
-            k_res:   ""
+            kSta:   f"=== {lan.get('energy_title', 'ENERGY')} ===",
+            kTime:  "",
+            kSpd:   f"{lan.get('energyTraction', 'Traction [kWh]')}:",
+            kAcc:   f"{energyKwh:.2f}",
+            kTrac:  f"{lan.get('energyBraking', 'Braking [kWh]')}:",
+            kBrake: f"{brakeEnergyKwh:.2f}",
+            kRes:   ""
         })
         tableData.append({k: "---" for k in tableData[0].keys()})
 
@@ -2776,58 +2568,58 @@ class MainWindow(QMainWindow):
         trainStops = self.dataStorage.get("settingsData", {}).get("trainStops", [])
         if trainStops:
             tableData.append({
-                k_sta:   f"=== {lan.get('stopsHeader', 'STOPS')} ===",
-                k_time:  "",
-                k_spd:   "",
-                k_acc:   "",
-                k_trac:  "",
-                k_brake: "",
-                k_res:   ""
+                kSta:   f"=== {lan.get('stopsHeader', 'STOPS')} ===",
+                kTime:  "",
+                kSpd:   "",
+                kAcc:   "",
+                kTrac:  "",
+                kBrake: "",
+                kRes:   ""
             })
             for stop in trainStops:
                 try:
-                    s_km = float(stop[0])
+                    sKm = float(stop[0])
                     dwell = float(stop[1])
                     name = str(stop[2]) if len(stop) > 2 else ""
-                    s_m = s_km * 1000.0
-                    idx = np.argmin(np.abs(stations - s_m))
-                    if np.abs(stations[idx] - s_m) < 2.0:
-                        dep_time = self.dataStorage.get(f"kinematicsTimeS_{v_idx}")[idx]
-                        arr_time = max(0, dep_time - dwell)
+                    sM = sKm * 1000.0
+                    idx = np.argmin(np.abs(stations - sM))
+                    if np.abs(stations[idx] - sM) < 2.0:
+                        depTime = self.dataStorage.get(f"kinematicsTimeS_{vIdx}")[idx]
+                        arrTime = max(0, depTime - dwell)
                         tableData.append({
-                            k_sta:   f"{s_km:.3f} {name}",
-                            k_time:  "",
-                            k_spd:   f"Arr: {arr_time:.1f} s",
-                            k_acc:   f"Dep: {dep_time:.1f} s",
-                            k_trac:  f"Dwell: {dwell} s",
-                            k_brake: "-",
-                            k_res:   "-"
+                            kSta:   f"{sKm:.3f} {name}",
+                            kTime:  "",
+                            kSpd:   f"Arr: {arrTime:.1f} s",
+                            kAcc:   f"Dep: {depTime:.1f} s",
+                            kTrac:  f"Dwell: {dwell} s",
+                            kBrake: "-",
+                            kRes:   "-"
                         })
                 except Exception:
                     continue
             tableData.append({k: "---" for k in tableData[0].keys()})
 
         # Every 10th point + always include first and last (V=0 endpoints)
-        step_indices = list(range(0, len(stations), 10))
-        if len(stations) - 1 not in step_indices:
-            step_indices.append(len(stations) - 1)
-        for i in step_indices:
-            s_km = stations[i] / 1000.0
+        stepIndices = list(range(0, len(stations), 10))
+        if len(stations) - 1 not in stepIndices:
+            stepIndices.append(len(stations) - 1)
+        for i in stepIndices:
+            sKm = stations[i] / 1000.0
             tableData.append({
-                k_sta:   f"{s_km:.3f}",
-                k_time:  f"{times[i]:.1f}" if has_times else "",
-                k_spd:   f"{speeds[i]*3.6:.1f}",
-                k_acc:   f"{accels[i]:.3f}",
-                k_trac:  f"{f_trac[i]:.1f}",
-                k_brake: f"{f_brake[i]:.1f}",
-                k_res:   f"{f_res[i]:.1f}"
+                kSta:   f"{sKm:.3f}",
+                kTime:  f"{times[i]:.1f}" if hasTimes else "",
+                kSpd:   f"{speeds[i]*3.6:.1f}",
+                kAcc:   f"{accels[i]:.3f}",
+                kTrac:  f"{fTrac[i]:.1f}",
+                kBrake: f"{fBrake[i]:.1f}",
+                kRes:   f"{fRes[i]:.1f}"
             })
 
         self.reportVehicleTable.setData(tableData)
-        self.layoutTabsPlots.setCurrentWidget(self.layoutTabsPlotsReport_container)
+        self.showReportView()
 
     def exportGeometryReport(self):
-        lan = lang.DIC[self.current_language]
+        lan = lang.DIC[self.currentLanguage]
         content = self.reportGeometryWidget.toPlainText()
         if not content:
             QMessageBox.warning(self, lan.get("error", "Error"), lan.get("no_data", "No data available. Calculate values first."))
@@ -2841,9 +2633,9 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(self, lan.get("error", "Error"), f"{e}")
 
-    def exportVehicleReport(self, v_idx=0):
-        lan = lang.DIC[self.current_language]
-        stations = self.dataStorage.get(f"kinematicsStationM_{v_idx}", [])
+    def exportVehicleReport(self, vIdx=0):
+        lan = lang.DIC[self.currentLanguage]
+        stations = self.dataStorage.get(f"kinematicsStationM_{vIdx}", [])
         if len(stations) == 0:
             QMessageBox.warning(self, lan.get("error", "Error"), lan.get("no_data", "No data available. Calculate values first."))
             return
@@ -2853,50 +2645,50 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            speeds = self.dataStorage.get(f"kinematicsSpeedM_{v_idx}", np.zeros_like(stations))
-            accels = self.dataStorage.get(f"kinematicsAcceleration_{v_idx}", np.zeros_like(stations))
-            f_trac = self.dataStorage.get(f"kinematicsForceTractionKN_{v_idx}", np.zeros_like(stations))
-            f_brake = self.dataStorage.get(f"kinematicsForceBrakingKN_{v_idx}", np.zeros_like(stations))
-            f_res = self.dataStorage.get(f"kinematicsForceResistanceKN_{v_idx}", np.zeros_like(stations))
-            times = self.dataStorage.get(f"kinematicsTimeS_{v_idx}", [])
-            has_times = len(times) == len(stations)
+            speeds = self.dataStorage.get(f"kinematicsSpeedM_{vIdx}", np.zeros_like(stations))
+            accels = self.dataStorage.get(f"kinematicsAcceleration_{vIdx}", np.zeros_like(stations))
+            fTrac = self.dataStorage.get(f"kinematicsForceTractionKN_{vIdx}", np.zeros_like(stations))
+            fBrake = self.dataStorage.get(f"kinematicsForceBrakingKN_{vIdx}", np.zeros_like(stations))
+            fRes = self.dataStorage.get(f"kinematicsForceResistanceKN_{vIdx}", np.zeros_like(stations))
+            times = self.dataStorage.get(f"kinematicsTimeS_{vIdx}", [])
+            hasTimes = len(times) == len(stations)
 
             with open(filepath, "w", newline="", encoding="utf-8") as file:
                 writer = csv.writer(file)
 
                 # === RUN SUMMARY ===
-                vehicle_name = self._get_vehicle_name(v_idx)
+                vehicleName = self.getVehicleName(vIdx)
                 if len(stations) > 1 and len(times) > 1:
-                    total_distance_m = abs(stations[-1] - stations[0])
-                    total_time_s = times[-1]
-                    avg_speed_ms = total_distance_m / total_time_s if total_time_s > 0 else 0
-                    avg_speed_kmh = avg_speed_ms * 3.6
-                    max_speed_kmh = float(np.max(speeds)) * 3.6 if len(speeds) > 0 else 0.0
-                    minutes, seconds = divmod(total_time_s, 60)
+                    totalDistanceM = abs(stations[-1] - stations[0])
+                    totalTimeS = times[-1]
+                    avgSpeedMs = totalDistanceM / totalTimeS if totalTimeS > 0 else 0
+                    avgSpeedKmh = avgSpeedMs * 3.6
+                    maxSpeedKmh = float(np.max(speeds)) * 3.6 if len(speeds) > 0 else 0.0
+                    minutes, seconds = divmod(totalTimeS, 60)
                     writer.writerow([f"=== {lan.get('run_summary_title', 'RUN SUMMARY')} ==="])
-                    if vehicle_name:
-                        writer.writerow([lan.get('vehicle', 'Vehicle') + ":", vehicle_name])
+                    if vehicleName:
+                        writer.writerow([lan.get('vehicle', 'Vehicle') + ":", vehicleName])
                     writer.writerow([lan.get('total_travel_time', 'Total travel time:'),
                                      f"{int(minutes):02d} min {int(seconds):02d} s"])
                     writer.writerow([lan.get('average_speed', 'Average speed:'),
-                                     f"{avg_speed_kmh:.2f} km/h"])
-                    writer.writerow([lan.get('max_speed_achieved', 'Maximum speed achieved:'),
-                                     f"{max_speed_kmh:.0f} km/h"])
+                                     f"{avgSpeedKmh:.2f} km/h"])
+                    writer.writerow([lan.get('maxSpeed_achieved', 'Maximum speed achieved:'),
+                                     f"{maxSpeedKmh:.0f} km/h"])
                     writer.writerow([])
 
                 # === ENERGY (abs(dx) so reversed vehicles give positive values) ===
                 dx = np.abs(np.diff(stations))
                 dx = np.append(dx, 0)
-                energy_kwh = np.sum(f_trac * dx) / 3600.0
-                brake_energy_kwh = np.sum(f_brake * dx) / 3600.0
+                energyKwh = np.sum(fTrac * dx) / 3600.0
+                brakeEnergyKwh = np.sum(fBrake * dx) / 3600.0
                 writer.writerow([f"=== {lan.get('energy_title', 'ENERGY')} ==="])
-                writer.writerow([lan.get('energyTraction', 'Traction [kWh]'), f"{energy_kwh:.2f}"])
-                writer.writerow([lan.get('energyBraking', 'Braking [kWh]'), f"{brake_energy_kwh:.2f}"])
+                writer.writerow([lan.get('energyTraction', 'Traction [kWh]'), f"{energyKwh:.2f}"])
+                writer.writerow([lan.get('energyBraking', 'Braking [kWh]'), f"{brakeEnergyKwh:.2f}"])
                 writer.writerow([])
 
                 # === STOPS ===
                 trainStops = self.dataStorage.get("settingsData", {}).get("trainStops", [])
-                if trainStops and has_times:
+                if trainStops and hasTimes:
                     writer.writerow([f"=== {lan.get('stopsHeader', 'STOPS')} ==="])
                     writer.writerow([
                         lan.get("station", "Station [km]"),
@@ -2907,16 +2699,16 @@ class MainWindow(QMainWindow):
                     ])
                     for stop in trainStops:
                         try:
-                            s_km = float(stop[0])
+                            sKm = float(stop[0])
                             dwell = float(stop[1])
                             name = str(stop[2]) if len(stop) > 2 else ""
-                            s_m = s_km * 1000.0
-                            idx = np.argmin(np.abs(stations - s_m))
-                            if np.abs(stations[idx] - s_m) < 2.0:
-                                dep_time = times[idx]
-                                arr_time = max(0.0, dep_time - dwell)
-                                writer.writerow([f"{s_km:.3f}", name,
-                                                 f"{arr_time:.1f}", f"{dep_time:.1f}",
+                            sM = sKm * 1000.0
+                            idx = np.argmin(np.abs(stations - sM))
+                            if np.abs(stations[idx] - sM) < 2.0:
+                                depTime = times[idx]
+                                arrTime = max(0.0, depTime - dwell)
+                                writer.writerow([f"{sKm:.3f}", name,
+                                                 f"{arrTime:.1f}", f"{depTime:.1f}",
                                                  f"{dwell:.0f}"])
                         except Exception:
                             continue
@@ -2933,26 +2725,35 @@ class MainWindow(QMainWindow):
                     lan.get("forceResistance", "Resistance [kN]")
                 ])
                 for i in range(len(stations)):
-                    s_km = stations[i] / 1000.0
+                    sKm = stations[i] / 1000.0
                     writer.writerow([
-                        f"{s_km:.3f}",
-                        f"{times[i]:.1f}" if has_times else "",
+                        f"{sKm:.3f}",
+                        f"{times[i]:.1f}" if hasTimes else "",
                         f"{speeds[i]*3.6:.1f}",
                         f"{accels[i]:.3f}",
-                        f"{f_trac[i]:.1f}",
-                        f"{f_brake[i]:.1f}",
-                        f"{f_res[i]:.1f}"
+                        f"{fTrac[i]:.1f}",
+                        f"{fBrake[i]:.1f}",
+                        f"{fRes[i]:.1f}"
                     ])
 
         except Exception as e:
             QMessageBox.critical(self, lan.get("error", "Error"), f"{e}")
 
-    # Update tables
+    # Store the parsed data and defer the table build until the dock is visible
     def updateTableLandXML(self, data):
+        self.pendingLandXmlTableData = data
+        self.dockLandXmlParsed.requestUpdate()
+
+    # Build the LandXML overview table from the last parsed dataset
+    def renderTableLandXML(self):
+        data = getattr(self, "pendingLandXmlTableData", None)
+        if not data:
+            return
+
         stations = np.concatenate((data["stationCant"], data["stationHorizontal"], data["stationVertical"]))
         uniqueStations = np.unique(stations)
         tableData = []
-        lan = lang.DIC[self.current_language]
+        lan = lang.DIC[self.currentLanguage]
         for station in uniqueStations:
             cant = data["cant"][np.where(data["stationCant"] == station)]
             horizontalRadius = data["radius"][np.where(data["stationHorizontal"] == station)]
@@ -2968,27 +2769,27 @@ class MainWindow(QMainWindow):
         # Plot data in table    
         self.tableLandXML.setData(tableData)
 
+    # Split station array into monotone sections on direction reversal or gap over 20 km
+    # Tracks the last non-zero diff so duplicate stations do not mask a later reversal
     def TTPSections(self, stations):
-        """Split station array into monotone sections (new section on direction reversal or gap > 20 km).
-        Tracks last non-zero diff so duplicate stations do not mask a subsequent reversal."""
         if len(stations) == 0:
             return []
 
         sections = []
         startID = 0
-        prev_nonzero_diff = 0   # direction of the most recent non-zero step
+        prevNonzeroDiff = 0   # direction of the most recent non-zero step
 
         for i in range(1, len(stations)):
             diff = stations[i] - stations[i-1]
 
-            is_boundary = abs(diff) > 20
+            isBoundary = abs(diff) > 20
 
-            if not is_boundary and diff != 0:
-                if prev_nonzero_diff != 0 and np.sign(diff) != np.sign(prev_nonzero_diff):
-                    is_boundary = True
-                prev_nonzero_diff = diff   # update only on non-zero steps
+            if not isBoundary and diff != 0:
+                if prevNonzeroDiff != 0 and np.sign(diff) != np.sign(prevNonzeroDiff):
+                    isBoundary = True
+                prevNonzeroDiff = diff   # update only on non-zero steps
 
-            if is_boundary:
+            if isBoundary:
                 sections.append({
                     "startID": startID,
                     "endID": i - 1,
@@ -2998,7 +2799,7 @@ class MainWindow(QMainWindow):
                 startID = i
                 # Reset: direction of the new section is unknown until we see its
                 # first non-zero step; setting to 0 avoids a false split at i+1.
-                prev_nonzero_diff = 0
+                prevNonzeroDiff = 0
 
         # Add the last section
         sections.append({
@@ -3011,34 +2812,30 @@ class MainWindow(QMainWindow):
         return sections
 
     @staticmethod
-    def _correctReversedTTPSection(sec_stations, sec_limits):
-        """Fix post-step semantics for a descending-order TTP section.
-
-        After ascending sort, getSpeedLimitAt assigns each sign's limit one segment
-        too early. Fix: insert a synthetic station at stations[0]-1e-6 and append
-        the last limit so every limit applies to the interval below its sign.
-        E.g. [16,10,5]→[100,80,60] becomes stations=[4.999999,5,10,16], limits=[60,80,100,100].
-        No-op for ascending sections.
-        """
-        if len(sec_stations) <= 1:
-            return sec_stations, sec_limits
+    # Fix post-step semantics for a descending-order TTP section
+    # After ascending sort, getSpeedLimitAt assigns each sign limit one segment too early
+    # The fix inserts a synthetic station at stations[0]-1e-6 and appends the last limit
+    # so every limit applies to the interval below its sign, and is a no-op when ascending
+    def correctReversedTTPSection(secStations, secLimits):
+        if len(secStations) <= 1:
+            return secStations, secLimits
 
         # Only transform sections that were originally in descending order
-        if sec_stations[0] <= sec_stations[-1]:
-            return sec_stations, sec_limits
+        if secStations[0] <= secStations[-1]:
+            return secStations, secLimits
 
-        sort_idx = np.argsort(sec_stations, kind='stable')
-        st_asc = sec_stations[sort_idx]
-        sp_asc = sec_limits[sort_idx]
+        sortIdx = np.argsort(secStations, kind='stable')
+        stAsc = secStations[sortIdx]
+        spAsc = secLimits[sortIdx]
 
         # Prepend a synthetic point 1 µm below the lowest real sign.
         # It carries the lowest sign's own limit so that getSpeedLimitAt(x)
         # for x < st_asc[0] still returns the correct value (sp_asc[0]).
-        stations_out = np.concatenate(([st_asc[0] - 1e-6], st_asc))
+        stationsOut = np.concatenate(([stAsc[0] - 1e-6], stAsc))
         # Each sign's limit now applies from just-below its own km up to the
         # next sign's km (the shift gives post-step semantics in ascending order).
-        limits_out = np.append(sp_asc, sp_asc[-1])
-        return stations_out, limits_out
+        limitsOut = np.append(spAsc, spAsc[-1])
+        return stationsOut, limitsOut
 
     def calculateGeometry(self):
 
@@ -3048,9 +2845,13 @@ class MainWindow(QMainWindow):
         calculate = geometry_engine.GeometryCalculator(self.dataStorage)
         calculate.runCalculationLoop()
 
-        self.update_map_with_speeds()
+        self.updateMapWithSpeeds()
         self.plotCant()
         self.plotSpeedLimits()
+
+        # Step 5 of the workflow guide covers the GPK calculation
+        self.workflowWidget.markCompleted(4)
+        self.setEngineStatus(lang.DIC[self.currentLanguage].get("statusGeometryDone", "Geometry calculated"))
 
     def calculateGeometryI(self):
 
@@ -3060,9 +2861,13 @@ class MainWindow(QMainWindow):
         calculate = geometry_engine.GeometryCalculator(self.dataStorage)
         calculate.runCalculationLoopI()
 
-        self.update_map_with_speeds()
+        self.updateMapWithSpeeds()
         self.plotCant()
         self.plotSpeedLimits()
+
+        # Step 5 of the workflow guide covers the GPK calculation
+        self.workflowWidget.markCompleted(4)
+        self.setEngineStatus(lang.DIC[self.currentLanguage].get("statusGeometryDone", "Geometry calculated"))
 
     def calculateTrainSpeed(self):
         vehicle = vehicle_engine.VehicleCalculator(self.dataStorage)
@@ -3074,7 +2879,7 @@ class MainWindow(QMainWindow):
                 warnings.append(str(i+1))
                 
         if warnings:
-            lan = lang.DIC[self.current_language]
+            lan = lang.DIC[self.currentLanguage]
             msg = lan["train_too_long"] + f" (Vehicle: {', '.join(warnings)})"
             QMessageBox.warning(self, lan["error"], msg)
 
@@ -3082,7 +2887,11 @@ class MainWindow(QMainWindow):
 
         self.plotKinematics()
 
-    def update_map_with_speeds(self):
+        # Step 6 of the workflow guide covers the running simulation
+        self.workflowWidget.markCompleted(5)
+        self.setEngineStatus(lang.DIC[self.currentLanguage].get("statusSimulationDone", "Simulation finished"))
+
+    def updateMapWithSpeeds(self):
         lxml = self.dataStorage.get("LandXML", {})
         if not lxml:
             return

@@ -1,16 +1,257 @@
 import io
+import json
 import folium
 from folium import DivIcon
 from folium.features import ColorLine
 import math
-from PySide6.QtCore import QUrl
-from PySide6.QtWidgets import QWidget, QVBoxLayout
+from PySide6.QtCore import QFile, QIODevice, QObject, Qt, QUrl, Signal, Slot
+from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel, QSlider,
+                               QToolButton, QWidget, QVBoxLayout)
 from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWebChannel import QWebChannel
 import numpy as np
 import branca.colormap as bcm
 
+import icons
+
+# Maximum number of alignment samples handed to the page for nearest point lookup
+MAX_LOOKUP_POINTS = 2000
+
+# Base maps offered by the overlay selector, the value is stored in currentBaseMap
+BASEMAP_CHOICES = [
+    ("positron", "mapPositron", "CartoDB Positron"),
+    ("osm", "mapOSM", "OpenStreetMap"),
+    ("cuzk", "mapCUZK", "CUZK orthophoto"),
+]
+
+# Alignment rendering styles cycled by the quick toggle button
+DRAW_MODE_SPEED = "speed"
+DRAW_MODE_TYPE = "type"
+
+# Offset of the floating control panel, chosen to clear the Leaflet zoom buttons
+CONTROL_PANEL_MARGIN = 10
+CONTROL_PANEL_TOP = 88
+
+# Injected into every rendered map so the chainage crosshair works in both directions
+CURSOR_SCRIPT_TEMPLATE = """
+<script>{webChannelSource}</script>
+<script>
+window.coypuCursorMarker = null;
+window.coypuBridge = null;
+window.coypuPoints = {lookupPoints};
+window.coypuLastSent = 0;
+
+window.setTrackCursor = function (lat, lon) {{
+    var mapObject = {mapName};
+    if (!mapObject) {{ return; }}
+    if (window.coypuCursorMarker === null) {{
+        window.coypuCursorMarker = L.circleMarker([lat, lon], {{
+            radius: 7, color: '#2f6fb5', weight: 3,
+            fillColor: '#ffffff', fillOpacity: 1.0
+        }}).addTo(mapObject);
+    }} else {{
+        window.coypuCursorMarker.setLatLng([lat, lon]);
+    }}
+}};
+
+// Report the chainage of the alignment point nearest to the mouse back to Qt
+window.coypuReportNearest = function (latlng) {{
+    if (!window.coypuBridge || window.coypuPoints.length === 0) {{ return; }}
+    var now = Date.now();
+    if (now - window.coypuLastSent < 50) {{ return; }}
+    window.coypuLastSent = now;
+
+    var scale = Math.cos(latlng.lat * Math.PI / 180.0);
+    var bestIndex = -1;
+    var bestDistance = Infinity;
+    for (var i = 0; i < window.coypuPoints.length; i++) {{
+        var dLat = window.coypuPoints[i][1] - latlng.lat;
+        var dLon = (window.coypuPoints[i][2] - latlng.lng) * scale;
+        var distance = dLat * dLat + dLon * dLon;
+        if (distance < bestDistance) {{ bestDistance = distance; bestIndex = i; }}
+    }}
+    if (bestIndex >= 0) {{
+        window.coypuBridge.reportChainage(window.coypuPoints[bestIndex][0]);
+    }}
+}};
+
+if (typeof qt !== 'undefined' && qt.webChannelTransport) {{
+    new QWebChannel(qt.webChannelTransport, function (channel) {{
+        window.coypuBridge = channel.objects.coypuBridge;
+    }});
+}}
+
+{mapName}.on('mousemove', function (event) {{ window.coypuReportNearest(event.latlng); }});
+</script>
+"""
+
+
+class MapControlsPanel(QFrame):
+    # Emitted with the identifier of the newly selected base map
+    baseMapChanged = Signal(str)
+
+    # Emitted with the enabled flag and the opacity fraction of the rail overlay
+    railOverlayChanged = Signal(bool, float)
+
+    # Emitted with the alignment rendering style identifier
+    drawModeChanged = Signal(str)
+
+    # Emitted when the station marker toggle is switched
+    stationsToggled = Signal(bool)
+
+    def __init__(self, lan, parent=None):
+        super().__init__(parent)
+
+        self.lan = lan or {}
+        self.setObjectName("mapControlsPanel")
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+
+        panelLayout = QVBoxLayout(self)
+        panelLayout.setContentsMargins(6, 6, 6, 6)
+        panelLayout.setSpacing(4)
+
+        self.baseMapCombo = QComboBox()
+        for baseMapKey, languageKey, fallbackName in BASEMAP_CHOICES:
+            self.baseMapCombo.addItem(self.lan.get(languageKey, fallbackName), baseMapKey)
+        self.baseMapCombo.currentIndexChanged.connect(self.onBaseMapSelected)
+        panelLayout.addWidget(self.baseMapCombo)
+
+        overlayRow = QWidget()
+        overlayLayout = QHBoxLayout(overlayRow)
+        overlayLayout.setContentsMargins(0, 0, 0, 0)
+        overlayLayout.setSpacing(4)
+
+        self.railOverlayButton = QToolButton()
+        self.railOverlayButton.setCheckable(True)
+        self.railOverlayButton.setIcon(icons.makeIcon("railway"))
+        self.railOverlayButton.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.railOverlayButton.toggled.connect(self.onRailOverlayToggled)
+        overlayLayout.addWidget(self.railOverlayButton)
+
+        self.railOpacitySlider = QSlider(Qt.Orientation.Horizontal)
+        self.railOpacitySlider.setRange(10, 100)
+        self.railOpacitySlider.setValue(70)
+        self.railOpacitySlider.setFixedWidth(70)
+        self.railOpacitySlider.setEnabled(False)
+        self.railOpacitySlider.sliderReleased.connect(self.onRailOpacityChanged)
+        overlayLayout.addWidget(self.railOpacitySlider)
+
+        panelLayout.addWidget(overlayRow)
+
+        self.alignmentStyleButton = QToolButton()
+        self.alignmentStyleButton.setIcon(icons.makeIcon("style"))
+        self.alignmentStyleButton.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.alignmentStyleButton.clicked.connect(self.onAlignmentStyleClicked)
+        panelLayout.addWidget(self.alignmentStyleButton)
+
+        self.stationsButton = QToolButton()
+        self.stationsButton.setCheckable(True)
+        self.stationsButton.setChecked(True)
+        self.stationsButton.setIcon(icons.makeIcon("station"))
+        self.stationsButton.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.stationsButton.toggled.connect(self.stationsToggled)
+        panelLayout.addWidget(self.stationsButton)
+
+        self.currentDrawMode = DRAW_MODE_SPEED
+        self.updateTexts(self.lan)
+
+    # Report the base map the user picked from the combo box
+    def onBaseMapSelected(self, index):
+        self.baseMapChanged.emit(self.baseMapCombo.itemData(index))
+
+    # Enable the opacity slider together with the rail overlay itself
+    def onRailOverlayToggled(self, isChecked):
+        self.railOpacitySlider.setEnabled(isChecked)
+        self.railOverlayChanged.emit(isChecked, self.railOpacitySlider.value() / 100.0)
+
+    # Report a new overlay opacity once the slider is released
+    def onRailOpacityChanged(self):
+        if self.railOverlayButton.isChecked():
+            self.railOverlayChanged.emit(True, self.railOpacitySlider.value() / 100.0)
+
+    # Flip the alignment rendering between speed colouring and geometry elements
+    def onAlignmentStyleClicked(self):
+        if self.currentDrawMode == DRAW_MODE_SPEED:
+            self.currentDrawMode = DRAW_MODE_TYPE
+        else:
+            self.currentDrawMode = DRAW_MODE_SPEED
+
+        self.updateAlignmentStyleCaption()
+        self.drawModeChanged.emit(self.currentDrawMode)
+
+    # Adopt the state owned by the map widget without re-emitting signals
+    def syncState(self, baseMap, drawMode, railEnabled, railOpacity, showStations):
+        for controlWidget in (self.baseMapCombo, self.railOverlayButton,
+                              self.alignmentStyleButton, self.stationsButton):
+            controlWidget.blockSignals(True)
+
+        comboIndex = self.baseMapCombo.findData(baseMap)
+        if comboIndex >= 0:
+            self.baseMapCombo.setCurrentIndex(comboIndex)
+
+        self.currentDrawMode = drawMode if drawMode in (DRAW_MODE_SPEED, DRAW_MODE_TYPE) else DRAW_MODE_SPEED
+        self.railOverlayButton.setChecked(bool(railEnabled))
+        self.railOpacitySlider.setEnabled(bool(railEnabled))
+        self.railOpacitySlider.setValue(int(round(railOpacity * 100)))
+        self.stationsButton.setChecked(bool(showStations))
+        self.updateAlignmentStyleCaption()
+
+        for controlWidget in (self.baseMapCombo, self.railOverlayButton,
+                              self.alignmentStyleButton, self.stationsButton):
+            controlWidget.blockSignals(False)
+
+    # Caption of the style button names the mode it will switch to next
+    def updateAlignmentStyleCaption(self):
+        if self.currentDrawMode == DRAW_MODE_SPEED:
+            caption = self.lan.get("mapDrawBySpeed", "Speed limits")
+        else:
+            caption = self.lan.get("mapDrawByType", "Geometry elements")
+        self.alignmentStyleButton.setText(caption)
+
+    # Refresh every caption after a language change
+    def updateTexts(self, lan):
+        self.lan = lan or {}
+
+        self.baseMapCombo.blockSignals(True)
+        for itemIndex, (baseMapKey, languageKey, fallbackName) in enumerate(BASEMAP_CHOICES):
+            self.baseMapCombo.setItemText(itemIndex, self.lan.get(languageKey, fallbackName))
+        self.baseMapCombo.blockSignals(False)
+
+        self.baseMapCombo.setToolTip(self.lan.get("mapBasemap", "Base map"))
+        self.railOverlayButton.setText(self.lan.get("mapRailOverlay", "Railways"))
+        self.railOverlayButton.setToolTip(self.lan.get("mapRailOverlayTip",
+                                                       "Toggle the OpenRailwayMap overlay"))
+        self.railOpacitySlider.setToolTip(self.lan.get("mapRailOpacity", "Overlay transparency"))
+        self.stationsButton.setText(self.lan.get("mapShowStations", "Stations"))
+        self.alignmentStyleButton.setToolTip(self.lan.get("mapAlignmentStyle", "Alignment style"))
+        self.updateAlignmentStyleCaption()
+
+    # Rebuild the icons so they follow the active theme colours
+    def applyTheme(self, isDark, tokens=None):
+        self.railOverlayButton.setIcon(icons.makeIcon("railway"))
+        self.alignmentStyleButton.setIcon(icons.makeIcon("style"))
+        self.stationsButton.setIcon(icons.makeIcon("station"))
+
+        background = "rgba(43, 43, 43, 235)" if isDark else "rgba(255, 255, 255, 235)"
+        border = tokens["border"] if tokens else "#999999"
+        self.setStyleSheet(f"#mapControlsPanel {{ background: {background};"
+                           f" border: 1px solid {border}; border-radius: 4px; }}")
+
+
+class MapBridge(QObject):
+    # Emitted with the chainage in kilometres reported by the page
+    chainageReported = Signal(float)
+
+    # Invoked from JavaScript through the web channel on every throttled mouse move
+    @Slot(float)
+    def reportChainage(self, stationKm):
+        self.chainageReported.emit(float(stationKm))
+
 class MapWidget(QWidget):
-    def __init__(self, parent=None):
+    # Emitted with the chainage in kilometres when the alignment is hovered on the map
+    cursorMoved = Signal(float)
+
+    def __init__(self, parent=None, lan=None):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
@@ -21,39 +262,110 @@ class MapWidget(QWidget):
         self.speedProfile = "150"
         self.alignment = []
         self.lxml = None
+        self.denseAlignment = []
+        self.denseStations = []
+        self.stationList = []
+        self.showStations = True
+        self.railOverlayEnabled = False
+        self.railOverlayOpacity = 0.7
+        self.isMapReady = False
+        self.mapBrowser.loadFinished.connect(self.onMapLoadFinished)
+
+        # Floating Qt controls sit above the web view and survive every page reload
+        self.controlsPanel = MapControlsPanel(lan or {}, self)
+        self.controlsPanel.baseMapChanged.connect(self.setBaseMap)
+        self.controlsPanel.railOverlayChanged.connect(self.setRailOverlay)
+        self.controlsPanel.drawModeChanged.connect(self.setDrawMode)
+        self.controlsPanel.stationsToggled.connect(self.setStationsVisible)
+        self.controlsPanel.applyTheme(False)
+
+        # The bridge lets the page report the chainage under the mouse back to Qt
+        self.bridge = MapBridge(self)
+        self.bridge.chainageReported.connect(self.cursorMoved)
+        self.webChannel = QWebChannel(self)
+        self.webChannel.registerObject("coypuBridge", self.bridge)
+        self.mapBrowser.page().setWebChannel(self.webChannel)
+
+        self.webChannelSource = self.readWebChannelSource()
         self.resetMap()
 
-    def setDrawOptions(self, draw_mode, speed_profile):
-        self.drawMode = draw_mode
-        self.speedProfile = speed_profile
-        if len(self.alignment) >= 2:
-            self.drawAlignment(self.alignment, self.lxml)
+    # Read the Qt supplied qwebchannel.js so the page needs no external request
+    def readWebChannelSource(self):
+        resource = QFile(":/qtwebchannel/qwebchannel.js")
+        if not resource.open(QIODevice.OpenModeFlag.ReadOnly):
+            return ""
+        source = bytes(resource.readAll()).decode("utf-8", errors="replace")
+        resource.close()
+        return source
 
-    def setBaseMap(self, base_map):
-        self.currentBaseMap = base_map
+    def setDrawOptions(self, drawMode, speedProfile):
+        self.drawMode = drawMode
+        self.speedProfile = speedProfile
+        self.syncControlsPanel()
+        self.redraw()
+
+    # Switch the alignment rendering style from the floating quick toggle
+    def setDrawMode(self, drawMode):
+        self.drawMode = drawMode
+        self.redraw()
+
+    def setBaseMap(self, baseMap):
+        # The dedicated rail overlay replaced the former combined orm base map
+        if baseMap == "orm":
+            self.railOverlayEnabled = True
+            baseMap = "osm"
+
+        self.currentBaseMap = baseMap
+        self.syncControlsPanel()
+        self.redraw()
+
+    # Enable or disable the OpenRailwayMap overlay and set its transparency
+    def setRailOverlay(self, isEnabled, opacity=None):
+        self.railOverlayEnabled = bool(isEnabled)
+        if opacity is not None:
+            self.railOverlayOpacity = float(opacity)
+        self.redraw()
+
+    # Show or hide the station and stop markers on the map
+    def setStationsVisible(self, isVisible):
+        self.showStations = bool(isVisible)
+        self.redraw()
+
+    # Store the scheduled stops so they can be placed along the alignment
+    def setStations(self, stations):
+        self.stationList = list(stations or [])
+        self.redraw()
+
+    # Redraw the alignment when there is data, otherwise show the empty map
+    def redraw(self):
         if len(self.alignment) >= 2:
             self.drawAlignment(self.alignment, self.lxml)
         else:
             self.resetMap()
 
-    def _add_tiles(self, m):
-        if self.currentBaseMap == "positron":
-            folium.TileLayer("CartoDB Positron").add_to(m)
-        elif self.currentBaseMap == "osm":
-            folium.TileLayer("OpenStreetMap").add_to(m)
-        elif self.currentBaseMap == "orm":
-            folium.TileLayer("OpenStreetMap").add_to(m)
-            folium.TileLayer(
-                tiles='https://{s}.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png',
-                attr='Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> | Style: &copy; <a href="https://www.openrailwaymap.org/">OpenRailwayMap</a>',
-                name='OpenRailwayMap',
-                subdomains='abc',
-                overlay=True,
-                transparent=True,
-                max_zoom=19,
-                show=True
-            ).add_to(m)
-        elif self.currentBaseMap == "cuzk":
+    # Push the current state into the floating controls without emitting signals
+    def syncControlsPanel(self):
+        self.controlsPanel.syncState(self.currentBaseMap, self.drawMode,
+                                     self.railOverlayEnabled, self.railOverlayOpacity,
+                                     self.showStations)
+
+    # Keep the floating controls pinned below the Leaflet zoom buttons
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.controlsPanel.adjustSize()
+        self.controlsPanel.move(CONTROL_PANEL_MARGIN, CONTROL_PANEL_TOP)
+        self.controlsPanel.raise_()
+
+    # Refresh the floating control captions after a language change
+    def updateTexts(self, lan):
+        self.controlsPanel.updateTexts(lan)
+
+    # Restyle the floating controls when the application theme changes
+    def applyTheme(self, isDark, tokens=None):
+        self.controlsPanel.applyTheme(isDark, tokens)
+
+    def addTiles(self, m):
+        if self.currentBaseMap == "cuzk":
             folium.WmsTileLayer(
                 url="https://ags.cuzk.gov.cz/arcgis1/services/ORTOFOTO/MapServer/WMSServer",
                 layers="0",
@@ -63,69 +375,111 @@ class MapWidget(QWidget):
                 attr="© ČÚZK",
                 overlay=False
             ).add_to(m)
+        elif self.currentBaseMap == "osm":
+            folium.TileLayer("OpenStreetMap").add_to(m)
+        else:
+            folium.TileLayer("CartoDB Positron").add_to(m)
+
+        # The railway overlay is independent of the chosen base map
+        if self.railOverlayEnabled:
+            folium.TileLayer(
+                tiles='https://{s}.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png',
+                attr='Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> | Style: &copy; <a href="https://www.openrailwaymap.org/">OpenRailwayMap</a>',
+                name='OpenRailwayMap',
+                subdomains='abc',
+                overlay=True,
+                transparent=True,
+                opacity=self.railOverlayOpacity,
+                max_zoom=19,
+                show=True
+            ).add_to(m)
+
+    # Place one interactive marker per imported station or stop
+    def addStationMarkers(self, m):
+        if not self.showStations or not self.stationList or len(self.denseAlignment) < 2:
+            return
+
+        for stationKm, stationName in self.stationList:
+            position = self.interpolatePosition(stationKm)
+            if position is None:
+                continue
+
+            latitude, longitude = position
+            caption = stationName or f"{float(stationKm):.3f} km"
+            folium.CircleMarker(
+                [latitude, longitude], radius=6, color="#1a3d7c", weight=2,
+                fill=True, fill_color="#ffffff", fill_opacity=1.0,
+                tooltip=f"{caption} ({float(stationKm):.3f} km)",
+                popup=caption).add_to(m)
 
     def resetMap(self):
         m = folium.Map(location=[49.8, 15.5], zoom_start=7, tiles=None)
-        self._add_tiles(m)
+        self.addTiles(m)
         self.renderMap(m)
 
     def drawAlignment(self, alignment, lxml=None):
         self.alignment = alignment
         self.lxml = lxml
+        self.denseAlignment = (lxml or {}).get("denseAlignment") or []
+
+        # The chainage column is cached because the cursor lookup runs on every mouse move
+        self.denseStations = [point[0] for point in self.denseAlignment]
+
         if len(alignment) < 2:
             self.resetMap()
             return
         
         # Bounds
-        all_points = [pt for segment_data in alignment for pt in segment_data[0]]
-        if not all_points:
+        allPoints = [pt for segmentData in alignment for pt in segmentData[0]]
+        if not allPoints:
             self.resetMap()
             return
 
-        lats = [pt[0] for pt in all_points]
-        lons = [pt[1] for pt in all_points]
+        lats = [pt[0] for pt in allPoints]
+        lons = [pt[1] for pt in allPoints]
         centerLat = (min(lats) + max(lats)) / 2
         centerLon = (min(lons) + max(lons)) / 2
         m = folium.Map(location=[centerLat, centerLon], zoom_start=11, tiles=None)
-        self._add_tiles(m)
+        self.addTiles(m)
 
         if self.drawMode == "single":
-            all_coords = [segment_data[0] for segment_data in alignment]
-            folium.PolyLine(all_coords, color="red", weight=2.5, opacity=1, tooltip="Alignment").add_to(m)
+            allCoords = [segmentData[0] for segmentData in alignment]
+            folium.PolyLine(allCoords, color="red", weight=2.5, opacity=1, tooltip="Alignment").add_to(m)
         elif self.drawMode == "type":
-            type_colors = {"Line": "blue", "Spiral": "orange", "Curve": "purple"}
-            for segment_coords, segment_type in alignment:
-                color = type_colors.get(segment_type, "gray")
-                folium.PolyLine(segment_coords, color=color, weight=2.5, opacity=1, tooltip=segment_type).add_to(m)
+            typeColors = {"Line": "blue", "Spiral": "orange", "Curve": "purple"}
+            for segmentCoords, segmentType in alignment:
+                color = typeColors.get(segmentType, "gray")
+                folium.PolyLine(segmentCoords, color=color, weight=2.5, opacity=1, tooltip=segmentType).add_to(m)
         elif self.drawMode == "speed" and lxml:
-            self._draw_speed_colored_alignment(m, lxml)
+            self.drawSpeedColoredAlignment(m, lxml)
         else:
-            all_coords = [segment_data[0] for segment_data in alignment]
-            folium.PolyLine(all_coords, color="red", weight=2.5, opacity=1, tooltip="Alignment").add_to(m)
-            
+            allCoords = [segmentData[0] for segmentData in alignment]
+            folium.PolyLine(allCoords, color="red", weight=2.5, opacity=1, tooltip="Alignment").add_to(m)
+
+        self.addStationMarkers(m)
         self.renderMap(m)
 
-    def _draw_speed_colored_alignment(self, m, lxml):
-        dense_alignment = lxml.get("denseAlignment")
-        if not dense_alignment or len(dense_alignment) < 2:
+    def drawSpeedColoredAlignment(self, m, lxml):
+        denseAlignment = lxml.get("denseAlignment")
+        if not denseAlignment or len(denseAlignment) < 2:
             return
 
         # Resolve data keys — TTP uses its own stored arrays
         if self.speedProfile == "TTP":
-            speed_key   = "speedLimitsTTP"
-            station_key = "stationSpeedTTP"
+            speedKey   = "speedLimitsTTP"
+            stationKey = "stationSpeedTTP"
         else:
-            speed_key   = f"speedLimits{self.speedProfile}"
-            station_key = f"stationSpeed{self.speedProfile}"
+            speedKey   = f"speedLimits{self.speedProfile}"
+            stationKey = f"stationSpeed{self.speedProfile}"
 
-        speeds   = lxml.get(speed_key)
-        stations = lxml.get(station_key)
+        speeds   = lxml.get(speedKey)
+        stations = lxml.get(stationKey)
 
-        _missing = (speeds is None or stations is None or
+        missing = (speeds is None or stations is None or
                     (hasattr(speeds, '__len__') and len(speeds) == 0))
-        if _missing:
-            all_coords = [seg[0] for seg in self.alignment]
-            folium.PolyLine(all_coords, color="gray", weight=2.5, opacity=0.6,
+        if missing:
+            allCoords = [seg[0] for seg in self.alignment]
+            folium.PolyLine(allCoords, color="gray", weight=2.5, opacity=0.6,
                             tooltip="Speed data not yet calculated").add_to(m)
             return
 
@@ -136,50 +490,107 @@ class MapWidget(QWidget):
         valid = np.isfinite(speeds) & np.isfinite(stations) & (speeds > 0)
         speeds, stations = speeds[valid], stations[valid]
         if len(speeds) == 0:
-            all_coords = [seg[0] for seg in self.alignment]
-            folium.PolyLine(all_coords, color="gray", weight=2.5, opacity=0.6,
+            allCoords = [seg[0] for seg in self.alignment]
+            folium.PolyLine(allCoords, color="gray", weight=2.5, opacity=0.6,
                             tooltip="Speed data not yet calculated").add_to(m)
             return
 
-        min_spd = float(np.min(speeds))
-        max_spd = float(np.max(speeds))
-        if max_spd <= min_spd:
-            max_spd = min_spd + 1.0
+        minSpd = float(np.min(speeds))
+        maxSpd = float(np.max(speeds))
+        if maxSpd <= minSpd:
+            maxSpd = minSpd + 1.0
 
         # Branca colormap: red (slow) → yellow → green (fast).
         # Adding it to the map automatically renders a colour-scale legend.
-        cmap_bc = bcm.LinearColormap(
+        cmapBc = bcm.LinearColormap(
             ['#d73027', '#fee08b', '#1a9850'],
-            vmin=min_spd,
-            vmax=max_spd,
+            vmin=minSpd,
+            vmax=maxSpd,
             caption='Speed [km/h]',
         )
-        cmap_bc.add_to(m)
+        cmapBc.add_to(m)
 
-        sort_idx    = np.argsort(stations)
-        sorted_st   = stations[sort_idx]
-        sorted_sp   = speeds[sort_idx]
-        n           = len(sorted_sp)
+        sortIdx    = np.argsort(stations)
+        sortedSt   = stations[sortIdx]
+        sortedSp   = speeds[sortIdx]
+        n           = len(sortedSp)
 
-        points     = [(p[1], p[2]) for p in dense_alignment]
-        spd_values = []
-        for i in range(len(dense_alignment) - 1):
-            avg = (dense_alignment[i][0] + dense_alignment[i + 1][0]) * 0.5
+        points     = [(p[1], p[2]) for p in denseAlignment]
+        spdValues = []
+        for i in range(len(denseAlignment) - 1):
+            avg = (denseAlignment[i][0] + denseAlignment[i + 1][0]) * 0.5
             idx = int(np.clip(
-                np.searchsorted(sorted_st, avg, side='right') - 1,
+                np.searchsorted(sortedSt, avg, side='right') - 1,
                 0, n - 1
             ))
-            spd_values.append(float(sorted_sp[idx]))
+            spdValues.append(float(sortedSp[idx]))
 
-        if points and spd_values:
-            ColorLine(points, colors=spd_values, colormap=cmap_bc, weight=3).add_to(m)
+        if points and spdValues:
+            ColorLine(points, colors=spdValues, colormap=cmapBc, weight=3).add_to(m)
 
     def renderMap(self, m):
+        # Expose the JavaScript hooks that drive the crosshair in both directions
+        cursorScript = CURSOR_SCRIPT_TEMPLATE.format(
+            mapName=m.get_name(),
+            webChannelSource=self.webChannelSource,
+            lookupPoints=json.dumps(self.buildLookupPoints()),
+        )
+        m.get_root().html.add_child(folium.Element(cursorScript))
+
+        self.isMapReady = False
         data = io.BytesIO()
         m.save(data, close_file=False)
         self.mapBrowser.setHtml(data.getvalue().decode(), QUrl("http://localhost"))
 
-    def _get_bearing(self, lat1, lon1, lat2, lon2):
+    # Subsample the densified alignment so the in page lookup stays responsive
+    def buildLookupPoints(self):
+        if len(self.denseAlignment) < 2:
+            return []
+        step = max(1, len(self.denseAlignment) // MAX_LOOKUP_POINTS)
+        return [[float(p[0]), float(p[1]), float(p[2])]
+                for p in self.denseAlignment[::step]]
+
+    # The JavaScript hook only exists once the page has finished loading
+    def onMapLoadFinished(self, isOk):
+        self.isMapReady = bool(isOk)
+
+    # Move the map cursor marker to the position matching a chainage in kilometres
+    def setCursorStation(self, stationKm):
+        if not self.isMapReady or len(self.denseAlignment) < 2:
+            return
+
+        position = self.interpolatePosition(stationKm)
+        if position is None:
+            return
+
+        latitude, longitude = position
+        self.mapBrowser.page().runJavaScript(
+            f"if (window.setTrackCursor) {{ window.setTrackCursor({latitude}, {longitude}); }}")
+
+    # Linear interpolation of latitude and longitude along the densified alignment
+    def interpolatePosition(self, stationKm):
+        stations = self.denseStations
+        if not stations:
+            return None
+
+        # denseAlignment stores chainage in kilometres like the rest of the geometry
+        target = float(stationKm)
+        if target <= stations[0]:
+            return self.denseAlignment[0][1], self.denseAlignment[0][2]
+        if target >= stations[-1]:
+            return self.denseAlignment[-1][1], self.denseAlignment[-1][2]
+
+        index = int(np.searchsorted(stations, target, side='right')) - 1
+        index = max(0, min(index, len(self.denseAlignment) - 2))
+
+        startStation, startLat, startLon = self.denseAlignment[index]
+        endStation, endLat, endLon = self.denseAlignment[index + 1]
+        span = endStation - startStation
+        ratio = 0.0 if span == 0 else (target - startStation) / span
+
+        return startLat + ratio * (endLat - startLat), startLon + ratio * (endLon - startLon)
+
+    def getBearing(self, lat1, lon1, lat2, lon2):
         lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
         dLon = lon2 - lon1
         y = math.sin(dLon) * math.cos(lat2)

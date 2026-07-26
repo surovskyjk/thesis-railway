@@ -16,8 +16,13 @@ Built with Python and PySide6.
 - Design cant (D) and calculate permissible speed profiles for four speed profiles (difference in global max cant deficiency): V100, V130, V150, VK
 - Enforce norm limits: cant ramp gradient (n), rate of change of cant deficiency (nI), abrupt change of cant deficiency (deltaI)
 - Simulate train kinematics using a forward-backward pass algorithm with traction, resistance, and braking
-- Interactive map viewer showing the alignment coloured by selected speed profile (TTP, V100, V130, V150, VK) with a colour-scale legend
-- Toolbar shortcuts for the most frequent actions (open, vehicle settings, stops settings, map settings, clean all, calculate train speed)
+- Interactive map viewer showing the alignment coloured by selected speed profile (TTP, V100, V130, V150, VK) with a colour-scale legend, a basemap selector, an OpenRailwayMap overlay with adjustable transparency, and markers for every scheduled stop
+- Ribbon command bar (Project, Geometry, Simulation, View, Data series, Settings) with generated vector icons, compact labels and full-text tooltips
+- Dockable, floatable and tabbed panels: workflow guide, XML source viewers with code folding, parsed data tables, plots and help
+- All plots rendered with pyqtgraph, each with its own context menu offering the native export (SVG / PNG / CSV) plus detach to a large window, interaction modes, grid and station marker toggles, and series highlighting
+- Chainage crosshair synchronised between the geometry plot, the speed profile, the longitudinal profile and the map
+- Light and dark themes following the operating system, with a manual override
+- Dock layout, theme and language persisted between sessions
 - Multi-language UI: Czech, English, German
 - Export geometry report (text) and kinematics results (CSV)
 
@@ -113,12 +118,23 @@ Train stops are enforced by setting the speed limit to zero at the stop station.
 ## Project Structure
 
 - `main.py` - application entry point
-- `gui.py` - main window, menus, plot canvases
-- `gui_overlay.py` - settings and vehicle dialogs
+- `gui.py` - main window, ribbon, docks and data flow
+- `gui_overlay.py` - settings and vehicle dialogs, detached plot window
 - `geometry_engine.py` - cant design and permissible speed calculation
 - `vehicle_engine.py` - train kinematics simulation
 - `readfile.py` - LandXML and XML TTP parsers, coordinate transformations
-- `map_viewer.py` - interactive Folium map widget
+- `map_viewer.py` - interactive Folium map widget with floating map controls
+- `plot_widgets.py` - shared pyqtgraph base widget, context menus and navigation toolbar
+- `graphs_dock.py` - linked track geometry and speed profile plots
+- `profile_dock.py` - longitudinal profile plot with gradient annotations
+- `kinematics_dock.py` - four linked kinematics plots
+- `workflow_dock.py` - seven step workflow guide
+- `help_dock.py` - in-application documentation panel rendering this file
+- `xml_editor.py` - XML source viewer with folding and syntax highlighting
+- `ribbon.py` - ribbon command bar widgets
+- `lazy_dock.py` - dock widget with deferred rendering and a title bar menu
+- `theme_manager.py` - operating system theme detection and application styling
+- `icons.py` - programmatically generated vector icons and text badges
 - `default_values.py` - built-in default norm limits and vehicle parameters
 - `lang.py` - UI strings for Czech, English, and German
 - `tests/` - unit tests for geometry engine functions
