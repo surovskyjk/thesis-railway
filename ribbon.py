@@ -9,6 +9,9 @@ LARGE_ICON_SIZE = QSize(26, 26)
 # Icon size used by the compact buttons of a ribbon group
 COMPACT_ICON_SIZE = QSize(18, 18)
 
+# Dynamic property marking the independently checkable data series buttons
+SERIES_TOGGLE_PROPERTY = "seriesToggle"
+
 
 class RibbonGroup(QWidget):
     def __init__(self, title, titleKey=None, parent=None):
@@ -50,6 +53,10 @@ class RibbonGroup(QWidget):
             button.setIconSize(COMPACT_ICON_SIZE)
             button.setMaximumWidth(148)
 
+        # The marker lets the stylesheet tint only the data series toggles
+        button.setProperty(SERIES_TOGGLE_PROPERTY,
+                           bool(action.property(SERIES_TOGGLE_PROPERTY)))
+
         self.buttonLayout.addWidget(button)
         self.buttons.append((button, action, shortKey))
         self.applyButtonText(button, action, shortKey, None)
@@ -75,7 +82,11 @@ class RibbonGroup(QWidget):
             shortText = shortKey
 
         button.setText(shortText)
-        button.setToolTip(fullText)
+
+        # An action carrying its own tooltip wins over the plain full caption
+        actionToolTip = action.toolTip()
+        button.setToolTip(actionToolTip if actionToolTip and actionToolTip != fullText
+                          else fullText)
 
     # Refresh every button caption and the group title after a language change
     def retranslate(self, lan):

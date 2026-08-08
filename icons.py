@@ -3,7 +3,7 @@ from PySide6.QtCore import QRectF, QSize, Qt
 from PySide6.QtGui import (QColor, QFont, QIcon, QPainter, QPainterPath, QPen,
                            QPixmap)
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import QProxyStyle, QStyle
+from PySide6.QtWidgets import QCommonStyle, QProxyStyle, QStyle
 
 # Nominal size the SVG markup below is authored against
 ICON_VIEWBOX = 24
@@ -36,6 +36,7 @@ ICON_BODIES = {
     "viewMap": "<circle cx='12' cy='12' r='9'/><path d='M3 12h18'/><path d='M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z'/>",
     "viewReport": "<rect x='3' y='4' width='18' height='16' rx='2'/><path d='M7 9h10'/><path d='M7 13h10'/><path d='M7 17h6'/>",
     "layout": "<rect x='3' y='4' width='18' height='16' rx='2'/><path d='M9 4v16'/><path d='M9 12h12'/>",
+    "resetLayout": "<path d='M20.5 13a8.5 8.5 0 1 1-2.5-7'/><path d='M20 3v5h-5'/><path d='M3.5 11a8.5 8.5 0 0 0 2.5 7'/>",
     "foldAll": "<path d='M6 9l6-5 6 5'/><path d='M6 15l6 5 6-5'/><path d='M3 12h18'/>",
     "unfoldAll": "<path d='M6 5l6 5 6-5'/><path d='M6 19l6-5 6 5'/><path d='M3 12h18'/>",
     "themeAuto": "<circle cx='12' cy='12' r='8'/><path d='M12 4a8 8 0 0 0 0 16z' fill='CURRENT' stroke='none'/>",
@@ -63,6 +64,12 @@ ICON_BODIES = {
 
 # Icons whose glyph should always be tinted with the accent colour instead
 ACCENT_ICONS = ("run", "calculate", "calculateAlt")
+
+# Icon size given to the dock widget title bar buttons
+DOCK_TITLE_ICON_SIZE = 18
+
+# Margin kept around the dock widget title bar buttons
+DOCK_TITLE_BUTTON_MARGIN = 4
 
 
 class IconFactory:
@@ -179,16 +186,41 @@ class CoypuProxyStyle(QProxyStyle):
             return iconFactory.closeIcon()
         if standardIcon == QStyle.StandardPixmap.SP_TitleBarNormalButton:
             return iconFactory.floatIcon()
-        return super().standardIcon(standardIcon, option, widget)
+
+        wrappedStyle = self.wrappedStyle()
+        if wrappedStyle is None:
+            return QCommonStyle.standardIcon(self, standardIcon, option, widget)
+        return wrappedStyle.standardIcon(standardIcon, option, widget)
 
     # Enlarge only the dock title bar buttons so the close target stays clickable
     def pixelMetric(self, metric, option=None, widget=None):
-        if metric == QStyle.PixelMetric.PM_SmallIconSize and widget is not None:
-            if widget.metaObject().className() == "QDockWidgetTitleButton":
-                return 18
+        if metric == QStyle.PixelMetric.PM_SmallIconSize and self.isDockTitleButton(widget):
+            return DOCK_TITLE_ICON_SIZE
         if metric == QStyle.PixelMetric.PM_DockWidgetTitleBarButtonMargin:
-            return 4
-        return super().pixelMetric(metric, option, widget)
+            return DOCK_TITLE_BUTTON_MARGIN
+
+        wrappedStyle = self.wrappedStyle()
+        if wrappedStyle is None:
+            return QCommonStyle.pixelMetric(self, metric, option, widget)
+        return wrappedStyle.pixelMetric(metric, option, widget)
+
+    # Return the wrapped style, or None when delegating to it would recurse
+    def wrappedStyle(self):
+        # An unset base resolves back to this proxy, so super would never terminate
+        baseStyle = self.baseStyle()
+        if baseStyle is None or baseStyle is self:
+            return None
+        return baseStyle
+
+    # True when the widget is one of the buttons Qt places on a dock title bar
+    def isDockTitleButton(self, widget):
+        if widget is None:
+            return False
+        try:
+            return widget.metaObject().className() == "QDockWidgetTitleButton"
+        except RuntimeError:
+            # The underlying C++ widget can already be gone during teardown
+            return False
 
 
 # Build a small QIcon for a plain glyph name, kept for call site readability

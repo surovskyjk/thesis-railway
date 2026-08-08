@@ -1,5 +1,5 @@
 # PySide6 imports
-from PySide6.QtCore import QSettings, QSize, Qt
+from PySide6.QtCore import QSettings, QSize, Qt, QTimer
 from PySide6.QtWidgets import (QTabWidget, QApplication, QMainWindow, QPushButton, QWidget,
                                 QHBoxLayout, QVBoxLayout, QLabel, QPlainTextEdit, QFileDialog,
                                 QSplitter, QMessageBox, QStyle, QToolBar, QMenu, QStackedWidget,
@@ -25,7 +25,7 @@ import theme_manager
 import icons
 from theme_manager import ThemeManager
 from lazy_dock import LazyDockWidget
-from ribbon import RibbonBar
+from ribbon import RibbonBar, SERIES_TOGGLE_PROPERTY
 from workflow_dock import WorkflowStepperWidget
 from graphs_dock import PerformanceGraphsWidget
 from profile_dock import ProfilePlotWidget
@@ -37,6 +37,9 @@ import copy
 # Central viewport page indices
 VIEW_MAP = 0
 VIEW_REPORT = 1
+
+# How long a transient status bar confirmation stays visible in milliseconds
+SERIES_STATUS_TIMEOUT = 4000
 
 # Vector icon assigned to each ribbon action, regenerated on every theme switch
 ACTION_ICONS = {
@@ -69,7 +72,7 @@ ACTION_ICONS = {
     "themeDarkAction": "themeDark",
     "showMapAction": "viewMap",
     "showReportAction": "viewReport",
-    "resetLayoutAction": "layout",
+    "resetLayoutAction": "resetLayout",
     "foldAllAction": "foldAll",
     "unfoldAllAction": "unfoldAll",
     "reportGeometryAction": "report",
@@ -318,8 +321,10 @@ class MainWindow(QMainWindow):
         self.showReportAction.triggered.connect(self.showReportView)
         self.viewGroup.addAction(self.showReportAction)
 
-        # Layout action
-        self.resetLayoutAction = QAction(lan.get("resetLayout", "Reset layout"), self)
+        # Layout action, the tooltip spells out what the short caption hides
+        self.resetLayoutAction = QAction(lan.get("resetLayout", "Reset Layout"), self)
+        self.resetLayoutAction.setToolTip(
+            lan.get("resetLayoutTip", "Restore Default Window Layout"))
         self.resetLayoutAction.triggered.connect(self.resetLayout)
 
         # XML folding actions
@@ -391,11 +396,25 @@ class MainWindow(QMainWindow):
 
         for attributeName, languageKey, handler in seriesDefinitions:
             action = QAction(lan.get(languageKey, languageKey), self)
+
+            # Every series toggles on its own, they are deliberately not exclusive
             action.setCheckable(True)
             action.setChecked(True)
+            action.setProperty(SERIES_TOGGLE_PROPERTY, True)
             action.triggered.connect(handler)
+            action.triggered.connect(
+                lambda isChecked=False, toggledAction=action:
+                self.announceSeriesToggle(toggledAction, isChecked))
             setattr(self, attributeName, action)
             self.seriesActionKeys[attributeName] = languageKey
+
+    # Report the new visibility of a data series in the status bar
+    def announceSeriesToggle(self, action, isChecked):
+        lan = lang.DIC[self.currentLanguage]
+        stateText = (lan.get("seriesShown", "shown") if isChecked
+                     else lan.get("seriesHidden", "hidden"))
+        self.statusBarWidget.showMessage(f"{action.text()}: {stateText}",
+                                         SERIES_STATUS_TIMEOUT)
 
     # Give every ribbon action a generated vector icon or a short text badge
     def applyActionIcons(self):
@@ -898,8 +917,30 @@ class MainWindow(QMainWindow):
 
     # Return every dock to the arrangement captured right after construction
     def resetLayout(self):
+        lan = lang.DIC[self.currentLanguage]
+
+        answer = QMessageBox.question(
+            self, lan.get("resetLayout", "Reset Layout"),
+            lan.get("resetLayoutConfirm",
+                    "Are you sure you want to reset all windows and docks "
+                    "to their default layout?"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        # Rebuilding the dock layout inside the closing dialog crashes the web view
+        QTimer.singleShot(0, self.applyDefaultLayout)
+
+    # Restore the captured default arrangement and confirm it in the status bar
+    def applyDefaultLayout(self):
+        lan = lang.DIC[self.currentLanguage]
+
         self.restoreGeometry(self.defaultGeometry)
         self.restoreState(self.defaultLayoutState)
+        self.statusBarWidget.showMessage(
+            lan.get("statusLayoutReset", "Window layout restored to defaults"),
+            SERIES_STATUS_TIMEOUT)
 
     def closeEvent(self, event):
         self.saveSession()
@@ -964,7 +1005,9 @@ class MainWindow(QMainWindow):
         self.themeDarkAction.setText(lan.get("themeDark", "Always dark"))
         self.showMapAction.setText(lan.get("viewMap", "Map"))
         self.showReportAction.setText(lan.get("viewReport", "Report"))
-        self.resetLayoutAction.setText(lan.get("resetLayout", "Reset layout"))
+        self.resetLayoutAction.setText(lan.get("resetLayout", "Reset Layout"))
+        self.resetLayoutAction.setToolTip(
+            lan.get("resetLayoutTip", "Restore Default Window Layout"))
         self.foldAllAction.setText(lan.get("foldAll", "Fold all"))
         self.unfoldAllAction.setText(lan.get("unfoldAll", "Unfold all"))
 

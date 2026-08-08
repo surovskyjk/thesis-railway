@@ -3,7 +3,7 @@ import sys
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QStyleFactory
 
 import pyqtgraph as pg
 
@@ -13,6 +13,17 @@ import icons
 MODE_AUTO = "auto"
 MODE_LIGHT = "light"
 MODE_DARK = "dark"
+
+# Style the proxy wraps when the current one cannot be identified by name
+DEFAULT_STYLE_KEY = "Fusion"
+
+# Semi transparent tints for the checkable series buttons, readable in both themes
+TOGGLE_ON_BACKGROUND = "rgba(46, 213, 115, 0.25)"
+TOGGLE_ON_HOVER = "rgba(46, 213, 115, 0.40)"
+TOGGLE_ON_BORDER = "rgba(46, 213, 115, 0.75)"
+TOGGLE_OFF_BACKGROUND = "rgba(255, 71, 87, 0.12)"
+TOGGLE_OFF_HOVER = "rgba(255, 71, 87, 0.24)"
+TOGGLE_OFF_BORDER = "rgba(255, 71, 87, 0.35)"
 
 # Colour tokens for the light theme
 LIGHT_TOKENS = {
@@ -75,8 +86,23 @@ class ThemeManager(QObject):
         if app is None or self.proxyStyle is not None:
             return
 
-        self.proxyStyle = icons.CoypuProxyStyle(app.style())
+        currentStyle = app.style()
+
+        # Wrapping our own proxy again would make it delegate to itself
+        if isinstance(currentStyle, icons.CoypuProxyStyle):
+            self.proxyStyle = currentStyle
+            return
+
+        # The key overload gives the proxy a private base that setStyle cannot delete
+        self.proxyStyle = icons.CoypuProxyStyle(self.resolveStyleKey(currentStyle))
         app.setStyle(self.proxyStyle)
+
+    # Name of the style the proxy should wrap, falling back to a always present one
+    def resolveStyleKey(self, currentStyle):
+        availableKeys = {key.lower(): key for key in QStyleFactory.keys()}
+
+        currentKey = currentStyle.objectName() if currentStyle is not None else ""
+        return availableKeys.get(currentKey.lower(), DEFAULT_STYLE_KEY)
 
     # Return True when the operating system currently reports a dark scheme
     def detectSystemDark(self):
@@ -246,6 +272,35 @@ QToolButton {{
 QToolButton:hover {{
     background: {tokens['alternateBase']};
     border: 1px solid {tokens['border']};
+}}
+QToolButton[seriesToggle="true"] {{
+    margin: 1px;
+}}
+QToolButton[seriesToggle="true"]:checked {{
+    background: {TOGGLE_ON_BACKGROUND};
+    border: 1px solid {TOGGLE_ON_BORDER};
+}}
+QToolButton[seriesToggle="true"]:checked:hover {{
+    background: {TOGGLE_ON_HOVER};
+    border: 1px solid {TOGGLE_ON_BORDER};
+}}
+QToolButton[seriesToggle="true"]:!checked {{
+    background: {TOGGLE_OFF_BACKGROUND};
+    border: 1px solid {TOGGLE_OFF_BORDER};
+}}
+QToolButton[seriesToggle="true"]:!checked:hover {{
+    background: {TOGGLE_OFF_HOVER};
+    border: 1px solid {TOGGLE_OFF_BORDER};
+}}
+QPushButton[seriesToggle="true"]:checked {{
+    background: {TOGGLE_ON_BACKGROUND};
+    border: 1px solid {TOGGLE_ON_BORDER};
+    border-radius: 3px;
+}}
+QPushButton[seriesToggle="true"]:!checked {{
+    background: {TOGGLE_OFF_BACKGROUND};
+    border: 1px solid {TOGGLE_OFF_BORDER};
+    border-radius: 3px;
 }}
 QHeaderView::section {{
     background: {tokens['button']};
