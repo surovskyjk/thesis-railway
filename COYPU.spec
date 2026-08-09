@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('icon.png', '.'), ('README.md', '.')],
+    datas=[('icon.png', '.'), ('README.md', '.'), ('translations', 'translations'), ('config', 'config')],
     hiddenimports=['PySide6.QtSvg', 'PySide6.QtWebChannel'],
     hookspath=[],
     hooksconfig={},

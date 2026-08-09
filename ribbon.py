@@ -47,11 +47,14 @@ class RibbonGroup(QWidget):
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
             button.setIconSize(LARGE_ICON_SIZE)
             button.setMinimumWidth(70)
-            button.setMaximumWidth(96)
+            button.setMaximumWidth(112)
         else:
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
             button.setIconSize(COMPACT_ICON_SIZE)
-            button.setMaximumWidth(148)
+            button.setMaximumWidth(168)
+
+        # Smaller text buys more characters per line so captions wrap instead of truncating
+        button.setStyleSheet("QToolButton { font-size: 9px; }")
 
         # The marker lets the stylesheet tint only the data series toggles
         button.setProperty(SERIES_TOGGLE_PROPERTY,

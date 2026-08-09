@@ -136,7 +136,12 @@ Train stops are enforced by setting the speed limit to zero at the stop station.
 - `theme_manager.py` - operating system theme detection and application styling
 - `icons.py` - programmatically generated vector icons and text badges
 - `default_values.py` - built-in default norm limits and vehicle parameters
-- `lang.py` - UI strings for Czech, English, and German
+- `translations/` - external JSON translation files (cz.json, en.json, de.json)
+- `translation_manager.py` - discovers and loads translation JSON files at runtime
+- `resource_paths.py` - shared helper for locating bundled and writable resources
+- `shortcut_manager.py` - loads `config/shortcuts.json`, applies shortcuts, resolves typed commands
+- `settings_dialog.py` - dialog for editing command aliases and keyboard shortcuts
+- `config/shortcuts.json` - external command name, alias, and keyboard shortcut mappings
 - `tests/` - unit tests for geometry engine functions
 
 ---

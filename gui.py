@@ -1,10 +1,10 @@
 # PySide6 imports
-from PySide6.QtCore import QSettings, QSize, Qt, QTimer
+from PySide6.QtCore import QSettings, QSize, Qt, QTimer, QUrl
 from PySide6.QtWidgets import (QTabWidget, QApplication, QMainWindow, QPushButton, QWidget,
                                 QHBoxLayout, QVBoxLayout, QLabel, QPlainTextEdit, QFileDialog,
                                 QSplitter, QMessageBox, QStyle, QToolBar, QMenu, QStackedWidget,
-                                QStatusBar)
-from PySide6.QtGui import QAction, QActionGroup, QIcon, QCursor
+                                QStatusBar, QLineEdit)
+from PySide6.QtGui import QAction, QActionGroup, QIcon, QCursor, QDesktopServices
 
 # pyqtgraph imports
 import pyqtgraph as pg
@@ -14,7 +14,6 @@ import numpy as np
 
 import csv
 # Local imports
-import lang
 import readfile
 import gui_overlay
 from map_viewer import MapWidget
@@ -32,6 +31,9 @@ from profile_dock import ProfilePlotWidget
 from kinematics_dock import KinematicsPlotWidget
 from help_dock import HelpWidget
 from xml_editor import XmlCodeEditor
+from translation_manager import TranslationManager
+from shortcut_manager import ShortcutManager
+from settings_dialog import ShortcutSettingsDialog
 import copy
 
 # Central viewport page indices
@@ -52,6 +54,8 @@ ACTION_ICONS = {
     "appendXMLTTPAction": "appendTtp",
     "exitAction": "exit",
     "helpAction": "help",
+    "openCoypuFeederAction": "detach",
+    "openShortcutSettingsAction": "settings",
     "calculateGeometryAction": "calculate",
     "calculateGeometryIAction": "calculateAlt",
     "calculateTrainSpeedAction": "run",
@@ -138,8 +142,9 @@ class MainWindow(QMainWindow):
 
         # Window settings
         self.resize(QSize(1400, 900))
+        self.translationManager = TranslationManager()
         self.currentLanguage = "en"
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
         self.setWindowTitle(lan["app_title"])
 
         # Other default settings
@@ -159,8 +164,10 @@ class MainWindow(QMainWindow):
         self.popupWindows = []
 
         self.themeManager = ThemeManager(self)
+        self.shortcutManager = ShortcutManager()
 
         self.buildActions()
+        self.shortcutManager.applyShortcuts(self)
         self.buildCentralViews()
         self.buildDocks()
 
@@ -177,7 +184,7 @@ class MainWindow(QMainWindow):
 
     # Create every QAction once and keep a named reference for translation
     def buildActions(self):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
         style = self.style()
 
         # File actions
@@ -187,7 +194,6 @@ class MainWindow(QMainWindow):
         self.autodetectXMLAction = QAction(
             style.standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon), lan["autodetect"], self)
         self.autodetectXMLAction.setStatusTip(lan["autodetect_tip"])
-        self.autodetectXMLAction.setShortcut("Ctrl+O")
         self.autodetectXMLAction.triggered.connect(self.openAutodetectXML)
 
         self.appendAutodetectXMLAction = QAction(
@@ -214,6 +220,10 @@ class MainWindow(QMainWindow):
         self.helpAction = QAction(
             style.standardIcon(QStyle.StandardPixmap.SP_DialogHelpButton), lan["help"], self)
         self.helpAction.triggered.connect(self.openHelp)
+
+        # Opens the Coypu Feeder companion project page in the system browser
+        self.openCoypuFeederAction = QAction(lan.get("openCoypuFeeder", "Coypu Feeder"), self)
+        self.openCoypuFeederAction.triggered.connect(self.openCoypuFeeder)
 
         # Calculate actions
         self.calculateGeometryAction = QAction(lan["calculate_geometry"], self)
@@ -269,6 +279,9 @@ class MainWindow(QMainWindow):
         self.speedSettingsAction = QAction(lan.get("speedSettings", "Speed Limits Settings"), self)
         self.speedSettingsAction.triggered.connect(self.openSpeedSettings)
 
+        self.openShortcutSettingsAction = QAction(lan.get("shortcutSettings", "Shortcuts"), self)
+        self.openShortcutSettingsAction.triggered.connect(self.openShortcutSettings)
+
         self.designApproachAction = QAction(lan["designApproach"], self)
         self.designApproachAction.triggered.connect(self.openDesignApproach)
 
@@ -277,13 +290,12 @@ class MainWindow(QMainWindow):
         self.toggleUnitsAction.setChecked(False)
         self.toggleUnitsAction.triggered.connect(self.plotKinematics)
 
-        # Language actions
-        self.langCZAction = QAction("Čeština", self)
-        self.langCZAction.triggered.connect(lambda: self.changeLanguage("cz"))
-        self.langENAction = QAction("English", self)
-        self.langENAction.triggered.connect(lambda: self.changeLanguage("en"))
-        self.langDEAction = QAction("Deutsch", self)
-        self.langDEAction.triggered.connect(lambda: self.changeLanguage("de"))
+        # Language actions, one per translation file discovered at startup
+        self.languageActions = {}
+        for langCode, displayName in self.translationManager.availableLanguages():
+            languageAction = QAction(displayName, self)
+            languageAction.triggered.connect(lambda checked=False, code=langCode: self.changeLanguage(code))
+            self.languageActions[langCode] = languageAction
 
         # Theme override actions behave as a single exclusive choice
         self.themeGroup = QActionGroup(self)
@@ -359,7 +371,7 @@ class MainWindow(QMainWindow):
 
     # Create the checkable series visibility actions used by the View ribbon tab
     def buildSeriesActions(self):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
 
         # Each entry maps an attribute name to its language key and handler
         seriesDefinitions = [
@@ -410,7 +422,7 @@ class MainWindow(QMainWindow):
 
     # Report the new visibility of a data series in the status bar
     def announceSeriesToggle(self, action, isChecked):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
         stateText = (lan.get("seriesShown", "shown") if isChecked
                      else lan.get("seriesHidden", "hidden"))
         self.statusBarWidget.showMessage(f"{action.text()}: {stateText}",
@@ -447,7 +459,7 @@ class MainWindow(QMainWindow):
         self.centralStack = QStackedWidget()
 
         # View 1 is the interactive alignment map
-        self.mapWidget = MapWidget(self, lang.DIC[self.currentLanguage])
+        self.mapWidget = MapWidget(self, self.translationManager.getLanguage(self.currentLanguage))
         self.centralStack.addWidget(self.mapWidget)
 
         # View 2 is the generated calculation report
@@ -469,7 +481,7 @@ class MainWindow(QMainWindow):
 
     # Build every dockable panel and arrange the default layout
     def buildDocks(self):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
 
         self.setDockNestingEnabled(True)
         self.setDockOptions(QMainWindow.DockOption.AllowNestedDocks |
@@ -556,7 +568,7 @@ class MainWindow(QMainWindow):
 
     # Assemble the ribbon tabs from the previously created actions
     def buildRibbon(self):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
 
         self.ribbonBar = RibbonBar()
 
@@ -580,6 +592,7 @@ class MainWindow(QMainWindow):
 
         exitGroup = projectPage.addGroup(lan.get("groupSession", "Session"), "groupSession")
         exitGroup.addAction(self.helpAction, shortKey="shortHelp")
+        exitGroup.addAction(self.openCoypuFeederAction, shortKey="shortCoypuFeeder")
         exitGroup.addAction(self.exitAction, shortKey="shortExit")
 
         geometryPage = self.ribbonBar.addPage("geometry", lan.get("ribbonGeometry", "Geometry"),
@@ -674,9 +687,8 @@ class MainWindow(QMainWindow):
         themeGroup.addAction(self.themeDarkAction, isLarge=False, shortKey="shortThemeDark")
 
         languageGroup = settingsPage.addGroup(lan.get("groupLanguage", "Language"), "groupLanguage")
-        languageGroup.addAction(self.langCZAction, isLarge=False)
-        languageGroup.addAction(self.langENAction, isLarge=False)
-        languageGroup.addAction(self.langDEAction, isLarge=False)
+        for languageAction in self.languageActions.values():
+            languageGroup.addAction(languageAction, isLarge=False)
 
         settingsConfigGroup = settingsPage.addGroup(lan.get("groupConfig", "Configuration"),
                                                     "groupConfig")
@@ -684,13 +696,14 @@ class MainWindow(QMainWindow):
         settingsConfigGroup.addAction(self.vehicleSettingsAction, shortKey="shortVehicles")
         settingsConfigGroup.addAction(self.stopsSettingsAction, shortKey="shortStops")
         settingsConfigGroup.addAction(self.geometrySettingsAction, shortKey="shortLimits")
+        settingsConfigGroup.addAction(self.openShortcutSettingsAction, shortKey="shortShortcuts")
 
         # The ribbon replaces the classic menu bar at the top of the window
         self.setMenuWidget(self.ribbonBar)
 
     # Build the status bar showing engine state, chainage and active theme
     def buildStatusBar(self):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
 
         self.statusBarWidget = QStatusBar()
         self.setStatusBar(self.statusBarWidget)
@@ -702,6 +715,12 @@ class MainWindow(QMainWindow):
         self.statusBarWidget.addWidget(self.statusEngineLabel, 1)
         self.statusBarWidget.addPermanentWidget(self.statusChainageLabel)
         self.statusBarWidget.addPermanentWidget(self.statusThemeLabel)
+
+        self.commandLineEdit = QLineEdit()
+        self.commandLineEdit.setPlaceholderText(lan.get("commandBarPlaceholder", "Command..."))
+        self.commandLineEdit.setMaximumWidth(200)
+        self.commandLineEdit.returnPressed.connect(self.executeCommandLine)
+        self.statusBarWidget.addPermanentWidget(self.commandLineEdit)
 
         self.setEngineStatus(lan.get("statusReady", "Ready"))
         self.updateStatusChainage(None)
@@ -737,7 +756,7 @@ class MainWindow(QMainWindow):
 
     # Render the chainage readout in the status bar
     def updateStatusChainage(self, stationKm):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
         label = lan.get("statusChainage", "Chainage")
         if stationKm is None:
             self.statusChainageLabel.setText(f"{label}: -")
@@ -746,12 +765,24 @@ class MainWindow(QMainWindow):
 
     # Render the core engine state in the status bar
     def setEngineStatus(self, text):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
         self.statusEngineLabel.setText(f'{lan.get("statusEngine", "Engine")}: {text}')
+
+    # Resolve and trigger a typed alias or command name from the AutoCAD-style command bar
+    def executeCommandLine(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        typedText = self.commandLineEdit.text()
+        if self.shortcutManager.executeTypedCommand(self, typedText):
+            self.statusBarWidget.showMessage(
+                f'{lan.get("commandExecuted", "Command executed:")} {typedText}', SERIES_STATUS_TIMEOUT)
+        else:
+            self.statusBarWidget.showMessage(
+                f'{lan.get("commandUnknown", "Unknown command:")} {typedText}', SERIES_STATUS_TIMEOUT)
+        self.commandLineEdit.clear()
 
     # Render the active theme name in the status bar
     def updateStatusTheme(self):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
         modeLabels = {
             theme_manager.MODE_AUTO: lan.get("themeAuto", "System default (auto)"),
             theme_manager.MODE_LIGHT: lan.get("themeLight", "Always light"),
@@ -886,7 +917,7 @@ class MainWindow(QMainWindow):
     # Restore geometry, dock state, theme and language from the previous session
     def restoreSession(self):
         savedLanguage = self.appSettings.value("ui/language", "en")
-        if savedLanguage in lang.DIC:
+        if savedLanguage in self.translationManager.availableLanguageCodes():
             self.currentLanguage = savedLanguage
 
         savedGeometry = self.appSettings.value("layout/geometry")
@@ -917,7 +948,7 @@ class MainWindow(QMainWindow):
 
     # Return every dock to the arrangement captured right after construction
     def resetLayout(self):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
 
         answer = QMessageBox.question(
             self, lan.get("resetLayout", "Reset Layout"),
@@ -934,7 +965,7 @@ class MainWindow(QMainWindow):
 
     # Restore the captured default arrangement and confirm it in the status bar
     def applyDefaultLayout(self):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
 
         self.restoreGeometry(self.defaultGeometry)
         self.restoreState(self.defaultLayoutState)
@@ -953,7 +984,7 @@ class MainWindow(QMainWindow):
         self.updateTexts()
 
     def updateTexts(self):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
 
         self.setWindowTitle(lan["app_title"])
 
@@ -977,6 +1008,7 @@ class MainWindow(QMainWindow):
         self.appendXMLTTPAction.setText(lan.get("append_xmlttp", "Append XML TTP"))
         self.exitAction.setText(lan["exit"])
         self.helpAction.setText(lan["help"])
+        self.openCoypuFeederAction.setText(lan.get("openCoypuFeeder", "Coypu Feeder"))
 
         # Calculate actions
         self.calculateGeometryAction.setText(lan["calculate_geometry"])
@@ -993,6 +1025,7 @@ class MainWindow(QMainWindow):
         # Settings actions
         self.mapSettingsAction.setText(lan["mapSettings"])
         self.geometrySettingsAction.setText(lan["geometrySettings"])
+        self.openShortcutSettingsAction.setText(lan.get("shortcutSettings", "Shortcuts"))
         self.vehicleSettingsAction.setText(lan.get("vehicleSettings", "Vehicle Settings"))
         self.stopsSettingsAction.setText(lan.get("stopsSettings", "Stops Settings"))
         self.speedSettingsAction.setText(lan.get("speedSettings", "Speed Limits Settings"))
@@ -1085,7 +1118,7 @@ class MainWindow(QMainWindow):
         elif xmlType == 2:
             self.parseXMLTTP(fileContent)
         else:
-            lan = lang.DIC[self.currentLanguage]
+            lan = self.translationManager.getLanguage(self.currentLanguage)
             err = QMessageBox()
             err.setWindowTitle(lan["error"])
             err.setText(lan.get("unknown_xml_file", "Unknown XML file format."))
@@ -1103,7 +1136,7 @@ class MainWindow(QMainWindow):
         elif xmlType == 2:
             self.appendXMLTTPContent(fileContent)
         else:
-            lan = lang.DIC[self.currentLanguage]
+            lan = self.translationManager.getLanguage(self.currentLanguage)
             err = QMessageBox()
             err.setWindowTitle(lan["error"])
             err.setText(lan.get("unknown_xml_file", "Unknown XML format."))
@@ -1120,7 +1153,7 @@ class MainWindow(QMainWindow):
 
     def appendXMLTTP(self):
         if "stationSpeedLimits" not in self.dataStorage or len(self.dataStorage.get("stationSpeedLimits", [])) == 0:
-            lan = lang.DIC[self.currentLanguage]
+            lan = self.translationManager.getLanguage(self.currentLanguage)
             err = QMessageBox()
             err.setWindowTitle(lan["error"])
             err.setText(lan.get("no_data", "No data available. Calculate values first."))
@@ -1135,7 +1168,7 @@ class MainWindow(QMainWindow):
 
     def appendXMLTTPContent(self, fileContent):
         if "stationSpeedLimits" not in self.dataStorage or len(self.dataStorage.get("stationSpeedLimits", [])) == 0:
-            lan = lang.DIC[self.currentLanguage]
+            lan = self.translationManager.getLanguage(self.currentLanguage)
             err = QMessageBox()
             err.setWindowTitle(lan["error"])
             err.setText(lan.get("no_data", "No data available. Calculate values first."))
@@ -1151,7 +1184,7 @@ class MainWindow(QMainWindow):
         newStations = newStations[validMask]
         newSpeeds = newSpeeds[validMask]
 
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
         sections = self.TTPSections(newStations)
         
         if len(sections) > 0:
@@ -1291,7 +1324,7 @@ class MainWindow(QMainWindow):
 
     def appendLandXML(self):
         if "LandXML" not in self.dataStorage or len(self.dataStorage.get("LandXML", {}).get("stationHorizontal", [])) == 0:
-            lan = lang.DIC[self.currentLanguage]
+            lan = self.translationManager.getLanguage(self.currentLanguage)
             err = QMessageBox()
             err.setWindowTitle(lan["error"])
             err.setText(lan.get("no_data", "No data available. Calculate values first."))
@@ -1306,7 +1339,7 @@ class MainWindow(QMainWindow):
 
     def appendLandXMLContent(self, fileContent):
         if "LandXML" not in self.dataStorage or len(self.dataStorage.get("LandXML", {}).get("stationHorizontal", [])) == 0:
-            lan = lang.DIC[self.currentLanguage]
+            lan = self.translationManager.getLanguage(self.currentLanguage)
             err = QMessageBox()
             err.setWindowTitle(lan["error"])
             err.setText(lan.get("no_data", "No data available. Calculate values first."))
@@ -1317,7 +1350,7 @@ class MainWindow(QMainWindow):
         alignments = readfile.ReadFile().GetAlignments(fileContent)
         selectedIdx = 0
         if len(alignments) > 1:
-            lan = lang.DIC[self.currentLanguage]
+            lan = self.translationManager.getLanguage(self.currentLanguage)
             dialog = gui_overlay.AlignmentSelectDialog(alignments, lan, self)
             if dialog.exec():
                 selectedIdx = dialog.getSelectedIndex()
@@ -1342,7 +1375,7 @@ class MainWindow(QMainWindow):
         newStart = np.nanmin(newData["stationHorizontal"])
         newEnd = np.nanmax(newData["stationHorizontal"])
 
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
 
         if newStart >= oldEnd or (abs(newStart - oldEnd) <= abs(newEnd - oldStart)):
             isAppend = True
@@ -1475,7 +1508,7 @@ class MainWindow(QMainWindow):
             alignments = readfile.ReadFile().GetAlignments(fileContent)
             selectedIdx = 0
             if len(alignments) > 1:
-                lan = lang.DIC[self.currentLanguage]
+                lan = self.translationManager.getLanguage(self.currentLanguage)
                 dialog = gui_overlay.AlignmentSelectDialog(alignments, lan, self)
                 if dialog.exec():
                     selectedIdx = dialog.getSelectedIndex()
@@ -1497,10 +1530,10 @@ class MainWindow(QMainWindow):
 
             # Step 1 of the workflow guide is done once LandXML is parsed
             self.workflowWidget.markCompleted(0)
-            self.setEngineStatus(lang.DIC[self.currentLanguage].get("dockLandXmlParsed", "LandXML"))
+            self.setEngineStatus(self.translationManager.getLanguage(self.currentLanguage).get("dockLandXmlParsed", "LandXML"))
 
         else:
-            lan = lang.DIC[self.currentLanguage]
+            lan = self.translationManager.getLanguage(self.currentLanguage)
             err = QMessageBox()
             err.setWindowTitle(lan["error"])
             err.setText(lan["no_file"])
@@ -1512,7 +1545,7 @@ class MainWindow(QMainWindow):
             self.textboxRawTTP.setXmlText(fileContent)
             XMLTTPData = readfile.ReadFile().ParseXMLTTP(fileContent)
 
-            lan = lang.DIC[self.currentLanguage]
+            lan = self.translationManager.getLanguage(self.currentLanguage)
 
             self.dataStorage["stationSpeedLimits"] = XMLTTPData["stationSpeedLimits"]
             self.dataStorage["speedLimits"] = XMLTTPData["speedLimits"]
@@ -1650,7 +1683,7 @@ class MainWindow(QMainWindow):
             self.plotSpeedLimits()
             self.updateMapWithSpeeds()
         else:
-            lan = lang.DIC[self.currentLanguage]
+            lan = self.translationManager.getLanguage(self.currentLanguage)
             err = QMessageBox()
             err.setWindowTitle(lan["error"])
             err.setText(lan["no_file"])
@@ -1667,14 +1700,14 @@ class MainWindow(QMainWindow):
     #         defaultDwell = float(settings.get("defaultDwellTime", 30.0))
     #         for st in stations:
     #             trainStops.append([float(st), defaultDwell])
-    #         lan = lang.DIC[self.currentLanguage]
+    #         lan = self.translationManager.getLanguage(self.currentLanguage)
     #         msg = QMessageBox()
     #         msg.setWindowTitle(lan.get("importStopsTTP", "Import Stops"))
     #         msg.setText(f"Imported {len(stations)} stops.")
     #         msg.setIcon(QMessageBox.Icon.Information)
     #         msg.exec()
     #     else:
-    #         lan = lang.DIC[self.currentLanguage]
+    #         lan = self.translationManager.getLanguage(self.currentLanguage)
     #         err = QMessageBox()
     #         err.setWindowTitle(lan["error"])
     #         err.setText(lan["no_file"])
@@ -1700,7 +1733,7 @@ class MainWindow(QMainWindow):
 
     # Build and display the QMenu with a fixed list of all graphs
     def showGraphContextMenu(self, globalPos):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
 
         graphDefs = [
             ("speed",       lan.get("speed_lim",                   "Speed Limits")),
@@ -1724,7 +1757,7 @@ class MainWindow(QMainWindow):
 
     # Collect data from dataStorage and open a PopupPlotWindow for the given graph
     def openPopupPlot(self, graphId):
-        lan  = lang.DIC[self.currentLanguage]
+        lan  = self.translationManager.getLanguage(self.currentLanguage)
         lxml = self.dataStorage.get("LandXML", {})
 
         # Unit factors (shared with plotKinematics)
@@ -2079,7 +2112,7 @@ class MainWindow(QMainWindow):
         self.graphsWidget.clearAll()
         self.profileWidget.clearAll()
         self.kinematicsWidget.clearAll()
-        self.setEngineStatus(lang.DIC[self.currentLanguage].get("statusNoData", "No data"))
+        self.setEngineStatus(self.translationManager.getLanguage(self.currentLanguage).get("statusNoData", "No data"))
         self.updateStatusChainage(None)
 
     def cleanTTPData(self):
@@ -2219,16 +2252,24 @@ class MainWindow(QMainWindow):
 
     # Map settings
     def openMapSettings(self):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
         dialog = gui_overlay.MapSettingsDialog(self.epsgInput, self.mapWidget.currentBaseMap, self.mapWidget.drawMode, self.mapWidget.speedProfile, lan, self)
         if dialog.exec():
             self.epsgInput, selectedMap, drawMode, speedProfile = dialog.getMapSettings()
             self.mapWidget.setBaseMap(selectedMap)
             self.mapWidget.setDrawOptions(drawMode, speedProfile)
 
+    # Custom shortcuts and command aliases
+    def openShortcutSettings(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        dialog = ShortcutSettingsDialog(self.shortcutManager.commands, lan, self)
+        if dialog.exec():
+            self.shortcutManager.saveCommands(dialog.getCommands())
+            self.shortcutManager.applyShortcuts(self)
+
     # Geometry settings
     def openGeometrySettings(self):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
 
         dialog = gui_overlay.GeometrySettingsDialog(self.dataStorage.get("settingsData", {}), lan, self)
         if dialog.exec():
@@ -2236,7 +2277,7 @@ class MainWindow(QMainWindow):
 
     # Vehicle settings
     def openVehicleSettings(self):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
 
         dialog = gui_overlay.VehicleSettingsDialog(self.dataStorage.get("settingsData", {}), lan, self)
         if dialog.exec():
@@ -2246,7 +2287,7 @@ class MainWindow(QMainWindow):
 
     # Stops settings
     def openStopsSettings(self):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
         dialog = gui_overlay.StopsSettingsDialog(self.dataStorage.get("settingsData", {}), lan, self)
         if dialog.exec():
             self.dataStorage["settingsData"].update(dialog.getSettings())
@@ -2258,14 +2299,14 @@ class MainWindow(QMainWindow):
 
     # Speed settings
     def openSpeedSettings(self):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
         dialog = gui_overlay.SpeedSettingsDialog(self.dataStorage.get("settingsData", {}), lan, self)
         if dialog.exec():
             self.dataStorage["settingsData"].update(dialog.getSettings())
 
     # Design approach settings
     def openDesignApproach(self):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
 
         dialog = gui_overlay.DesignApproachDialog(self.dataStorage.get("settingsData", {}), lan, self)
         if dialog.exec():
@@ -2277,9 +2318,13 @@ class MainWindow(QMainWindow):
         self.dockHelp.raise_()
         self.helpWidget.reloadDocument()
 
+    # Opens the Coypu Feeder companion project in the system default browser
+    def openCoypuFeeder(self):
+        QDesktopServices.openUrl(QUrl("https://github.com/surovskyjk/Coypu-Feeder"))
+
     # Reports
     def generateGeometryReport(self):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
         lxml = self.dataStorage.get("LandXML", {})
         if not lxml or "stationCantPossible" not in lxml or len(lxml.get("stationCantPossible", [])) < 2:
             self.reportGeometryWidget.setPlainText(lan.get("no_data", "No data available. Calculate values first."))
@@ -2538,7 +2583,7 @@ class MainWindow(QMainWindow):
         self.showReportView()
 
     def generateVehicleReport(self, vIdx=0):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
         stations = self.dataStorage.get(f"kinematicsStationM_{vIdx}", [])
         if len(stations) == 0:
             self.reportVehicleTable.setData([{"Info": lan.get("no_data", "No data available. Calculate values first.")}])
@@ -2662,7 +2707,7 @@ class MainWindow(QMainWindow):
         self.showReportView()
 
     def exportGeometryReport(self):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
         content = self.reportGeometryWidget.toPlainText()
         if not content:
             QMessageBox.warning(self, lan.get("error", "Error"), lan.get("no_data", "No data available. Calculate values first."))
@@ -2677,7 +2722,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, lan.get("error", "Error"), f"{e}")
 
     def exportVehicleReport(self, vIdx=0):
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
         stations = self.dataStorage.get(f"kinematicsStationM_{vIdx}", [])
         if len(stations) == 0:
             QMessageBox.warning(self, lan.get("error", "Error"), lan.get("no_data", "No data available. Calculate values first."))
@@ -2796,7 +2841,7 @@ class MainWindow(QMainWindow):
         stations = np.concatenate((data["stationCant"], data["stationHorizontal"], data["stationVertical"]))
         uniqueStations = np.unique(stations)
         tableData = []
-        lan = lang.DIC[self.currentLanguage]
+        lan = self.translationManager.getLanguage(self.currentLanguage)
         for station in uniqueStations:
             cant = data["cant"][np.where(data["stationCant"] == station)]
             horizontalRadius = data["radius"][np.where(data["stationHorizontal"] == station)]
@@ -2894,7 +2939,7 @@ class MainWindow(QMainWindow):
 
         # Step 5 of the workflow guide covers the GPK calculation
         self.workflowWidget.markCompleted(4)
-        self.setEngineStatus(lang.DIC[self.currentLanguage].get("statusGeometryDone", "Geometry calculated"))
+        self.setEngineStatus(self.translationManager.getLanguage(self.currentLanguage).get("statusGeometryDone", "Geometry calculated"))
 
     def calculateGeometryI(self):
 
@@ -2910,7 +2955,7 @@ class MainWindow(QMainWindow):
 
         # Step 5 of the workflow guide covers the GPK calculation
         self.workflowWidget.markCompleted(4)
-        self.setEngineStatus(lang.DIC[self.currentLanguage].get("statusGeometryDone", "Geometry calculated"))
+        self.setEngineStatus(self.translationManager.getLanguage(self.currentLanguage).get("statusGeometryDone", "Geometry calculated"))
 
     def calculateTrainSpeed(self):
         vehicle = vehicle_engine.VehicleCalculator(self.dataStorage)
@@ -2922,7 +2967,7 @@ class MainWindow(QMainWindow):
                 warnings.append(str(i+1))
                 
         if warnings:
-            lan = lang.DIC[self.currentLanguage]
+            lan = self.translationManager.getLanguage(self.currentLanguage)
             msg = lan["train_too_long"] + f" (Vehicle: {', '.join(warnings)})"
             QMessageBox.warning(self, lan["error"], msg)
 
@@ -2932,7 +2977,7 @@ class MainWindow(QMainWindow):
 
         # Step 6 of the workflow guide covers the running simulation
         self.workflowWidget.markCompleted(5)
-        self.setEngineStatus(lang.DIC[self.currentLanguage].get("statusSimulationDone", "Simulation finished"))
+        self.setEngineStatus(self.translationManager.getLanguage(self.currentLanguage).get("statusSimulationDone", "Simulation finished"))
 
     def updateMapWithSpeeds(self):
         lxml = self.dataStorage.get("LandXML", {})

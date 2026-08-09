@@ -1,0 +1,18 @@
+{
+  "commands": [
+    {"commandName": "AutodetectImport", "action": "autodetectXMLAction", "alias": "open", "shortcut": "Ctrl+O"},
+    {"commandName": "ImportLandXML", "action": "openParseLandXMLAction", "alias": "landxml", "shortcut": "Ctrl+L"},
+    {"commandName": "ImportXmlTtp", "action": "openParseXMLTTPAction", "alias": "ttp", "shortcut": "Ctrl+T"},
+    {"commandName": "CalculateGPK", "action": "calculateGeometryAction", "alias": "gpk", "shortcut": "Ctrl+G"},
+    {"commandName": "CalculateGPKAsBuilt", "action": "calculateGeometryIAction", "alias": "gpki", "shortcut": "Ctrl+Shift+G"},
+    {"commandName": "RunSimulation", "action": "calculateTrainSpeedAction", "alias": "run", "shortcut": "Ctrl+R"},
+    {"commandName": "CleanAll", "action": "cleanDataAction", "alias": "clean", "shortcut": "Ctrl+Shift+C"},
+    {"commandName": "CleanLandXml", "action": "cleanLandXMLDataAction", "alias": "cleanlandxml", "shortcut": ""},
+    {"commandName": "CleanTtp", "action": "cleanTTPDataAction", "alias": "cleanttp", "shortcut": ""},
+    {"commandName": "CleanCants", "action": "cleanCalculatedCantsAction", "alias": "cleancants", "shortcut": ""},
+    {"commandName": "CleanSpeeds", "action": "cleanCalculatedSpeedsAction", "alias": "cleanspeeds", "shortcut": ""},
+    {"commandName": "ResetLayout", "action": "resetLayoutAction", "alias": "resetlayout", "shortcut": ""},
+    {"commandName": "ExportGeometryReport", "action": "exportGeometryReportAction", "alias": "exportreport", "shortcut": "Ctrl+Shift+E"},
+    {"commandName": "OpenHelp", "action": "helpAction", "alias": "help", "shortcut": "F1"}
+  ]
+}
