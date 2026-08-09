@@ -83,6 +83,18 @@
       "action": "helpAction",
       "alias": "help",
       "shortcut": "F1"
+    },
+    {
+      "commandName": "VehicleCatalog",
+      "action": "openVehicleCatalogAction",
+      "alias": "vehicles",
+      "shortcut": "Ctrl+Shift+V"
+    },
+    {
+      "commandName": "PurgeData",
+      "action": "openPurgeDialogAction",
+      "alias": "purge",
+      "shortcut": "Ctrl+Shift+P"
     }
   ],
   "floatingCommandInputEnabled": true

@@ -38,6 +38,9 @@ CANT_RANGE = 500.0
 # Extra headroom above the fastest speed curve so the top line stays readable
 SPEED_RANGE_HEADROOM = 1.05
 
+# Extra headroom around the curvature peak, replaces the old setYRange padding argument
+CURVATURE_RANGE_HEADROOM = 1.05
+
 
 class PerformanceGraphsWidget(CoypuPlotWidget):
     def __init__(self, lan, parent=None):
@@ -52,6 +55,9 @@ class PerformanceGraphsWidget(CoypuPlotWidget):
         self.plotSpeed.setXLink(self.plotGeometry)
 
         self.plotGeometry.vb.setYRange(-CANT_RANGE, CANT_RANGE, padding=0)
+
+        # Keep the curvature zero line locked onto the cant zero line during zoom and pan
+        self.enableZeroLock("geometry")
 
         self.updateLabels(lan)
         self.enableCursorTracking("geometry")
@@ -112,9 +118,11 @@ class PerformanceGraphsWidget(CoypuPlotWidget):
             if finiteValues.size:
                 peak = max(peak, float(np.max(np.abs(finiteValues))))
 
+        peak *= CURVATURE_RANGE_HEADROOM
         rightView = self.plotRightViews.get("geometry")
         if rightView is not None:
-            rightView.setYRange(-peak, peak, padding=0.05)
+            rightView.setYRange(-peak, peak, padding=0)
+            self.syncZeroAlignment("geometry")
 
     # Replace the speed curves from the main data storage dictionary
     def updateSpeedData(self, dataStorage, visibility=None):

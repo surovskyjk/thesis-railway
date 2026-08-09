@@ -15,18 +15,29 @@ class ShortcutManager:
         self.floatingInputEnabled = DEFAULT_FLOATING_INPUT_ENABLED
         self.loadCommands()
 
+    # Read one shortcuts.json file, returning an empty command list on any read failure
+    def readConfigFile(self, configPath):
+        try:
+            with open(configPath, encoding="utf-8") as fileHandle:
+                return json.load(fileHandle)
+        except (OSError, json.JSONDecodeError):
+            return {}
+
     # Load the active command list and floating input preference, preferring a saved user copy
     def loadCommands(self):
         sourcePath = self.writableConfigPath if self.writableConfigPath.is_file() else self.bundledConfigPath
-        try:
-            with open(sourcePath, encoding="utf-8") as fileHandle:
-                configData = json.load(fileHandle)
-            self.commands = configData.get("commands", [])
-            self.floatingInputEnabled = configData.get("floatingCommandInputEnabled",
-                                                        DEFAULT_FLOATING_INPUT_ENABLED)
-        except (OSError, json.JSONDecodeError):
-            self.commands = []
-            self.floatingInputEnabled = DEFAULT_FLOATING_INPUT_ENABLED
+        configData = self.readConfigFile(sourcePath)
+        self.commands = configData.get("commands", [])
+        self.floatingInputEnabled = configData.get("floatingCommandInputEnabled",
+                                                    DEFAULT_FLOATING_INPUT_ENABLED)
+
+        # A saved user copy predating a new built-in command would otherwise hide it forever
+        if sourcePath == self.writableConfigPath:
+            knownNames = {command.get("commandName", "") for command in self.commands}
+            bundledCommands = self.readConfigFile(self.bundledConfigPath).get("commands", [])
+            for command in bundledCommands:
+                if command.get("commandName", "") not in knownNames:
+                    self.commands.append(command)
 
     # Assign every command's shortcut to its QAction on the given main window
     def applyShortcuts(self, mainWindow):

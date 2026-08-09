@@ -54,15 +54,24 @@ CSV format for geometry limits: one row per speed band, first column is the sect
 
 ---
 
-## Vehicle Data (CSV Import/Export)
+## Vehicle Catalog and CSV Format
 
-Vehicle parameters can be imported and exported as a single CSV file. The file uses a section identifier in the first column:
+The `vehicles/` folder in the repository root is a catalog of ready-made vehicle CSV files, scanned automatically on
+startup and offered as presets in the Vehicle Settings dialog and the standalone Vehicle Catalog browser. Drop an
+extra CSV into `vehicles/` (next to the executable when running a packaged build) to add it to the catalog on the
+next launch.
 
+Vehicle parameters can also be imported and exported per vehicle as a single CSV file. The file uses a section
+identifier in the first column:
+
+- `Meta` - single line key/value metadata: `vehicleName`, `maxSpeedKmh`, `massTonnes`, `lengthM`, `brakeDecelMs2`,
+  `maxTractiveForceKN` (informational only, does not clip the curve). Optional - a file without `Meta` rows still
+  imports using the `Param`/`Res` values below.
 - `Res` - Davis resistance coefficients: name, A, B, C [N/kN]
 - `Trac` - Traction curve segments: name, V_bottom, V_top, b0, b1, b2 (piecewise polynomial F = b0 + b1*v + b2*v^2 [kN], V [km/h])
 - `Param` - Train parameters: name, rotational mass factor, total weight [t], train length [m]
 
-Multiple vehicles can be defined; each is simulated independently.
+Multiple vehicles can be defined per project (1 to 5); each is simulated independently.
 
 ---
 

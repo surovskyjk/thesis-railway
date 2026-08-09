@@ -13,6 +13,7 @@ import pyqtgraph as pg
 import numpy as np
 
 import csv
+from pathlib import Path
 # Local imports
 import readfile
 import gui_overlay
@@ -20,6 +21,8 @@ from map_viewer import MapWidget
 import default_values
 import geometry_engine
 import vehicle_engine
+import vehicle_catalog
+import source_stack
 import theme_manager
 import icons
 from theme_manager import ThemeManager
@@ -35,6 +38,8 @@ from xml_editor import XmlCodeEditor
 from translation_manager import TranslationManager
 from shortcut_manager import ShortcutManager
 from settings_dialog import ShortcutSettingsDialog
+from vehicle_dialog import VehicleSettingsDialog, VehicleCatalogDialog
+from purge_dialog import PurgeDataDialog
 from floating_command_input import FloatingCommandInput
 import copy
 
@@ -168,6 +173,11 @@ class MainWindow(QMainWindow):
         self.themeManager = ThemeManager(self)
         self.shortcutManager = ShortcutManager()
 
+        # Provenance for imported files and the folder based vehicle library
+        self.sourceStack = source_stack.SourceStack()
+        self.vehicleCatalog = vehicle_catalog.VehicleCatalog()
+        self.vehicleCatalog.scanCatalog()
+
         self.buildActions()
         self.shortcutManager.applyShortcuts(self)
         self.buildCentralViews()
@@ -258,6 +268,11 @@ class MainWindow(QMainWindow):
         self.cleanCalculatedSpeedsAction = QAction(lan["cleanSpeeds"], self)
         self.cleanCalculatedSpeedsAction.triggered.connect(self.cleanCalculatedSpeeds)
 
+        self.openPurgeDialogAction = QAction(
+            QIcon.fromTheme("edit-clear-all", style.standardIcon(QStyle.StandardPixmap.SP_DialogResetButton)),
+            lan.get("purgeData", "Purge Data..."), self)
+        self.openPurgeDialogAction.triggered.connect(self.openPurgeDialog)
+
         # Settings actions
         self.mapSettingsAction = QAction(
             QIcon.fromTheme("internet-web-browser",
@@ -273,6 +288,12 @@ class MainWindow(QMainWindow):
                             style.standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView)),
             lan.get("vehicleSettings", "Vehicle Settings"), self)
         self.vehicleSettingsAction.triggered.connect(self.openVehicleSettings)
+
+        self.openVehicleCatalogAction = QAction(
+            QIcon.fromTheme("view-list-details",
+                            style.standardIcon(QStyle.StandardPixmap.SP_FileDialogListView)),
+            lan.get("vehicleCatalog", "Vehicle Catalog"), self)
+        self.openVehicleCatalogAction.triggered.connect(self.openVehicleCatalog)
 
         self.stopsSettingsAction = QAction(
             QIcon.fromTheme("appointment-new",
@@ -355,7 +376,7 @@ class MainWindow(QMainWindow):
 
         self.reportVehicleActions = []
         self.exportVehicleReportActions = []
-        for vehicleIndex in range(3):
+        for vehicleIndex in range(vehicle_catalog.MAX_VEHICLES):
             reportAction = QAction(f'{lan.get("vehicle", "Vehicle")} {vehicleIndex + 1}', self)
             reportAction.triggered.connect(
                 lambda checked=False, index=vehicleIndex: self.generateVehicleReport(index))
@@ -601,6 +622,7 @@ class MainWindow(QMainWindow):
         cleanGroup.addAction(self.cleanDataAction, shortKey="shortCleanAll")
         cleanGroup.addAction(self.cleanLandXMLDataAction, shortKey="shortLandxml")
         cleanGroup.addAction(self.cleanTTPDataAction, shortKey="shortTtp")
+        cleanGroup.addAction(self.openPurgeDialogAction, shortKey="shortPurge")
 
         exitGroup = projectPage.addGroup(lan.get("groupSession", "Session"), "groupSession")
         exitGroup.addAction(self.helpAction, shortKey="shortHelp")
@@ -636,6 +658,7 @@ class MainWindow(QMainWindow):
         simulationConfigGroup = simulationPage.addGroup(lan.get("groupConfig", "Configuration"),
                                                         "groupConfig")
         simulationConfigGroup.addAction(self.vehicleSettingsAction, shortKey="shortVehicles")
+        simulationConfigGroup.addAction(self.openVehicleCatalogAction, shortKey="shortVehicleCatalog")
         simulationConfigGroup.addAction(self.stopsSettingsAction, shortKey="shortStops")
         simulationConfigGroup.addAction(self.toggleUnitsAction, shortKey="shortUnits")
 
@@ -713,6 +736,9 @@ class MainWindow(QMainWindow):
 
         # The ribbon replaces the classic menu bar at the top of the window
         self.setMenuWidget(self.ribbonBar)
+
+        # Only show report and export buttons for the currently active vehicles
+        self.updateVehicleActionVisibility()
 
     # Build the status bar showing engine state, chainage and active theme
     def buildStatusBar(self):
@@ -1111,7 +1137,7 @@ class MainWindow(QMainWindow):
         # Report actions
         self.reportGeometryAction.setText(lan.get("reportGeometry", "Report - Geometry"))
         self.exportGeometryReportAction.setText(lan.get("exportGeometryReport", "Export Geometry Report"))
-        for vehicleIndex in range(3):
+        for vehicleIndex in range(vehicle_catalog.MAX_VEHICLES):
             caption = f'{lan.get("vehicle", "Vehicle")} {vehicleIndex + 1}'
             self.reportVehicleActions[vehicleIndex].setText(caption)
             self.exportVehicleReportActions[vehicleIndex].setText(caption)
@@ -1153,32 +1179,40 @@ class MainWindow(QMainWindow):
         except (IndexError, KeyError, TypeError):
             return ""
 
+    # Show report and export buttons only for the currently active number of vehicles
+    def updateVehicleActionVisibility(self):
+        activeCount = len(self.dataStorage.get("settingsData", {}).get("vehicles", [])) or 1
+        for index, action in enumerate(self.reportVehicleActions):
+            action.setVisible(index < activeCount)
+        for index, action in enumerate(self.exportVehicleReportActions):
+            action.setVisible(index < activeCount)
+
     def getFileContent(self):
         filepath, _ = QFileDialog.getOpenFileName(self, "Open File", "", "All Files (*);;Text Files (*.txt);;XML Files (*.xml)")
-        
-        # If cancelled, do nothing    
+
+        # If cancelled, do nothing
         if not filepath:
-            return
-        
+            return None, None
+
         # Read file content
         fileContent = readfile.ReadFile().Read(filepath)
-        return fileContent
-    
+        return fileContent, Path(filepath).name
+
     def openFile(self):
-        fileContent = self.getFileContent()
+        fileContent, _ = self.getFileContent()
         if fileContent is not None:
             self.textboxRawLandXML.setXmlText(fileContent)
 
     def openAutodetectXML(self):
-        fileContent = self.getFileContent()
+        fileContent, fileName = self.getFileContent()
         if fileContent is None:
             return
-        
+
         xmlType = readfile.ReadFile().XMLType(fileContent)
         if xmlType == 1:
-            self.parseLandXML(fileContent)
+            self.parseLandXML(fileContent, fileName)
         elif xmlType == 2:
-            self.parseXMLTTP(fileContent)
+            self.parseXMLTTP(fileContent, fileName)
         else:
             lan = self.translationManager.getLanguage(self.currentLanguage)
             err = QMessageBox()
@@ -1188,15 +1222,15 @@ class MainWindow(QMainWindow):
             err.exec()
 
     def appendAutodetectXML(self):
-        fileContent = self.getFileContent()
+        fileContent, fileName = self.getFileContent()
         if fileContent is None:
             return
-        
+
         xmlType = readfile.ReadFile().XMLType(fileContent)
         if xmlType == 1:
-            self.appendLandXMLContent(fileContent)
+            self.appendLandXMLContent(fileContent, fileName)
         elif xmlType == 2:
-            self.appendXMLTTPContent(fileContent)
+            self.appendXMLTTPContent(fileContent, fileName)
         else:
             lan = self.translationManager.getLanguage(self.currentLanguage)
             err = QMessageBox()
@@ -1206,12 +1240,12 @@ class MainWindow(QMainWindow):
             err.exec()
 
     def openLandXML(self):
-        fileContent = self.getFileContent()
-        self.parseLandXML(fileContent)
+        fileContent, fileName = self.getFileContent()
+        self.parseLandXML(fileContent, fileName)
 
     def openXMLTTP(self):
-        fileContent = self.getFileContent()
-        self.parseXMLTTP(fileContent)
+        fileContent, fileName = self.getFileContent()
+        self.parseXMLTTP(fileContent, fileName)
 
     def appendXMLTTP(self):
         if "stationSpeedLimits" not in self.dataStorage or len(self.dataStorage.get("stationSpeedLimits", [])) == 0:
@@ -1223,12 +1257,12 @@ class MainWindow(QMainWindow):
             err.exec()
             return
 
-        fileContent = self.getFileContent()
+        fileContent, fileName = self.getFileContent()
         if not fileContent:
             return
-        self.appendXMLTTPContent(fileContent)
+        self.appendXMLTTPContent(fileContent, fileName)
 
-    def appendXMLTTPContent(self, fileContent):
+    def appendXMLTTPContent(self, fileContent, fileName=None):
         if "stationSpeedLimits" not in self.dataStorage or len(self.dataStorage.get("stationSpeedLimits", [])) == 0:
             lan = self.translationManager.getLanguage(self.currentLanguage)
             err = QMessageBox()
@@ -1339,37 +1373,12 @@ class MainWindow(QMainWindow):
         if len(stationsRaw) == 0:
             return
 
-        oldText = self.textboxRawTTP.toPlainText()
-        self.textboxRawTTP.setXmlText(oldText + "\n\n<!-- MERGED XML TTP -->\n\n" + fileContent)
+        # Cache this file's resolved contribution before merging, enables a later selective purge
+        self.recordTtpSource(fileName, stationsRaw, speedLimitsRaw)
 
         oldStations = self.dataStorage["stationSpeedLimits"]
         oldSpeeds = self.dataStorage["speedLimits"]
-
-        oldStart = np.nanmin(oldStations)
-        oldEnd = np.nanmax(oldStations)
-        newStart = np.nanmin(stationsRaw)
-        newEnd = np.nanmax(stationsRaw)
-
-        # Kontrola mezery (ve staničení TTP používáme [km], proto 0.1 je 100 m)
-        if newStart >= oldEnd or (abs(newStart - oldEnd) <= abs(newEnd - oldStart)):
-            isAppend = True
-            cropStation = oldEnd
-            if abs(newStart - oldEnd) > 0.1:
-                QMessageBox.warning(self, lan.get("merge_gap_warning_title", "Warning"), lan.get("merge_gap_warning_desc", "Gap > 100m"))
-        else:
-            isAppend = False
-            cropStation = oldStart
-            if abs(oldStart - newEnd) > 0.1:
-                QMessageBox.warning(self, lan.get("merge_gap_warning_title", "Warning"), lan.get("merge_gap_warning_desc", "Gap > 100m"))
-
-        if isAppend:
-            mask = stationsRaw > cropStation
-            mergedStations = np.concatenate((oldStations, stationsRaw[mask]))
-            mergedSpeeds = np.concatenate((oldSpeeds, speedLimitsRaw[mask]))
-        else:
-            mask = stationsRaw < cropStation
-            mergedStations = np.concatenate((stationsRaw[mask], oldStations))
-            mergedSpeeds = np.concatenate((speedLimitsRaw[mask], oldSpeeds))
+        mergedStations, mergedSpeeds = self.mergeTtpArrays(oldStations, oldSpeeds, stationsRaw, speedLimitsRaw)
 
         self.dataStorage["stationSpeedLimits"] = mergedStations
         self.dataStorage["speedLimits"] = mergedSpeeds
@@ -1379,7 +1388,7 @@ class MainWindow(QMainWindow):
             "speedLimits": mergedSpeeds
         }
         self.tableTTP.setData(TTPData)
-        
+
         self.cleanCalculatedSpeeds()
         self.plotSpeedLimits()
         self.updateMapWithSpeeds()
@@ -1394,12 +1403,12 @@ class MainWindow(QMainWindow):
             err.exec()
             return
 
-        fileContent = self.getFileContent()
+        fileContent, fileName = self.getFileContent()
         if not fileContent:
             return
-        self.appendLandXMLContent(fileContent)
+        self.appendLandXMLContent(fileContent, fileName)
 
-    def appendLandXMLContent(self, fileContent):
+    def appendLandXMLContent(self, fileContent, fileName=None):
         if "LandXML" not in self.dataStorage or len(self.dataStorage.get("LandXML", {}).get("stationHorizontal", [])) == 0:
             lan = self.translationManager.getLanguage(self.currentLanguage)
             err = QMessageBox()
@@ -1420,9 +1429,9 @@ class MainWindow(QMainWindow):
                 return
 
         newLandXMLData = readfile.ReadFile().ParseLandXML(fileContent, self.epsgInput, selectedIdx)
-        
-        oldText = self.textboxRawLandXML.toPlainText()
-        self.textboxRawLandXML.setXmlText(oldText + "\n\n<!-- MERGED XML -->\n\n" + fileContent)
+
+        # Cache this file's resolved contribution before merging, enables a later selective purge
+        self.recordLandXMLSource(fileName, newLandXMLData)
 
         self.mergeLandXMLData(newLandXMLData)
 
@@ -1562,10 +1571,123 @@ class MainWindow(QMainWindow):
         self.plotProfile()
         self.mapWidget.drawAlignment(mergedData.get("alignmentCoordinates",[]), mergedData)
 
-    def parseLandXML(self, fileContent):
+    # Cache one imported LandXML file's resolved contribution, enables a later selective purge
+    def recordLandXMLSource(self, fileName, landXmlData):
+        stations = landXmlData.get("stationHorizontal", [])
+        if len(stations) == 0:
+            return
+        stationStart = float(np.nanmin(stations))
+        stationEnd = float(np.nanmax(stations))
+        self.sourceStack.addEntry(source_stack.LANDXML_KIND, fileName or "LandXML.xml",
+                                  copy.deepcopy(landXmlData), stationStart, stationEnd)
+        self.refreshLandXmlSourceText()
+
+    # Cache one imported TTP file's resolved contribution, enables a later selective purge
+    def recordTtpSource(self, fileName, stations, speedLimits):
+        if len(stations) == 0:
+            return
+        stationStart = float(np.nanmin(stations))
+        stationEnd = float(np.nanmax(stations))
+        payload = (np.array(stations, dtype=float), np.array(speedLimits, dtype=float))
+        self.sourceStack.addEntry(source_stack.TTP_KIND, fileName or "TTP.xml",
+                                  payload, stationStart, stationEnd)
+        self.refreshTtpSourceText()
+
+    # Replace the LandXML source viewer with a summary of the currently surviving segments
+    def refreshLandXmlSourceText(self):
+        entries = self.sourceStack.entriesForKind(source_stack.LANDXML_KIND)
+        lines = [f"<!-- {entry.fileName}: {entry.stationStart:.3f} km - {entry.stationEnd:.3f} km -->"
+                for entry in entries]
+        self.textboxRawLandXML.setXmlText("\n".join(lines))
+
+    # Replace the TTP source viewer with a summary of the currently surviving segments
+    def refreshTtpSourceText(self):
+        entries = self.sourceStack.entriesForKind(source_stack.TTP_KIND)
+        lines = [f"<!-- {entry.fileName}: {entry.stationStart:.3f} km - {entry.stationEnd:.3f} km -->"
+                for entry in entries]
+        self.textboxRawTTP.setXmlText("\n".join(lines))
+
+    # Merge two resolved TTP arrays, the gap detection mirrors a live TTP import
+    def mergeTtpArrays(self, oldStations, oldSpeeds, newStations, newSpeeds):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        oldStart = np.nanmin(oldStations)
+        oldEnd = np.nanmax(oldStations)
+        newStart = np.nanmin(newStations)
+        newEnd = np.nanmax(newStations)
+
+        if newStart >= oldEnd or (abs(newStart - oldEnd) <= abs(newEnd - oldStart)):
+            isAppend = True
+            cropStation = oldEnd
+            if abs(newStart - oldEnd) > 0.1:
+                QMessageBox.warning(self, lan.get("merge_gap_warning_title", "Warning"),
+                                    lan.get("merge_gap_warning_desc", "Gap > 100m"))
+        else:
+            isAppend = False
+            cropStation = oldStart
+            if abs(oldStart - newEnd) > 0.1:
+                QMessageBox.warning(self, lan.get("merge_gap_warning_title", "Warning"),
+                                    lan.get("merge_gap_warning_desc", "Gap > 100m"))
+
+        if isAppend:
+            mask = newStations > cropStation
+            mergedStations = np.concatenate((oldStations, newStations[mask]))
+            mergedSpeeds = np.concatenate((oldSpeeds, newSpeeds[mask]))
+        else:
+            mask = newStations < cropStation
+            mergedStations = np.concatenate((newStations[mask], oldStations))
+            mergedSpeeds = np.concatenate((newSpeeds[mask], oldSpeeds))
+
+        return mergedStations, mergedSpeeds
+
+    # Rebuild the merged LandXML dataset by replaying every surviving source stack entry
+    def rebuildLandXMLFromStack(self):
+        entries = self.sourceStack.entriesForKind(source_stack.LANDXML_KIND)
+
+        self.dataStorage["LandXML"] = {}
+        for index, entry in enumerate(entries):
+            payload = copy.deepcopy(entry.payload)
+            if index == 0:
+                self.dataStorage["LandXML"] = payload
+            else:
+                self.mergeLandXMLData(payload)
+
+        lxml = self.dataStorage.get("LandXML", {})
+        self.updateTableLandXML(lxml)
+        self.cleanCalculatedCants()
+        self.cleanCalculatedSpeeds()
+        self.plotCant()
+        self.plotCurvature()
+        self.plotProfile()
+        self.mapWidget.drawAlignment(lxml.get("alignmentCoordinates", []), lxml)
+        self.refreshLandXmlSourceText()
+
+    # Rebuild the merged TTP dataset by replaying every surviving source stack entry
+    def rebuildTtpFromStack(self):
+        entries = self.sourceStack.entriesForKind(source_stack.TTP_KIND)
+
+        if not entries:
+            mergedStations = np.array([])
+            mergedSpeeds = np.array([])
+        else:
+            mergedStations, mergedSpeeds = entries[0].payload
+            mergedStations = np.array(mergedStations, dtype=float)
+            mergedSpeeds = np.array(mergedSpeeds, dtype=float)
+            for entry in entries[1:]:
+                newStations, newSpeeds = entry.payload
+                mergedStations, mergedSpeeds = self.mergeTtpArrays(
+                    mergedStations, mergedSpeeds,
+                    np.array(newStations, dtype=float), np.array(newSpeeds, dtype=float))
+
+        self.dataStorage["stationSpeedLimits"] = mergedStations
+        self.dataStorage["speedLimits"] = mergedSpeeds
+        self.tableTTP.setData({"stationSpeedLimits": mergedStations, "speedLimits": mergedSpeeds})
+        self.cleanCalculatedSpeeds()
+        self.plotSpeedLimits()
+        self.updateMapWithSpeeds()
+        self.refreshTtpSourceText()
+
+    def parseLandXML(self, fileContent, fileName=None):
         if fileContent is not None:
-            self.textboxRawLandXML.setXmlText(fileContent)
-            
             # Check for multiple alignments and prompt the user if needed
             alignments = readfile.ReadFile().GetAlignments(fileContent)
             selectedIdx = 0
@@ -1582,6 +1704,10 @@ class MainWindow(QMainWindow):
 
             # Save data to central data storage
             self.dataStorage["LandXML"] = LandXMLData
+
+            # A fresh import replaces the whole route stack, not just the merged arrays
+            self.sourceStack.clearKind(source_stack.LANDXML_KIND)
+            self.recordLandXMLSource(fileName, LandXMLData)
 
             # Plot and draw data
             lxml = self.dataStorage.get("LandXML",{})
@@ -1602,9 +1728,8 @@ class MainWindow(QMainWindow):
             err.setIcon(QMessageBox.Icon.Warning)
             err.exec()
 
-    def parseXMLTTP(self, fileContent):
+    def parseXMLTTP(self, fileContent, fileName=None):
         if fileContent is not None:
-            self.textboxRawTTP.setXmlText(fileContent)
             XMLTTPData = readfile.ReadFile().ParseXMLTTP(fileContent)
 
             lan = self.translationManager.getLanguage(self.currentLanguage)
@@ -1736,6 +1861,10 @@ class MainWindow(QMainWindow):
             self.dataStorage["stationSpeedLimits"] = stations
             self.dataStorage["speedLimits"] = speedLimits
 
+            # A fresh import replaces the whole TTP stack, not just the merged arrays
+            self.sourceStack.clearKind(source_stack.TTP_KIND)
+            self.recordTtpSource(fileName, stations, speedLimits)
+
             TTPData = {
                 "stationSpeedLimits": stations,
                 "speedLimits": speedLimits
@@ -1833,11 +1962,11 @@ class MainWindow(QMainWindow):
         timeLbl  = lan.get("timeMin",     "Time [min]")    if useKmh else lan.get("time",        "Time [s]")
 
         numVehicles    = self.dataStorage.get("num_vehicles", 1)
-        colorsSpeed    = ['tab:red',   'tab:green',  'tab:blue']
-        colorsTrac     = ['green',    'lime',       'darkgreen']
-        colorsBrake    = ['red',      'darkred',    'salmon']
-        colorsRes      = ['orange',   'darkorange', 'gold']
-        limitColors    = ['lightcoral','lightgreen','lightskyblue']
+        colorsSpeed    = ['tab:red',   'tab:green',  'tab:blue',   'tab:purple', 'tab:orange']
+        colorsTrac     = ['green',    'lime',       'darkgreen',  'seagreen',   'olive']
+        colorsBrake    = ['red',      'darkred',    'salmon',     'firebrick',  'indianred']
+        colorsRes      = ['orange',   'darkorange', 'gold',       'chocolate',  'goldenrod']
+        limitColors    = ['lightcoral','lightgreen','lightskyblue','plum',      'moccasin']
 
         def vehicleLabel(vIdx):
             if numVehicles <= 1:
@@ -2174,6 +2303,8 @@ class MainWindow(QMainWindow):
         self.graphsWidget.clearAll()
         self.profileWidget.clearAll()
         self.kinematicsWidget.clearAll()
+        # A full clean must not leave a stale alignment behind on the map
+        self.mapWidget.resetMap()
         self.setEngineStatus(self.translationManager.getLanguage(self.currentLanguage).get("statusNoData", "No data"))
         self.updateStatusChainage(None)
 
@@ -2182,6 +2313,7 @@ class MainWindow(QMainWindow):
         self.tableTTP.setData({})
         self.dataStorage["stationSpeedLimits"] = []
         self.dataStorage["speedLimits"] = []
+        self.sourceStack.clearKind(source_stack.TTP_KIND)
         self.plotSpeedLimits()
         self.plotKinematics()
 
@@ -2189,6 +2321,7 @@ class MainWindow(QMainWindow):
         self.textboxRawLandXML.setXmlText("")
         self.tableLandXML.setData({})
         self.dataStorage["LandXML"] = {}
+        self.sourceStack.clearKind(source_stack.LANDXML_KIND)
         self.plotCant()
         self.plotCurvature()
         self.plotProfile()
@@ -2226,7 +2359,7 @@ class MainWindow(QMainWindow):
             self.dataStorage[f"speedLimits{suffix}"]  = []
 
         # Per-vehicle kinematics and speed-limit arrays
-        for vIdx in range(3):
+        for vIdx in range(vehicle_catalog.MAX_VEHICLES):
             self.dataStorage[f"kinematicsStationM_{vIdx}"]        = []
             self.dataStorage[f"kinematicsSpeedM_{vIdx}"]          = []
             self.dataStorage[f"kinematicsTimeS_{vIdx}"]           = []
@@ -2342,11 +2475,72 @@ class MainWindow(QMainWindow):
     def openVehicleSettings(self):
         lan = self.translationManager.getLanguage(self.currentLanguage)
 
-        dialog = gui_overlay.VehicleSettingsDialog(self.dataStorage.get("settingsData", {}), lan, self)
+        dialog = VehicleSettingsDialog(self.dataStorage.get("settingsData", {}), lan,
+                                       catalog=self.vehicleCatalog,
+                                       isDarkActive=self.themeManager.isDarkActive,
+                                       tokens=self.themeManager.currentTokens, parent=self)
         if dialog.exec():
             self.dataStorage["settingsData"].update(dialog.getSettings())
+            self.updateVehicleActionVisibility()
             # Step 4 of the workflow guide covers the vehicle definition
             self.workflowWidget.markCompleted(3)
+
+    # Vehicle catalog browser, reachable standalone or from within Vehicle Settings
+    def openVehicleCatalog(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        dialog = VehicleCatalogDialog(self.vehicleCatalog, lan,
+                                      isDarkActive=self.themeManager.isDarkActive,
+                                      tokens=self.themeManager.currentTokens, parent=self)
+        dialog.exec()
+
+    # Granular purge: segment manager plus optional calculation, stops and complete reset scopes
+    def openPurgeDialog(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        dialog = PurgeDataDialog(self.sourceStack, lan, self)
+        if dialog.exec():
+            self.executePurgeRequest(dialog.getPurgeRequest())
+
+    # Carry out the scopes and segment removals chosen in the purge dialog
+    def executePurgeRequest(self, request):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+
+        if request["completeReset"]:
+            # Deferred so the closing modal never overlaps a folium rebuild, mirrors resetLayout
+            QTimer.singleShot(0, self.performCompleteReset)
+            return
+
+        if request["removedSourceIds"]:
+            self.applySourceRemovals(request["removedSourceIds"])
+
+        if request["purgeResults"]:
+            self.cleanCalculatedCants()
+            self.cleanCalculatedSpeeds()
+
+        if request["purgeStops"]:
+            self.cleanTTPData()
+            self.dataStorage.setdefault("settingsData", {})["trainStops"] = []
+
+        self.refreshStations()
+        self.plotKinematics()
+        self.refreshTrackStatsDock()
+        self.statusBarWidget.showMessage(lan.get("purgeDone", "Purge completed"), SERIES_STATUS_TIMEOUT)
+
+    # Wipe the entire project, the deferred complete reset scope of the purge dialog
+    def performCompleteReset(self):
+        self.cleanData()
+        self.sourceStack.clearAll()
+        self.dataStorage["settingsData"] = copy.deepcopy(default_values.defVal)
+        self.mapWidget.resetMap()
+
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        self.statusBarWidget.showMessage(lan.get("purgeDone", "Purge completed"), SERIES_STATUS_TIMEOUT)
+
+    # Drop the chosen source stack entries and rebuild the affected datasets from the survivors
+    def applySourceRemovals(self, removedSourceIds):
+        for sourceId in removedSourceIds:
+            self.sourceStack.removeEntry(sourceId)
+        self.rebuildLandXMLFromStack()
+        self.rebuildTtpFromStack()
 
     # Stops settings
     def openStopsSettings(self):
@@ -3025,7 +3219,7 @@ class MainWindow(QMainWindow):
         vehicle.calculateKinematics()
         
         warnings = []
-        for i in range(3):
+        for i in range(vehicle_catalog.MAX_VEHICLES):
             if self.dataStorage.get(f"kinematicsWarning_{i}") == "train_too_long":
                 warnings.append(str(i+1))
                 
@@ -3037,6 +3231,7 @@ class MainWindow(QMainWindow):
         vehicle.speedLimitsToTime()
 
         self.plotKinematics()
+        self.updateVehicleActionVisibility()
 
         # Step 6 of the workflow guide covers the running simulation
         self.workflowWidget.markCompleted(5)

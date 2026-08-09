@@ -30,12 +30,12 @@ SERIES_STYLES = {
     "simulated": {"color": "#d19a66", "width": 2},
 }
 
-# Per vehicle colour banks mirroring the previous matplotlib palettes
-VEHICLE_SPEED_COLORS = ["#d64545", "#2e9e4f", "#4a7fd4"]
-VEHICLE_LIMIT_COLORS = ["#f0a0a0", "#a8dcae", "#a8c8ef"]
-VEHICLE_TRACTION_COLORS = ["#2e9e4f", "#63d17c", "#1c6b34"]
-VEHICLE_BRAKING_COLORS = ["#d64545", "#8f2020", "#f08e8e"]
-VEHICLE_RESISTANCE_COLORS = ["#e08a2e", "#f0a95c", "#c9a227"]
+# Per vehicle colour banks mirroring the previous matplotlib palettes, one entry per MAX_VEHICLES slot
+VEHICLE_SPEED_COLORS = ["#d64545", "#2e9e4f", "#4a7fd4", "#a04fd6", "#d68f2e"]
+VEHICLE_LIMIT_COLORS = ["#f0a0a0", "#a8dcae", "#a8c8ef", "#d4a8ef", "#f0d0a0"]
+VEHICLE_TRACTION_COLORS = ["#2e9e4f", "#63d17c", "#1c6b34", "#7fd68a", "#0f7a2e"]
+VEHICLE_BRAKING_COLORS = ["#d64545", "#8f2020", "#f08e8e", "#b03030", "#f0aaaa"]
+VEHICLE_RESISTANCE_COLORS = ["#e08a2e", "#f0a95c", "#c9a227", "#f0c67a", "#b8801a"]
 
 # Series that keep the theme foreground colour so they stay readable on both themes
 FOREGROUND_SERIES = ("cant", "speedLimits")
@@ -167,6 +167,11 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
         self.readoutPlotKey = None
         self.detachedWindows = []
 
+        # Plot keys currently re-entering syncZeroAlignment, guards against feedback loops
+        self.zeroLockBusy = set()
+        # Plot keys whose secondary axis keeps its zero line locked to the primary axis
+        self.zeroLockedPlots = set()
+
     # Register a plot row and wire its legend, crosshair and context menu
     def addPlotRow(self, plotKey, row, leftLabel="", bottomLabel="", rightAxis=None,
                    withLegend=True, withCrosshair=True, legendCorner="topLeft"):
@@ -178,6 +183,8 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
         plotItem.showGrid(x=True, y=True, alpha=0.3)
         plotItem.setLabel("left", leftLabel)
         plotItem.setLabel("bottom", bottomLabel)
+        # No implicit auto range padding, every explicit setYRange call stays exact
+        plotItem.vb.setDefaultPadding(0.0)
 
         self.plotItems[plotKey] = plotItem
         self.plotSeries[plotKey] = {}
@@ -233,6 +240,48 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
             return
         rightView.setGeometry(plotItem.vb.sceneBoundingRect())
         rightView.linkedViewChanged(plotItem.vb, rightView.XAxis)
+
+    # Keep the zero line of a secondary axis locked onto the zero line of its primary axis
+    def enableZeroLock(self, plotKey):
+        plotItem = self.plotItems.get(plotKey)
+        rightView = self.plotRightViews.get(plotKey)
+        if plotItem is None or rightView is None:
+            return
+
+        # Connect only once per plot, a rebuilt right view is picked up by lookup at sync time
+        if plotKey not in self.zeroLockedPlots:
+            plotItem.vb.sigYRangeChanged.connect(
+                lambda viewBox, viewRange, key=plotKey: self.syncZeroAlignment(key))
+            self.zeroLockedPlots.add(plotKey)
+
+        self.syncZeroAlignment(plotKey)
+
+    # Re-anchor the secondary Y range so zero sits at the same fraction of both views
+    def syncZeroAlignment(self, plotKey):
+        if plotKey in self.zeroLockBusy:
+            return
+
+        plotItem = self.plotItems.get(plotKey)
+        rightView = self.plotRightViews.get(plotKey)
+        if plotItem is None or rightView is None:
+            return
+
+        primaryLow, primaryHigh = plotItem.vb.viewRange()[1]
+        primarySpan = primaryHigh - primaryLow
+        secondaryLow, secondaryHigh = rightView.viewRange()[1]
+        secondarySpan = secondaryHigh - secondaryLow
+        if primarySpan <= 0 or secondarySpan <= 0:
+            return
+
+        # The secondary axis keeps its own scale, only its offset moves to match zero
+        zeroFraction = (0.0 - primaryLow) / primarySpan
+        newLow = -zeroFraction * secondarySpan
+
+        self.zeroLockBusy.add(plotKey)
+        try:
+            rightView.setYRange(newLow, newLow + secondarySpan, padding=0)
+        finally:
+            self.zeroLockBusy.discard(plotKey)
 
     # Add or replace one curve, the registry keeps everything needed to redraw it
     def setSeriesData(self, plotKey, seriesKey, x, y, name="", styleKey=None, color=None,
@@ -730,6 +779,9 @@ class PlotNavigationToolbar(QToolBar):
     def resetView(self):
         for plotItem in self.plotWidget.plotItems.values():
             plotItem.vb.autoRange()
+        # Auto range only touches the primary view, so zero locked axes need a manual resync
+        for plotKey in self.plotWidget.zeroLockedPlots:
+            self.plotWidget.syncZeroAlignment(plotKey)
 
     # Save the whole plot canvas as a high resolution raster image
     def exportHighRes(self):

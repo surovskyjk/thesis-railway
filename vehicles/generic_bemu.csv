@@ -1,0 +1,12 @@
+Section,Col1,Col2,Col3,Col4,Col5,Col6
+Meta,vehicleName,Generic BEMU
+Meta,maxSpeedKmh,160
+Meta,massTonnes,113.5
+Meta,lengthM,52.9
+Meta,brakeDecelMs2,1.0
+Meta,maxTractiveForceKN,112.5
+Param,Generic BEMU,1.08,113.5,52.9
+Res,Generic BEMU,1.6616,0.00415,0.00017
+Trac,Generic BEMU,0,53.724,112.5,0,0
+Trac,Generic BEMU,53.724,95.72,264.1023212,-3.758085809,0.017385477
+Trac,Generic BEMU,95.72,160,152.6900328,-1.247380411,0.003296517

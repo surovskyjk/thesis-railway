@@ -1,7 +1,10 @@
 # Track Statistics panel summarising length, design/actual speed maxima and travel times
-from PySide6.QtWidgets import (QComboBox, QFormLayout, QGroupBox, QHeaderView, QLabel,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
+                               QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 import numpy as np
+
+from ui_kit import CollapsibleSection, MetricCard
+from vehicle_catalog import MAX_VEHICLES
 
 # Design speed profiles offered by the profile selector, matches gui_overlay's MapSettingsDialog
 DESIGN_PROFILE_CHOICES = [
@@ -15,8 +18,11 @@ DESIGN_PROFILE_CHOICES = [
 # Design profile selected by default, matches MapWidget's own default speed profile
 DEFAULT_DESIGN_PROFILE = "150"
 
-# Maximum number of vehicles the rest of the application supports
-MAX_VEHICLES = 3
+# Row height used to size the segment tables without letting them grow unbounded
+TABLE_ROW_HEIGHT_PX = 22
+
+# Most rows a segment table shows before it starts scrolling internally
+TABLE_MAX_VISIBLE_ROWS = 6
 
 
 class TrackStatisticsWidget(QWidget):
@@ -27,78 +33,91 @@ class TrackStatisticsWidget(QWidget):
         self.lastDataStorage = {}
         self.vehicleNameResolver = None
 
-        outerLayout = QVBoxLayout(self)
-        outerLayout.setContentsMargins(6, 6, 6, 6)
-        outerLayout.setSpacing(8)
+        scrollArea = QScrollArea(self)
+        scrollArea.setWidgetResizable(True)
+        scrollArea.setFrameShape(QScrollArea.Shape.NoFrame)
 
-        # Track length
-        self.lengthGroup = QGroupBox()
-        lengthLayout = QFormLayout(self.lengthGroup)
-        self.lengthRowLabel = QLabel()
-        self.lengthValueLabel = QLabel("-")
-        lengthLayout.addRow(self.lengthRowLabel, self.lengthValueLabel)
-        outerLayout.addWidget(self.lengthGroup)
+        rootLayout = QVBoxLayout(self)
+        rootLayout.setContentsMargins(0, 0, 0, 0)
+        rootLayout.addWidget(scrollArea)
 
-        # Maximum design speed according to the selected GPK profile
-        self.designGroup = QGroupBox()
-        designLayout = QVBoxLayout(self.designGroup)
-        designFormLayout = QFormLayout()
+        contentWidget = QWidget()
+        scrollArea.setWidget(contentWidget)
+
+        outerLayout = QVBoxLayout(contentWidget)
+        outerLayout.setContentsMargins(4, 4, 4, 4)
+        outerLayout.setSpacing(4)
+
+        # Compact selector row, replaces two separate form rows
+        selectorLayout = QHBoxLayout()
+        selectorLayout.setSpacing(4)
+        self.designProfileRowLabel = QLabel()
         self.designProfileCombo = QComboBox()
         for profileKey, displayText in DESIGN_PROFILE_CHOICES:
             self.designProfileCombo.addItem(displayText, profileKey)
         defaultIndex = self.designProfileCombo.findData(DEFAULT_DESIGN_PROFILE)
         self.designProfileCombo.setCurrentIndex(max(0, defaultIndex))
         self.designProfileCombo.currentIndexChanged.connect(self.onDesignProfileChanged)
-        self.designProfileRowLabel = QLabel()
-        designFormLayout.addRow(self.designProfileRowLabel, self.designProfileCombo)
-        self.designMaxRowLabel = QLabel()
-        self.designMaxValueLabel = QLabel("-")
-        designFormLayout.addRow(self.designMaxRowLabel, self.designMaxValueLabel)
-        designLayout.addLayout(designFormLayout)
-        self.designSegmentTable = QTableWidget(0, 3)
-        designLayout.addWidget(self.designSegmentTable)
-        outerLayout.addWidget(self.designGroup)
+        selectorLayout.addWidget(self.designProfileRowLabel)
+        selectorLayout.addWidget(self.designProfileCombo, 1)
 
-        # Maximum actual simulated train speed for the selected vehicle
-        self.actualGroup = QGroupBox()
-        actualLayout = QVBoxLayout(self.actualGroup)
-        actualFormLayout = QFormLayout()
+        self.vehicleRowLabel = QLabel()
         self.vehicleCombo = QComboBox()
         self.vehicleCombo.currentIndexChanged.connect(self.onVehicleChanged)
-        self.vehicleRowLabel = QLabel()
-        actualFormLayout.addRow(self.vehicleRowLabel, self.vehicleCombo)
-        self.actualMaxRowLabel = QLabel()
-        self.actualMaxValueLabel = QLabel("-")
-        actualFormLayout.addRow(self.actualMaxRowLabel, self.actualMaxValueLabel)
-        actualLayout.addLayout(actualFormLayout)
-        self.actualSegmentTable = QTableWidget(0, 3)
-        actualLayout.addWidget(self.actualSegmentTable)
-        outerLayout.addWidget(self.actualGroup)
+        selectorLayout.addWidget(self.vehicleRowLabel)
+        selectorLayout.addWidget(self.vehicleCombo, 1)
+        outerLayout.addLayout(selectorLayout)
 
-        # Travel time breakdown
-        self.travelGroup = QGroupBox()
-        travelLayout = QVBoxLayout(self.travelGroup)
-        travelFormLayout = QFormLayout()
-        self.totalTimeRowLabel = QLabel()
-        self.totalTimeValueLabel = QLabel("-")
-        travelFormLayout.addRow(self.totalTimeRowLabel, self.totalTimeValueLabel)
-        self.originDestRowLabel = QLabel()
-        self.originDestValueLabel = QLabel("-")
-        travelFormLayout.addRow(self.originDestRowLabel, self.originDestValueLabel)
-        travelLayout.addLayout(travelFormLayout)
-        self.interstationTable = QTableWidget(0, 2)
-        travelLayout.addWidget(self.interstationTable)
-        outerLayout.addWidget(self.travelGroup)
+        # KPI cards, a compact grid replaces the four free growing group boxes
+        cardsLayout = QGridLayout()
+        cardsLayout.setSpacing(4)
+        self.lengthCard = MetricCard()
+        self.designMaxCard = MetricCard()
+        self.actualMaxCard = MetricCard()
+        self.totalTimeCard = MetricCard()
+        self.originDestCard = MetricCard()
+        cardsLayout.addWidget(self.lengthCard, 0, 0)
+        cardsLayout.addWidget(self.designMaxCard, 0, 1)
+        cardsLayout.addWidget(self.actualMaxCard, 1, 0)
+        cardsLayout.addWidget(self.totalTimeCard, 1, 1)
+        cardsLayout.addWidget(self.originDestCard, 2, 0, 1, 2)
+        outerLayout.addLayout(cardsLayout)
+
+        # Detail tables live in collapsible sections, built eagerly so refreshes always find them
+        self.designSegmentTable = self.buildSegmentTable(3)
+        self.designSection = CollapsibleSection()
+        self.designSection.setContentWidget(self.designSegmentTable)
+        outerLayout.addWidget(self.designSection)
+
+        self.actualSegmentTable = self.buildSegmentTable(3)
+        self.actualSection = CollapsibleSection()
+        self.actualSection.setContentWidget(self.actualSegmentTable)
+        outerLayout.addWidget(self.actualSection)
+
+        self.interstationTable = self.buildSegmentTable(2)
+        self.interstationSection = CollapsibleSection(startExpanded=True)
+        self.interstationSection.setContentWidget(self.interstationTable)
+        outerLayout.addWidget(self.interstationSection)
 
         outerLayout.addStretch(1)
 
-        for table in (self.designSegmentTable, self.actualSegmentTable, self.interstationTable):
-            table.verticalHeader().setVisible(False)
-            table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-            table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-
         self.rebuildVehicleCombo()
         self.updateTexts(self.lan)
+
+    # Build one compact, read only segment table with the given column count
+    def buildSegmentTable(self, columnCount):
+        table = QTableWidget(0, columnCount)
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setFixedHeight(20)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.verticalHeader().setDefaultSectionSize(TABLE_ROW_HEIGHT_PX)
+        return table
+
+    # Cap a table's height to a handful of rows so it stops stealing vertical space
+    def constrainTableHeight(self, table):
+        visibleRows = min(max(table.rowCount(), 1), TABLE_MAX_VISIBLE_ROWS)
+        table.setMaximumHeight(table.horizontalHeader().height() + visibleRows * TABLE_ROW_HEIGHT_PX + 4)
 
     # Guard used before touching any optional array
     def hasData(self, values):
@@ -197,6 +216,8 @@ class TrackStatisticsWidget(QWidget):
                 table.setItem(row, 1, QTableWidgetItem("-"))
                 table.setItem(row, 2, QTableWidgetItem("-"))
 
+        self.constrainTableHeight(table)
+
     # Cumulative time at the chainage nearest to a stop, mirrors generateVehicleReport's lookup
     def lookupTimeAtStation(self, stationsM, timesS, stationKm):
         if not self.hasData(stationsM) or not self.hasData(timesS):
@@ -268,7 +289,7 @@ class TrackStatisticsWidget(QWidget):
 
     def refreshTrackLength(self):
         length = self.computeTrackLength(self.lastDataStorage or {})
-        self.lengthValueLabel.setText(f"{length:.3f} km" if length is not None else self.noDataText())
+        self.lengthCard.setValue(f"{length:.3f} km" if length is not None else self.noDataText())
 
     def refreshDesignSpeedSection(self):
         dataStorage = self.lastDataStorage or {}
@@ -277,10 +298,10 @@ class TrackStatisticsWidget(QWidget):
 
         peak = self.globalMax(speeds, stations)
         if peak is None:
-            self.designMaxValueLabel.setText(self.noDataText())
+            self.designMaxCard.setValue(self.noDataText())
         else:
             maxSpeed, location = peak
-            self.designMaxValueLabel.setText(f"{maxSpeed:.0f} km/h @ {location:.3f} km")
+            self.designMaxCard.setValue(f"{maxSpeed:.0f} km/h", f"@ {location:.3f} km")
 
         boundaries = [(km, name) for km, dwell, name in self.stopsList(dataStorage)]
         self.fillSegmentTable(self.designSegmentTable, speeds, stations, boundaries)
@@ -289,17 +310,17 @@ class TrackStatisticsWidget(QWidget):
         dataStorage = self.lastDataStorage or {}
         vehicleIndex = self.vehicleCombo.currentData()
         if vehicleIndex is None:
-            self.actualMaxValueLabel.setText(self.noDataText())
+            self.actualMaxCard.setValue(self.noDataText())
             self.actualSegmentTable.setRowCount(0)
             return
 
         speeds, stations = self.resolveActualSpeedArrays(dataStorage, vehicleIndex)
         peak = self.globalMax(speeds, stations)
         if peak is None:
-            self.actualMaxValueLabel.setText(self.noDataText())
+            self.actualMaxCard.setValue(self.noDataText())
         else:
             maxSpeed, location = peak
-            self.actualMaxValueLabel.setText(f"{maxSpeed:.0f} km/h @ {location:.3f} km")
+            self.actualMaxCard.setValue(f"{maxSpeed:.0f} km/h", f"@ {location:.3f} km")
 
         boundaries = [(km, name) for km, dwell, name in self.stopsList(dataStorage)]
         self.fillSegmentTable(self.actualSegmentTable, speeds, stations, boundaries)
@@ -308,14 +329,14 @@ class TrackStatisticsWidget(QWidget):
         dataStorage = self.lastDataStorage or {}
         vehicleIndex = self.vehicleCombo.currentData()
         if vehicleIndex is None:
-            self.totalTimeValueLabel.setText(self.noDataText())
-            self.originDestValueLabel.setText(self.noDataText())
+            self.totalTimeCard.setValue(self.noDataText())
+            self.originDestCard.setValue(self.noDataText())
             self.interstationTable.setRowCount(0)
             return
 
         totalTime, originDestTime, legs = self.computeTravelTimeSections(dataStorage, vehicleIndex)
-        self.totalTimeValueLabel.setText(self.formatDuration(totalTime))
-        self.originDestValueLabel.setText(self.formatDuration(originDestTime))
+        self.totalTimeCard.setValue(self.formatDuration(totalTime))
+        self.originDestCard.setValue(self.formatDuration(originDestTime))
 
         self.interstationTable.setRowCount(0)
         for label, legTime in legs:
@@ -323,6 +344,7 @@ class TrackStatisticsWidget(QWidget):
             self.interstationTable.insertRow(row)
             self.interstationTable.setItem(row, 0, QTableWidgetItem(label))
             self.interstationTable.setItem(row, 1, QTableWidgetItem(self.formatDuration(legTime)))
+        self.constrainTableHeight(self.interstationTable)
 
     # Re-render the design speed section only, used by the profile selector
     def onDesignProfileChanged(self, index):
@@ -344,30 +366,26 @@ class TrackStatisticsWidget(QWidget):
     def updateTexts(self, lan):
         self.lan = lan or {}
 
-        self.lengthGroup.setTitle(self.lan.get("statsTrackLengthGroup", "Track Length"))
-        self.lengthRowLabel.setText(self.lan.get("statsTrackLengthRow", "Total length"))
-
-        self.designGroup.setTitle(self.lan.get("statsDesignSpeedGroup", "Maximum Design Speed (GPK)"))
         self.designProfileRowLabel.setText(self.lan.get("statsDesignProfileRow", "Design profile"))
-        self.designMaxRowLabel.setText(self.lan.get("statsMaxDesignSpeedRow", "Global maximum"))
-        self.designSegmentTable.setHorizontalHeaderLabels([
-            self.lan.get("statsSegmentColumn", "Segment"),
-            self.lan.get("statsMaxSpeedColumn", "Max speed [km/h]"),
-            self.lan.get("statsChainageColumn", "Chainage [km]"),
-        ])
-
-        self.actualGroup.setTitle(self.lan.get("statsActualSpeedGroup", "Maximum Actual Train Speed"))
         self.vehicleRowLabel.setText(self.lan.get("statsVehicleRow", "Vehicle"))
-        self.actualMaxRowLabel.setText(self.lan.get("statsMaxActualSpeedRow", "Global maximum"))
-        self.actualSegmentTable.setHorizontalHeaderLabels([
+
+        self.lengthCard.setCaption(self.lan.get("statsCardLength", "Total length"))
+        self.designMaxCard.setCaption(self.lan.get("statsCardDesignSpeed", "Max design speed"))
+        self.actualMaxCard.setCaption(self.lan.get("statsCardActualSpeed", "Max achieved speed"))
+        self.totalTimeCard.setCaption(self.lan.get("statsCardTotalTime", "Total travel time"))
+        self.originDestCard.setCaption(self.lan.get("statsCardOriginDest", "Origin → Destination"))
+
+        self.designSection.setTitle(self.lan.get("statsSectionDesign", "Design segments"))
+        self.actualSection.setTitle(self.lan.get("statsSectionActual", "Achieved segments"))
+        self.interstationSection.setTitle(self.lan.get("statsSectionInterstation", "Inter-station times"))
+
+        segmentHeaders = [
             self.lan.get("statsSegmentColumn", "Segment"),
             self.lan.get("statsMaxSpeedColumn", "Max speed [km/h]"),
             self.lan.get("statsChainageColumn", "Chainage [km]"),
-        ])
-
-        self.travelGroup.setTitle(self.lan.get("statsTravelTimeGroup", "Travel Time Breakdown"))
-        self.totalTimeRowLabel.setText(self.lan.get("statsTotalTravelTimeRow", "Total (complete alignment)"))
-        self.originDestRowLabel.setText(self.lan.get("statsOriginDestRow", "Origin → Destination"))
+        ]
+        self.designSegmentTable.setHorizontalHeaderLabels(segmentHeaders)
+        self.actualSegmentTable.setHorizontalHeaderLabels(segmentHeaders)
         self.interstationTable.setHorizontalHeaderLabels([
             self.lan.get("statsSegmentColumn", "Segment"),
             self.lan.get("statsTravelTimeColumn", "Travel time [mm:ss]"),
@@ -376,20 +394,13 @@ class TrackStatisticsWidget(QWidget):
         self.rebuildVehicleCombo()
         self.refreshAll()
 
-    # Restyle the group boxes and tables with the active theme's tokens
+    # Restyle the KPI cards and the tables with the active theme's tokens
     def applyTheme(self, isDark, tokens=None):
-        if tokens:
-            borderColor = tokens.get("border", "#c4c4c4")
-            backgroundColor = tokens.get("base", "#ffffff")
-        else:
-            borderColor = "#4d4d4d" if isDark else "#c4c4c4"
-            backgroundColor = "#1e1e1e" if isDark else "#ffffff"
+        backgroundColor = tokens.get("base", "#ffffff") if tokens else ("#1e1e1e" if isDark else "#ffffff")
 
-        groupStyle = (f"QGroupBox {{ border: 1px solid {borderColor}; border-radius: 4px;"
-                      f" margin-top: 10px; padding-top: 6px; font-weight: 600; }}"
-                      f"QGroupBox::title {{ subcontrol-origin: margin; left: 8px; padding: 0 4px; }}")
-        for group in (self.lengthGroup, self.designGroup, self.actualGroup, self.travelGroup):
-            group.setStyleSheet(groupStyle)
+        for card in (self.lengthCard, self.designMaxCard, self.actualMaxCard,
+                    self.totalTimeCard, self.originDestCard):
+            card.applyTheme(isDark, tokens)
 
         for table in (self.designSegmentTable, self.actualSegmentTable, self.interstationTable):
             table.setAlternatingRowColors(True)

@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout,
                                QLineEdit, QTableWidget, QTableWidgetItem,
                                QHeaderView, QFileDialog, QMessageBox,
                                QDialogButtonBox, QPushButton, QComboBox,
-                               QTabWidget, QWidget)
+                               QWidget)
 from PySide6.QtCore import Qt
 
 import numpy as np
@@ -16,6 +16,9 @@ import csv
 import readfile
 import io
 import default_values
+
+# Extra headroom around a symmetric popup axis, replaces the old setYRange padding argument
+POPUP_RANGE_HEADROOM = 1.05
 
 class TTPSelectSectionDialog(QDialog):
     def __init__(self, sections, HasLandXML, lan, parent=None):
@@ -791,351 +794,6 @@ class SpeedSettingsDialog(QDialog):
         settingsData["manualSpeedLimits"].sort(key=lambda x: x[0])
         return settingsData
 
-class VehicleTab(QWidget):
-    def __init__(self, vData, lan, parent = None):
-        super().__init__(parent)
-        self.lan = lan
-        self.vehicleData = vData
-
-        layout = QVBoxLayout(self)
-        formLayout = QFormLayout()
-        
-        self.inputInitialSpeed = QLineEdit(str(self.vehicleData.get("trainInitialSpeed", 0.0)))
-        formLayout.addRow(QLabel(lan.get("trainInitialSpeed", "Initial Speed [km/h]:")), self.inputInitialSpeed)
-
-        self.inputFinalSpeed = QLineEdit(str(self.vehicleData.get("trainFinalSpeed", 0.0)))
-        formLayout.addRow(QLabel(lan.get("trainFinalSpeed", "Final Speed [km/h]:")), self.inputFinalSpeed)
-
-        self.checkReverse = QCheckBox(lan.get("runAgainstStationing", "Run against stationing"))
-        self.checkReverse.setChecked(self.vehicleData.get("runReversed", False))
-        formLayout.addRow(self.checkReverse)
-        
-        self.inputMaxSpeed = QLineEdit(str(self.vehicleData.get("trainMaxSpeed", 120.0)))
-        
-        self.comboProfile = QComboBox()
-        self.profiles = [
-            (lan.get("speed_lim_ttp", "TTP Speed Limits"), ["stationSpeedLimits", "speedLimits"]),
-            (lan.get("speed_lim_100", "V100"), ["stationSpeed100", "speedLimits100"]),
-            (lan.get("speed_lim_130", "V130"), ["stationSpeed130", "speedLimits130"]),
-            (lan.get("speed_lim_150", "V150"), ["stationSpeed150", "speedLimits150"]),
-            (lan.get("speed_lim_K", "VK"), ["stationSpeedK", "speedLimitsK"]),
-            (lan.get("speed_lim_manual", "Manual Speed Limits"), ["manualSpeedLimits", "manualSpeedLimits"]),
-            (lan.get("unlimited", "Unlimited"), ["unlimited", "unlimited"])
-        ]
-        
-        for text, data in self.profiles:
-            self.comboProfile.addItem(text, data)
-            
-        currentProfile = self.vehicleData.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"])
-        for i, (text, data) in enumerate(self.profiles):
-            if data == currentProfile:
-                self.comboProfile.setCurrentIndex(i)
-                break
-
-        formLayout.addRow(QLabel(lan.get("max_train_speed", "Max Train Speed [km/h]:")), self.inputMaxSpeed)
-        
-        self.inputBrakeDecel = QLineEdit(str(self.vehicleData.get("trainBrakeDecel", default_values.defVal.get("trainBrakeDecel", 1.0))))
-        formLayout.addRow(QLabel(lan.get("vehicleBrakeDecel", "Braking Deceleration [m/s2]:")), self.inputBrakeDecel)
-
-        formLayout.addRow(QLabel(lan.get("speed_profile", "Speed Profile:")), self.comboProfile)
-        
-        layout.addLayout(formLayout)
-
-        toolbarLayoutVehicle = QHBoxLayout()
-        self.btnImportVehicle = QPushButton(lan.get("importVehicleCSV", "Import full vehicle from CSV"))
-        self.btnImportVehicle.clicked.connect(self.importVehicleCSV)
-        toolbarLayoutVehicle.addWidget(self.btnImportVehicle)
-        
-        self.btnExportVehicle = QPushButton(lan.get("exportVehicleCSV", "Export full vehicle to CSV"))
-        self.btnExportVehicle.clicked.connect(self.exportVehicleCSV)
-        toolbarLayoutVehicle.addWidget(self.btnExportVehicle)
-        
-        layout.addLayout(toolbarLayoutVehicle)
-
-        labelRes = QLabel(lan["vehicleResistance"])
-        layout.addWidget(labelRes)
-        
-        # Table for editing train resistance coefficients
-        self.tableRes = QTableWidget(0, 4)
-        self.tableRes.setHorizontalHeaderLabels([
-            lan["vehicle"],
-            lan["coefA"],
-            lan["coefB"],
-            lan["coefC"]
-        ])
-
-        headerRes = self.tableRes.horizontalHeader()
-        headerRes.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        layout.addWidget(self.tableRes)
-
-        # Default values for train resistance coefficients
-        defaultRes = self.vehicleData.get("trainRes", default_values.defVal.get("trainRes", []))
-
-        self.populateTable(self.tableRes, defaultRes)
-
-        labelTrac = QLabel(lan["vehicleTraction"])
-        layout.addWidget(labelTrac)
-
-        # Table for editing train traction coefficients
-        self.tableTrac = QTableWidget(0, 6)
-        self.tableTrac.setHorizontalHeaderLabels([
-            lan["vehicle"],
-            lan["Vbottom"],
-            lan["Vtop"],
-            lan["coef_b0"],
-            lan["coef_b1"],
-            lan["coef_b2"]
-        ])
-
-        headerTrac = self.tableTrac.horizontalHeader()
-        headerTrac.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        layout.addWidget(self.tableTrac)
-
-        # Default values for vehicle resistance
-        defaultTrac = self.vehicleData.get("trainTrac", default_values.defVal.get("trainTrac", []))
-
-        self.populateTable(self.tableTrac, defaultTrac)
-
-        labelParam = QLabel(lan["vehicleParam"])
-        layout.addWidget(labelParam)
-
-        # Table for editing train parameters coefficients
-        self.tableParam = QTableWidget(0, 4)
-        self.tableParam.setHorizontalHeaderLabels([
-            lan["vehicle"],
-            lan["rotMass"],
-            lan["weight"],
-            lan.get("trainLength", "Train Length [m]")
-        ])
-
-        headerParam = self.tableParam.horizontalHeader()
-        headerParam.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        layout.addWidget(self.tableParam)
-
-        # Default values for train parameters
-        defaultParam = self.vehicleData.get("trainParam", default_values.defVal.get("trainParam", []))
-        
-        # Ensure older saves have the 4th column (train length) initialized
-        for rowData in defaultParam:
-            if isinstance(rowData, list) and len(rowData) == 3:
-                rowData.append(0.0)
-
-        self.populateTable(self.tableParam, defaultParam)
-
-    def populateTable(self, tableWidget, data):
-        tableWidget.setRowCount(len(data))
-        for row, rowData in enumerate(data):
-            for col, value in enumerate(rowData):
-                item = QTableWidgetItem(str(value))
-                tableWidget.setItem(row, col, item)
-
-    def importVehicleCSV(self):
-        filepath, _ = QFileDialog.getOpenFileName(self, "Open File", "", "CSV Files (*.csv)")
-        if not filepath:
-            return
-        
-        fileContent = readfile.ReadFile().Read(filepath)
-        if fileContent.startswith("Error"):
-            err = QMessageBox()
-            err.setWindowTitle("Error")
-            err.setIcon(QMessageBox.Icon.Warning)
-            err.exec()
-            return
-        
-        try:
-            reader = csv.reader(io.StringIO(fileContent), delimiter=',')
-            next(reader, None)
-
-            resData = []
-            tracData = []
-            paramData = []
-
-            for row in reader:
-                if not row:
-                    continue
-                section = row[0]
-                if section == "Res" and len(row) >= 5:
-                    resData.append(row[1:5])
-                elif section == "Trac" and len(row) >= 7:
-                    tracData.append(row[1:7])
-                elif section == "Param" and len(row) >= 5:
-                    paramData.append(row[1:5])
-
-            if resData: self.populateTable(self.tableRes, resData)
-            if tracData: self.populateTable(self.tableTrac, tracData)
-            if paramData: self.populateTable(self.tableParam, paramData)
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", str(e))
-            return
-
-    def exportVehicleCSV(self):
-        filepath, _ = QFileDialog.getSaveFileName(self, "Save File", "", "CSV Files (*.csv)")
-        if not filepath:
-            return
-        
-        try:
-            with open(filepath, "w", newline="", encoding="utf-8") as file:
-                writer = csv.writer(file)
-                headers = ["Section", "Col1", "Col2", "Col3", "Col4", "Col5", "Col6"]
-                writer.writerow(headers)
-
-                for row in range(self.tableParam.rowCount()):
-                    rowData = ["Param"] + [self.tableParam.item(row, col).text() if self.tableParam.item(row, col) else "" for col in range(self.tableParam.columnCount())]
-                    writer.writerow(rowData)
-
-                for row in range(self.tableRes.rowCount()):
-                    rowData = ["Res"] + [self.tableRes.item(row, col).text() if self.tableRes.item(row, col) else "" for col in range(self.tableRes.columnCount())]
-                    writer.writerow(rowData)
-                    
-                for row in range(self.tableTrac.rowCount()):
-                    rowData = ["Trac"] + [self.tableTrac.item(row, col).text() if self.tableTrac.item(row, col) else "" for col in range(self.tableTrac.columnCount())]
-                    writer.writerow(rowData)
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", str(e))
-            return
-    def getSettings(self):
-        settingsData = {
-            "trainRes": [],
-            "trainTrac": [],
-            "trainParam": [],
-            "speedLimitPlot": self.comboProfile.currentData(),
-            "runReversed": self.checkReverse.isChecked()
-        }
-        
-        try:
-            settingsData["trainMaxSpeed"] = float(self.inputMaxSpeed.text())
-        except ValueError:
-            pass
-            
-        try:
-            settingsData["trainInitialSpeed"] = float(self.inputInitialSpeed.text())
-        except ValueError:
-            pass
-
-        try:
-            settingsData["trainFinalSpeed"] = float(self.inputFinalSpeed.text())
-        except ValueError:
-            pass
-
-        try:
-            settingsData["trainBrakeDecel"] = float(self.inputBrakeDecel.text())
-        except ValueError:
-            pass
-
-        # Table Train Resistance
-        for row in range(self.tableRes.rowCount()):
-            try:
-                settingsData["trainRes"].append([
-                    self.tableRes.item(row, 0).text(),
-                    float(self.tableRes.item(row, 1).text()),
-                    float(self.tableRes.item(row, 2).text()),
-                    float(self.tableRes.item(row, 3).text())
-                ])
-
-            except(ValueError, AttributeError):
-                continue
-        
-        # Table Train Traction
-        for row in range(self.tableTrac.rowCount()):
-            try:
-                settingsData["trainTrac"].append([
-                    self.tableTrac.item(row, 0).text(),
-                    float(self.tableTrac.item(row, 1).text()),
-                    float(self.tableTrac.item(row, 2).text()),
-                    float(self.tableTrac.item(row, 3).text()),
-                    float(self.tableTrac.item(row, 4).text()),
-                    float(self.tableTrac.item(row, 5).text())
-                ])
-
-            except(ValueError, AttributeError):
-                continue
-
-        # Table Train Parameters
-        for row in range(self.tableParam.rowCount()):
-            try:
-                lengthItem = self.tableParam.item(row, 3)
-                settingsData["trainParam"].append([
-                    self.tableParam.item(row, 0).text(),
-                    float(self.tableParam.item(row, 1).text()),
-                    float(self.tableParam.item(row, 2).text()),
-                    float(lengthItem.text()) if lengthItem and lengthItem.text() else 0.0
-                ])
-            except(ValueError, AttributeError):
-                continue
-
-        return settingsData
-
-class VehicleSettingsDialog(QDialog):
-    def __init__(self, settingsData, lan, parent=None):
-        super().__init__(parent)
-        self.lan = lan
-        self.settingsData = settingsData
-        
-        self.setWindowTitle(lan["vehicleSettings"])
-        self.setMinimumSize(600, 450)
-
-        layout = QVBoxLayout(self)
-        
-        toolbarLayout = QHBoxLayout()
-        self.btnAdd = QPushButton(lan.get("addVehicle", "Add Vehicle"))
-        self.btnAdd.clicked.connect(self.addVehicle)
-        self.btnRemove = QPushButton(lan.get("removeVehicle", "Remove Vehicle"))
-        self.btnRemove.clicked.connect(self.removeVehicle)
-        toolbarLayout.addWidget(self.btnAdd)
-        toolbarLayout.addWidget(self.btnRemove)
-        layout.addLayout(toolbarLayout)
-        
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs)
-        
-        vehicles = self.settingsData.get("vehicles", [])
-        if not vehicles:
-            oldV = {
-                "trainInitialSpeed": self.settingsData.get("trainInitialSpeed", 0.0),
-                "trainFinalSpeed": self.settingsData.get("trainFinalSpeed", 0.0),
-                "trainMaxSpeed": self.settingsData.get("trainMaxSpeed", self.settingsData.get("vInit", [120])[0]),
-                "trainBrakeDecel": self.settingsData.get("trainBrakeDecel", default_values.defVal.get("trainBrakeDecel", 1.0)),
-                "trainRes": self.settingsData.get("trainRes", default_values.defVal.get("trainRes", [])),
-                "trainTrac": self.settingsData.get("trainTrac", default_values.defVal.get("trainTrac", [])),
-                "trainParam": self.settingsData.get("trainParam", default_values.defVal.get("trainParam", [])),
-                "speedLimitPlot": self.settingsData.get("speedLimitPlot", ["stationSpeed150", "speedLimits150"]),
-                "runReversed": self.settingsData.get("runReversed", False)
-            }
-            vehicles.append(oldV)
-            
-        for vData in vehicles:
-            self.addTab(vData)
-            
-        self.buttonBox = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        self.buttonBox.accepted.connect(self.accept)
-        self.buttonBox.rejected.connect(self.reject)
-        layout.addWidget(self.buttonBox)
-
-    def addTab(self, vData):
-        if self.tabs.count() >= 3: return
-        tab = VehicleTab(vData, self.lan)
-        self.tabs.addTab(tab, f'{self.lan.get("vehicle", "Vehicle")} {self.tabs.count() + 1}')
-        self.updateButtons()
-
-    def addVehicle(self):
-        lastSettings = self.tabs.widget(self.tabs.count() - 1).getSettings() if self.tabs.count() > 0 else {}
-        self.addTab(lastSettings)
-        
-    def removeVehicle(self):
-        if self.tabs.count() > 1:
-            self.tabs.removeTab(self.tabs.count() - 1)
-        self.updateButtons()
-        
-    def updateButtons(self):
-        self.btnAdd.setEnabled(self.tabs.count() < 3)
-        self.btnRemove.setEnabled(self.tabs.count() > 1)
-        
-    def getSettings(self):
-        vehicles = [self.tabs.widget(i).getSettings() for i in range(self.tabs.count())]
-        return {"vehicles": vehicles}
-
 
 # ---------------------------------------------------------------------------
 # Pop-up plot window
@@ -1220,6 +878,8 @@ class PopupPlotWindow(QDialog):
         self.mainPlot.enableAutoRange(axis="x")
         if symmetricYlim:
             self.applySymmetricRange()
+            if secondarySeries:
+                self.plotWidget.enableZeroLock("main")
 
     # Drop every item so a repeated drawData call starts from a clean plot
     def resetCanvas(self):
@@ -1311,8 +971,8 @@ class PopupPlotWindow(QDialog):
         for viewBox, onRight in ((self.mainPlot.vb, False), (self.secondaryView, True)):
             if viewBox is None:
                 continue
-            limit = self.peakMagnitude(onRight)
-            viewBox.setYRange(-limit, limit, padding=0.05)
+            limit = self.peakMagnitude(onRight) * POPUP_RANGE_HEADROOM
+            viewBox.setYRange(-limit, limit, padding=0)
 
     # Largest absolute y value across the curves drawn on one of the two axes
     def peakMagnitude(self, onRight):

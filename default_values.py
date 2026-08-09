@@ -32,12 +32,14 @@ defVal = {
 "profileDefault": ["I150"],
 "maxD":     [150],
 "designApproach": "standard",
-"trainRes": [["Placeholder BEMU", 1.8, 0.0005, 0.00023]],
-"trainTrac": [["Placeholder BEMU", 0, 100, 30591, -28.69, 0.0001],
-              ["Placeholder BEMU", 100, 160, 70801.3, -563.31, 1.4789]
+# Matches vehicles/generic_bemu.csv so a fresh install's default already has correct physics
+"trainRes": [["Generic BEMU", 1.6616, 0.00415, 0.00017]],
+"trainTrac": [["Generic BEMU", 0, 53.724, 112.5, 0, 0],
+              ["Generic BEMU", 53.724, 95.72, 264.1023212, -3.758085809, 0.017385477],
+              ["Generic BEMU", 95.72, 160, 152.6900328, -1.247380411, 0.003296517]
               ],
 "trainBrakeDecel": 1.0,
-"trainParam": [["Placeholder BEMU", 1.08, 460, 0.0]],
+"trainParam": [["Generic BEMU", 1.08, 113.5, 52.9]],
 "speedLimitPlot": ["stationSpeed150", "speedLimits150"]
         
 }
