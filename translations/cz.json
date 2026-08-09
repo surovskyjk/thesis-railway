@@ -398,5 +398,5 @@
   "commandBarPlaceholder": "Příkaz...",
   "commandExecuted": "Příkaz proveden:",
   "commandUnknown": "Neznámý příkaz:",
-  "floatingInputToggle": "Povolit plovoucí příkazový vstup (styl AutoCAD)"
+  "floatingInputToggle": "Povolit plovoucí příkazový vstup"
 }

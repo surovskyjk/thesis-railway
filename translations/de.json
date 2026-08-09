@@ -398,5 +398,5 @@
   "commandBarPlaceholder": "Befehl...",
   "commandExecuted": "Befehl ausgeführt:",
   "commandUnknown": "Unbekannter Befehl:",
-  "floatingInputToggle": "Schwebende Befehlseingabe aktivieren (AutoCAD-Stil)"
+  "floatingInputToggle": "Schwebende Befehlseingabe aktivieren"
 }

@@ -398,5 +398,5 @@
   "commandBarPlaceholder": "Command...",
   "commandExecuted": "Command executed:",
   "commandUnknown": "Unknown command:",
-  "floatingInputToggle": "Enable Dynamic Floating Command Input (AutoCAD Style)"
+  "floatingInputToggle": "Enable Dynamic Floating Command Input"
 }
