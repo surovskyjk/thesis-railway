@@ -1,9 +1,9 @@
 # PySide6 imports
-from PySide6.QtCore import QSettings, QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QSettings, QSize, Qt, QTimer, QUrl, QEvent
 from PySide6.QtWidgets import (QTabWidget, QApplication, QMainWindow, QPushButton, QWidget,
                                 QHBoxLayout, QVBoxLayout, QLabel, QPlainTextEdit, QFileDialog,
                                 QSplitter, QMessageBox, QStyle, QToolBar, QMenu, QStackedWidget,
-                                QStatusBar, QLineEdit)
+                                QStatusBar, QLineEdit, QTextEdit, QComboBox, QAbstractItemView)
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QCursor, QDesktopServices
 
 # pyqtgraph imports
@@ -34,6 +34,7 @@ from xml_editor import XmlCodeEditor
 from translation_manager import TranslationManager
 from shortcut_manager import ShortcutManager
 from settings_dialog import ShortcutSettingsDialog
+from floating_command_input import FloatingCommandInput
 import copy
 
 # Central viewport page indices
@@ -178,6 +179,8 @@ class MainWindow(QMainWindow):
         self.buildStatusBar()
         self.connectCursorSignals()
         self.connectMapSignals()
+
+        self.buildFloatingCommandInput()
 
         self.themeManager.themeChanged.connect(self.onThemeChanged)
         self.restoreSession()
@@ -768,17 +771,55 @@ class MainWindow(QMainWindow):
         lan = self.translationManager.getLanguage(self.currentLanguage)
         self.statusEngineLabel.setText(f'{lan.get("statusEngine", "Engine")}: {text}')
 
-    # Resolve and trigger a typed alias or command name from the AutoCAD-style command bar
-    def executeCommandLine(self):
+    # Resolve and trigger a typed alias or command name, showing feedback in the status bar
+    def runTypedCommand(self, typedText):
         lan = self.translationManager.getLanguage(self.currentLanguage)
-        typedText = self.commandLineEdit.text()
         if self.shortcutManager.executeTypedCommand(self, typedText):
             self.statusBarWidget.showMessage(
                 f'{lan.get("commandExecuted", "Command executed:")} {typedText}', SERIES_STATUS_TIMEOUT)
         else:
             self.statusBarWidget.showMessage(
                 f'{lan.get("commandUnknown", "Unknown command:")} {typedText}', SERIES_STATUS_TIMEOUT)
+
+    # Resolve and trigger a typed alias or command name from the AutoCAD-style command bar
+    def executeCommandLine(self):
+        typedText = self.commandLineEdit.text()
+        self.runTypedCommand(typedText)
         self.commandLineEdit.clear()
+
+    # Build the floating HUD command input and install the global keypress interceptor
+    def buildFloatingCommandInput(self):
+        self.floatingCommandInput = FloatingCommandInput(self.shortcutManager, self)
+        self.floatingCommandInput.commandSubmitted.connect(self.runTypedCommand)
+        QApplication.instance().installEventFilter(self)
+
+    # Types of focused widgets that already accept free text, never hijacked by the floating HUD
+    def isTextEntryWidget(self, widget):
+        textEntryTypes = (QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QAbstractItemView)
+        return isinstance(widget, textEntryTypes)
+
+    # Decide whether a keypress should open the floating command HUD instead of reaching its widget
+    def shouldInterceptForFloatingInput(self, event):
+        if not self.shortcutManager.floatingInputEnabled:
+            return False
+        if QApplication.activeModalWidget() is not None:
+            return False
+        if event.modifiers() not in (Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.ShiftModifier):
+            return False
+        if not event.text().isalnum():
+            return False
+        return not self.isTextEntryWidget(QApplication.focusWidget())
+
+    # Show the floating HUD near the cursor, seeded with the character that triggered it
+    def startFloatingCommandInput(self, initialCharacter):
+        self.floatingCommandInput.openAt(QCursor.pos(), initialCharacter)
+
+    # Intercept alphanumeric keypresses application-wide to launch the floating command HUD
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.KeyPress and self.shouldInterceptForFloatingInput(event):
+            self.startFloatingCommandInput(event.text())
+            return True
+        return super().eventFilter(watched, event)
 
     # Render the active theme name in the status bar
     def updateStatusTheme(self):
@@ -2262,9 +2303,10 @@ class MainWindow(QMainWindow):
     # Custom shortcuts and command aliases
     def openShortcutSettings(self):
         lan = self.translationManager.getLanguage(self.currentLanguage)
-        dialog = ShortcutSettingsDialog(self.shortcutManager.commands, lan, self)
+        dialog = ShortcutSettingsDialog(self.shortcutManager.commands,
+                                        self.shortcutManager.floatingInputEnabled, lan, self)
         if dialog.exec():
-            self.shortcutManager.saveCommands(dialog.getCommands())
+            self.shortcutManager.saveCommands(dialog.getCommands(), dialog.isFloatingInputEnabled())
             self.shortcutManager.applyShortcuts(self)
 
     # Geometry settings

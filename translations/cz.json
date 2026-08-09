@@ -378,5 +378,6 @@
   "shortcutDuplicateKey": "Duplicitní klávesová zkratka, přiřaďte každému příkazu jedinečnou kombinaci kláves.",
   "commandBarPlaceholder": "Příkaz...",
   "commandExecuted": "Příkaz proveden:",
-  "commandUnknown": "Neznámý příkaz:"
+  "commandUnknown": "Neznámý příkaz:",
+  "floatingInputToggle": "Povolit plovoucí příkazový vstup (styl AutoCAD)"
 }

@@ -378,5 +378,6 @@
   "shortcutDuplicateKey": "Duplicate shortcut, please assign a unique key combination to each command.",
   "commandBarPlaceholder": "Command...",
   "commandExecuted": "Command executed:",
-  "commandUnknown": "Unknown command:"
+  "commandUnknown": "Unknown command:",
+  "floatingInputToggle": "Enable Dynamic Floating Command Input (AutoCAD Style)"
 }

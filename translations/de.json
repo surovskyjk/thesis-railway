@@ -378,5 +378,6 @@
   "shortcutDuplicateKey": "Doppeltes Tastenkürzel, bitte jedem Befehl eine eindeutige Tastenkombination zuweisen.",
   "commandBarPlaceholder": "Befehl...",
   "commandExecuted": "Befehl ausgeführt:",
-  "commandUnknown": "Unbekannter Befehl:"
+  "commandUnknown": "Unbekannter Befehl:",
+  "floatingInputToggle": "Schwebende Befehlseingabe aktivieren (AutoCAD-Stil)"
 }

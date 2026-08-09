@@ -1,8 +1,9 @@
-# Dialog for viewing and editing command names, aliases and keyboard shortcuts
+# Dialog for viewing and editing command names, aliases, keyboard shortcuts and the floating HUD toggle
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem,
-                               QHeaderView, QDialogButtonBox, QMessageBox, QKeySequenceEdit)
+                               QHeaderView, QDialogButtonBox, QMessageBox, QKeySequenceEdit,
+                               QCheckBox)
 
 COLUMN_COMMAND = 0
 COLUMN_ALIAS = 1
@@ -10,7 +11,7 @@ COLUMN_SHORTCUT = 2
 
 
 class ShortcutSettingsDialog(QDialog):
-    def __init__(self, commands, lan, parent=None):
+    def __init__(self, commands, floatingInputEnabled, lan, parent=None):
         super().__init__(parent)
         self.lan = lan
         self.setWindowTitle(lan.get("shortcutSettings", "Shortcuts"))
@@ -27,6 +28,11 @@ class ShortcutSettingsDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.populateTable(commands)
         layout.addWidget(self.table)
+
+        self.floatingInputCheckBox = QCheckBox(
+            lan.get("floatingInputToggle", "Enable Dynamic Floating Command Input (AutoCAD Style)"))
+        self.floatingInputCheckBox.setChecked(floatingInputEnabled)
+        layout.addWidget(self.floatingInputCheckBox)
 
         self.buttonBox = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self.buttonBox.accepted.connect(self.validateAndAccept)
@@ -74,3 +80,7 @@ class ShortcutSettingsDialog(QDialog):
                 "shortcut": keyEditor.keySequence().toString(),
             })
         return commands
+
+    # Whether the floating HUD command input checkbox is checked
+    def isFloatingInputEnabled(self):
+        return self.floatingInputCheckBox.isChecked()
