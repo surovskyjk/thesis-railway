@@ -120,6 +120,7 @@ class MapSettingsDialog(QDialog):
         self.comboMap.addItem(lan.get("mapOSM", "OpenStreetMap"), "osm")
         self.comboMap.addItem(lan.get("mapORM", "OpenRailwayMap"), "orm")
         self.comboMap.addItem(lan.get("mapCUZK", "ČÚZK Ortofoto"), "cuzk")
+        self.comboMap.addItem(lan.get("mapCartoDark", "CartoDB Dark"), "cartodbDark")
         index = self.comboMap.findData(currentMap)
         if index >= 0: self.comboMap.setCurrentIndex(index)
         formLayout.addRow(QLabel(lan.get("mapBase", "Map Base:")), self.comboMap)

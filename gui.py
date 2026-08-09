@@ -30,6 +30,7 @@ from graphs_dock import PerformanceGraphsWidget
 from profile_dock import ProfilePlotWidget
 from kinematics_dock import KinematicsPlotWidget
 from help_dock import HelpWidget
+from track_stats_dock import TrackStatisticsWidget
 from xml_editor import XmlCodeEditor
 from translation_manager import TranslationManager
 from shortcut_manager import ShortcutManager
@@ -453,7 +454,7 @@ class MainWindow(QMainWindow):
     # Every dock of the main window in a stable order, empty before buildDocks runs
     def allDocks(self):
         dockNames = ("dockWorkflow", "dockGraphs", "dockProfile", "dockKinematics",
-                     "dockLandXmlRaw", "dockLandXmlParsed", "dockTtpRaw",
+                     "dockTrackStats", "dockLandXmlRaw", "dockLandXmlParsed", "dockTtpRaw",
                      "dockTtpParsed", "dockHelp")
         return tuple(getattr(self, name) for name in dockNames if hasattr(self, name))
 
@@ -543,6 +544,13 @@ class MainWindow(QMainWindow):
         self.dockKinematics.setWidget(self.kinematicsWidget)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dockKinematics)
 
+        # Track length, design/actual speed maxima and travel time summary
+        self.trackStatsWidget = TrackStatisticsWidget(lan)
+        self.dockTrackStats = LazyDockWidget(lan.get("dockTrackStats", "Track Statistics"),
+                                             "dockTrackStats", self.refreshTrackStatsDock)
+        self.dockTrackStats.setWidget(self.trackStatsWidget)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dockTrackStats)
+
         # Documentation panel rendering the project README
         self.helpWidget = HelpWidget(lan)
         self.dockHelp = LazyDockWidget(lan.get("dockHelp", "Help"), "dockHelp")
@@ -555,6 +563,7 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self.dockLandXmlParsed, self.dockTtpParsed)
         self.tabifyDockWidget(self.dockLandXmlParsed, self.dockGraphs)
         self.tabifyDockWidget(self.dockProfile, self.dockKinematics)
+        self.tabifyDockWidget(self.dockProfile, self.dockTrackStats)
         self.tabifyDockWidget(self.dockProfile, self.dockHelp)
 
         self.dockLandXmlRaw.raise_()
@@ -645,8 +654,9 @@ class MainWindow(QMainWindow):
 
         panelsGroup = viewPage.addGroup(lan.get("groupPanels", "Panels"), "groupPanels")
         panelShortKeys = ("shortPanelWorkflow", "shortPanelGraphs", "shortPanelProfile",
-                          "shortPanelKinematics", "shortPanelLandxmlRaw", "shortPanelLandxmlData",
-                          "shortPanelTtpRaw", "shortPanelTtpData", "shortPanelHelp")
+                          "shortPanelKinematics", "shortPanelTrackStats", "shortPanelLandxmlRaw",
+                          "shortPanelLandxmlData", "shortPanelTtpRaw", "shortPanelTtpData",
+                          "shortPanelHelp")
         for dock, shortKey in zip(self.allDocks(), panelShortKeys):
             panelsGroup.addAction(dock.toggleViewAction(), isLarge=False, shortKey=shortKey)
 
@@ -749,6 +759,7 @@ class MainWindow(QMainWindow):
         self.mapWidget.setStations(stations)
         self.graphsWidget.setStations(stations)
         self.profileWidget.setStations(stations)
+        self.dockTrackStats.requestUpdate()
 
     # Propagate a chainage to every view regardless of which one produced it
     def onCursorMoved(self, stationKm):
@@ -854,6 +865,7 @@ class MainWindow(QMainWindow):
         self.graphsWidget.applyTheme(isDark, tokens)
         self.profileWidget.applyTheme(isDark, tokens)
         self.kinematicsWidget.applyTheme(isDark, tokens)
+        self.trackStatsWidget.applyTheme(isDark, tokens)
         self.helpWidget.applyTheme(isDark, tokens)
         self.mapWidget.applyTheme(isDark, tokens)
         self.updateStatusTheme()
@@ -884,6 +896,10 @@ class MainWindow(QMainWindow):
         self.graphsWidget.updateGeometryData(self.dataStorage.get("LandXML", {}),
                                              self.seriesVisibility())
         self.graphsWidget.updateSpeedData(self.dataStorage, self.seriesVisibility())
+
+    # Recompute the Track Statistics dock from the current data storage
+    def refreshTrackStatsDock(self):
+        self.trackStatsWidget.updateStatistics(self.dataStorage, self.getVehicleName)
 
     # Map every series toggle action onto the series key used by the plots
     def seriesVisibility(self):
@@ -926,12 +942,14 @@ class MainWindow(QMainWindow):
     # Dispatchers keep the existing call sites while honouring the lazy docks
     def plotCant(self):
         self.dockGraphs.requestUpdate()
+        self.dockTrackStats.requestUpdate()
 
     def plotCurvature(self):
         self.dockGraphs.requestUpdate()
 
     def plotSpeedLimits(self):
         self.dockGraphs.requestUpdate()
+        self.dockTrackStats.requestUpdate()
 
     def plotProfile(self):
         self.dockProfile.requestUpdate()
@@ -939,6 +957,7 @@ class MainWindow(QMainWindow):
     def plotKinematics(self):
         self.dockKinematics.requestUpdate()
         self.dockGraphs.requestUpdate()
+        self.dockTrackStats.requestUpdate()
 
     # Run the action belonging to a workflow step and mark it as completed
     def onWorkflowStep(self, stepIndex):
@@ -1102,6 +1121,7 @@ class MainWindow(QMainWindow):
         self.dockGraphs.setWindowTitle(lan.get("dockGraphs", "Track geometry and speed profile"))
         self.dockProfile.setWindowTitle(lan.get("dockProfile", "Plots - Profile"))
         self.dockKinematics.setWindowTitle(lan.get("dockKinematics", "Plots - Kinematics"))
+        self.dockTrackStats.setWindowTitle(lan.get("dockTrackStats", "Track Statistics"))
         self.dockLandXmlRaw.setWindowTitle(lan.get("dockLandXmlRaw", "LandXML - source"))
         self.dockLandXmlParsed.setWindowTitle(lan.get("dockLandXmlParsed", "LandXML - data"))
         self.dockTtpRaw.setWindowTitle(lan.get("dockTtpRaw", "XML TTP - source"))
@@ -1116,6 +1136,7 @@ class MainWindow(QMainWindow):
         self.graphsWidget.updateLabels(lan)
         self.profileWidget.updateLabels(lan)
         self.kinematicsWidget.updateLabels(lan)
+        self.trackStatsWidget.updateTexts(lan)
         self.helpWidget.updateTexts(lan)
         self.mapWidget.updateTexts(lan)
         self.ribbonBar.retranslate(lan)

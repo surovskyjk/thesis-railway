@@ -53,7 +53,7 @@ ICON_BODIES = {
     "detach": "<path d='M14 4h6v6'/><path d='M20 4l-9 9'/><path d='M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5'/>",
     "railway": "<path d='M7 3v18'/><path d='M17 3v18'/><path d='M4 8h16'/><path d='M4 13h16'/><path d='M4 18h16'/>",
     "style": "<path d='M4 18c4 0 4-12 8-12s4 12 8 12'/>",
-    "station": "<path d='M12 3v18'/><circle cx='12' cy='8' r='3'/><path d='M8 21h8'/>",
+    "station": "<path d='M4 21h16'/><path d='M6 21V11l6-5 6 5v10'/><path d='M10 21v-6h4v6'/>",
     "layers": "<path d='M12 3l9 5-9 5-9-5z'/><path d='M3 13l9 5 9-5'/>",
     "search": "<circle cx='11' cy='11' r='7'/><path d='M16 16l5 5'/>",
     "grid": "<path d='M3 9h18'/><path d='M3 15h18'/><path d='M9 3v18'/><path d='M15 3v18'/>",

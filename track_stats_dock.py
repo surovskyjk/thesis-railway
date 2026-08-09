@@ -1,0 +1,396 @@
+# Track Statistics panel summarising length, design/actual speed maxima and travel times
+from PySide6.QtWidgets import (QComboBox, QFormLayout, QGroupBox, QHeaderView, QLabel,
+                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+import numpy as np
+
+# Design speed profiles offered by the profile selector, matches gui_overlay's MapSettingsDialog
+DESIGN_PROFILE_CHOICES = [
+    ("TTP", "TTP"),
+    ("100", "V100"),
+    ("130", "V130"),
+    ("150", "V150"),
+    ("K", "VK"),
+]
+
+# Design profile selected by default, matches MapWidget's own default speed profile
+DEFAULT_DESIGN_PROFILE = "150"
+
+# Maximum number of vehicles the rest of the application supports
+MAX_VEHICLES = 3
+
+
+class TrackStatisticsWidget(QWidget):
+    def __init__(self, lan, parent=None):
+        super().__init__(parent)
+
+        self.lan = lan or {}
+        self.lastDataStorage = {}
+        self.vehicleNameResolver = None
+
+        outerLayout = QVBoxLayout(self)
+        outerLayout.setContentsMargins(6, 6, 6, 6)
+        outerLayout.setSpacing(8)
+
+        # Track length
+        self.lengthGroup = QGroupBox()
+        lengthLayout = QFormLayout(self.lengthGroup)
+        self.lengthRowLabel = QLabel()
+        self.lengthValueLabel = QLabel("-")
+        lengthLayout.addRow(self.lengthRowLabel, self.lengthValueLabel)
+        outerLayout.addWidget(self.lengthGroup)
+
+        # Maximum design speed according to the selected GPK profile
+        self.designGroup = QGroupBox()
+        designLayout = QVBoxLayout(self.designGroup)
+        designFormLayout = QFormLayout()
+        self.designProfileCombo = QComboBox()
+        for profileKey, displayText in DESIGN_PROFILE_CHOICES:
+            self.designProfileCombo.addItem(displayText, profileKey)
+        defaultIndex = self.designProfileCombo.findData(DEFAULT_DESIGN_PROFILE)
+        self.designProfileCombo.setCurrentIndex(max(0, defaultIndex))
+        self.designProfileCombo.currentIndexChanged.connect(self.onDesignProfileChanged)
+        self.designProfileRowLabel = QLabel()
+        designFormLayout.addRow(self.designProfileRowLabel, self.designProfileCombo)
+        self.designMaxRowLabel = QLabel()
+        self.designMaxValueLabel = QLabel("-")
+        designFormLayout.addRow(self.designMaxRowLabel, self.designMaxValueLabel)
+        designLayout.addLayout(designFormLayout)
+        self.designSegmentTable = QTableWidget(0, 3)
+        designLayout.addWidget(self.designSegmentTable)
+        outerLayout.addWidget(self.designGroup)
+
+        # Maximum actual simulated train speed for the selected vehicle
+        self.actualGroup = QGroupBox()
+        actualLayout = QVBoxLayout(self.actualGroup)
+        actualFormLayout = QFormLayout()
+        self.vehicleCombo = QComboBox()
+        self.vehicleCombo.currentIndexChanged.connect(self.onVehicleChanged)
+        self.vehicleRowLabel = QLabel()
+        actualFormLayout.addRow(self.vehicleRowLabel, self.vehicleCombo)
+        self.actualMaxRowLabel = QLabel()
+        self.actualMaxValueLabel = QLabel("-")
+        actualFormLayout.addRow(self.actualMaxRowLabel, self.actualMaxValueLabel)
+        actualLayout.addLayout(actualFormLayout)
+        self.actualSegmentTable = QTableWidget(0, 3)
+        actualLayout.addWidget(self.actualSegmentTable)
+        outerLayout.addWidget(self.actualGroup)
+
+        # Travel time breakdown
+        self.travelGroup = QGroupBox()
+        travelLayout = QVBoxLayout(self.travelGroup)
+        travelFormLayout = QFormLayout()
+        self.totalTimeRowLabel = QLabel()
+        self.totalTimeValueLabel = QLabel("-")
+        travelFormLayout.addRow(self.totalTimeRowLabel, self.totalTimeValueLabel)
+        self.originDestRowLabel = QLabel()
+        self.originDestValueLabel = QLabel("-")
+        travelFormLayout.addRow(self.originDestRowLabel, self.originDestValueLabel)
+        travelLayout.addLayout(travelFormLayout)
+        self.interstationTable = QTableWidget(0, 2)
+        travelLayout.addWidget(self.interstationTable)
+        outerLayout.addWidget(self.travelGroup)
+
+        outerLayout.addStretch(1)
+
+        for table in (self.designSegmentTable, self.actualSegmentTable, self.interstationTable):
+            table.verticalHeader().setVisible(False)
+            table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+            table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+
+        self.rebuildVehicleCombo()
+        self.updateTexts(self.lan)
+
+    # Guard used before touching any optional array
+    def hasData(self, values):
+        return values is not None and len(values) > 0
+
+    # Fallback text shown wherever a statistic cannot be computed yet
+    def noDataText(self):
+        return self.lan.get("statsNoData", "No data")
+
+    # Render a duration in seconds as MM:SS, or the no-data placeholder
+    def formatDuration(self, seconds):
+        if seconds is None:
+            return self.noDataText()
+        minutes, secs = divmod(max(0.0, seconds), 60)
+        return f"{int(minutes):02d}:{int(secs):02d}"
+
+    # Scheduled stops in the order they were imported, never sorted by chainage
+    def stopsList(self, dataStorage):
+        stops = []
+        for stop in (dataStorage.get("settingsData", {}) or {}).get("trainStops", []):
+            try:
+                stationKm = float(stop[0])
+                dwell = float(stop[1])
+                name = str(stop[2]) if len(stop) > 2 else ""
+            except (IndexError, ValueError, TypeError):
+                continue
+            stops.append((stationKm, dwell, name))
+        return stops
+
+    # Track length in kilometres derived from the parsed alignment chainage
+    def computeTrackLength(self, dataStorage):
+        stationHorizontal = dataStorage.get("LandXML", {}).get("stationHorizontal")
+        if not self.hasData(stationHorizontal):
+            return None
+        stationHorizontal = np.asarray(stationHorizontal, dtype=float)
+        return float(np.max(stationHorizontal) - np.min(stationHorizontal))
+
+    # Design speed limit and matching chainage arrays for the requested GPK profile
+    def resolveDesignSpeedArrays(self, dataStorage, profile):
+        if profile == "TTP":
+            speeds = dataStorage.get("speedLimits")
+            stations = dataStorage.get("stationSpeedLimits")
+        else:
+            speeds = dataStorage.get(f"speedLimits{profile}")
+            stations = dataStorage.get(f"stationSpeed{profile}")
+
+        if not self.hasData(speeds) or not self.hasData(stations):
+            return None, None
+
+        speeds = np.asarray(speeds, dtype=float)
+        stations = np.asarray(stations, dtype=float)
+        valid = np.isfinite(speeds) & np.isfinite(stations) & (speeds > 0)
+        speeds, stations = speeds[valid], stations[valid]
+        if len(speeds) == 0:
+            return None, None
+        return speeds, stations
+
+    # Simulated actual speed [km/h] and chainage [km] arrays for one vehicle
+    def resolveActualSpeedArrays(self, dataStorage, vehicleIndex):
+        speedsMs = dataStorage.get(f"kinematicsSpeedM_{vehicleIndex}")
+        stationsM = dataStorage.get(f"kinematicsStationM_{vehicleIndex}")
+        if not self.hasData(speedsMs) or not self.hasData(stationsM):
+            return None, None
+        speedsKmh = np.asarray(speedsMs, dtype=float) * 3.6
+        stationsKm = np.asarray(stationsM, dtype=float) / 1000.0
+        return speedsKmh, stationsKm
+
+    # Highest value in a speed array and the chainage at which it occurs
+    def globalMax(self, speeds, stations):
+        if not self.hasData(speeds):
+            return None
+        index = int(np.argmax(speeds))
+        return float(speeds[index]), float(stations[index])
+
+    # Fill a Segment / Max speed / Chainage table from consecutive stop boundaries
+    def fillSegmentTable(self, table, speeds, stations, boundaries):
+        table.setRowCount(0)
+        if not self.hasData(speeds) or len(boundaries) < 2:
+            return
+
+        for segmentIndex in range(len(boundaries) - 1):
+            startKm, startName = boundaries[segmentIndex]
+            endKm, endName = boundaries[segmentIndex + 1]
+            loKm, hiKm = sorted((startKm, endKm))
+            mask = (stations >= loKm) & (stations <= hiKm)
+
+            row = table.rowCount()
+            table.insertRow(row)
+            label = f"{startName or f'{startKm:.3f}'} → {endName or f'{endKm:.3f}'}"
+            table.setItem(row, 0, QTableWidgetItem(label))
+            if np.any(mask):
+                bestIndex = int(np.argmax(speeds[mask]))
+                table.setItem(row, 1, QTableWidgetItem(f"{speeds[mask][bestIndex]:.0f}"))
+                table.setItem(row, 2, QTableWidgetItem(f"{stations[mask][bestIndex]:.3f}"))
+            else:
+                table.setItem(row, 1, QTableWidgetItem("-"))
+                table.setItem(row, 2, QTableWidgetItem("-"))
+
+    # Cumulative time at the chainage nearest to a stop, mirrors generateVehicleReport's lookup
+    def lookupTimeAtStation(self, stationsM, timesS, stationKm):
+        if not self.hasData(stationsM) or not self.hasData(timesS):
+            return None
+        stationsM = np.asarray(stationsM, dtype=float)
+        index = int(np.argmin(np.abs(stationsM - stationKm * 1000.0)))
+        return float(timesS[index])
+
+    # Arrival (before dwelling) and departure (after dwelling) time at one stop
+    def stopTiming(self, stationsM, timesS, stationKm, dwellSeconds):
+        depTime = self.lookupTimeAtStation(stationsM, timesS, stationKm)
+        if depTime is None:
+            return None, None
+        return max(0.0, depTime - dwellSeconds), depTime
+
+    # Total, origin-to-destination and inter-station travel times for one vehicle
+    def computeTravelTimeSections(self, dataStorage, vehicleIndex):
+        stationsM = dataStorage.get(f"kinematicsStationM_{vehicleIndex}")
+        timesS = dataStorage.get(f"kinematicsTimeS_{vehicleIndex}")
+        totalTime = float(timesS[-1]) if self.hasData(timesS) else None
+
+        stops = self.stopsList(dataStorage)
+        originDestTime = None
+        interstationRows = []
+
+        if self.hasData(stationsM) and self.hasData(timesS) and len(stops) >= 2:
+            _, depFirst = self.stopTiming(stationsM, timesS, stops[0][0], stops[0][1])
+            arrLast, _ = self.stopTiming(stationsM, timesS, stops[-1][0], stops[-1][1])
+            if depFirst is not None and arrLast is not None:
+                originDestTime = arrLast - depFirst
+
+            for legIndex in range(len(stops) - 1):
+                kmA, dwellA, nameA = stops[legIndex]
+                kmB, dwellB, nameB = stops[legIndex + 1]
+                _, depA = self.stopTiming(stationsM, timesS, kmA, dwellA)
+                arrB, _ = self.stopTiming(stationsM, timesS, kmB, dwellB)
+                if depA is None or arrB is None:
+                    continue
+                label = f"{nameA or f'{kmA:.3f}'} → {nameB or f'{kmB:.3f}'}"
+                interstationRows.append((label, arrB - depA))
+
+        return totalTime, originDestTime, interstationRows
+
+    # Rebuild the vehicle selector from the currently simulated vehicle count
+    def rebuildVehicleCombo(self):
+        dataStorage = self.lastDataStorage or {}
+        vehicleCount = int(dataStorage.get("num_vehicles", 1) or 1)
+        vehicleCount = max(1, min(vehicleCount, MAX_VEHICLES))
+
+        previousData = self.vehicleCombo.currentData()
+        self.vehicleCombo.blockSignals(True)
+        self.vehicleCombo.clear()
+        for vehicleIndex in range(vehicleCount):
+            caption = f'{self.lan.get("vehicle", "Vehicle")} {vehicleIndex + 1}'
+            vehicleName = self.vehicleNameResolver(vehicleIndex) if self.vehicleNameResolver else ""
+            if vehicleName:
+                caption = f"{caption} — {vehicleName}"
+            self.vehicleCombo.addItem(caption, vehicleIndex)
+        restoredIndex = self.vehicleCombo.findData(previousData) if previousData is not None else -1
+        self.vehicleCombo.setCurrentIndex(restoredIndex if restoredIndex >= 0 else 0)
+        self.vehicleCombo.blockSignals(False)
+
+    # Re-render every section from the currently cached data storage
+    def refreshAll(self):
+        self.refreshTrackLength()
+        self.refreshDesignSpeedSection()
+        self.refreshActualSpeedSection()
+        self.refreshTravelTimeSection()
+
+    def refreshTrackLength(self):
+        length = self.computeTrackLength(self.lastDataStorage or {})
+        self.lengthValueLabel.setText(f"{length:.3f} km" if length is not None else self.noDataText())
+
+    def refreshDesignSpeedSection(self):
+        dataStorage = self.lastDataStorage or {}
+        profile = self.designProfileCombo.currentData() or DEFAULT_DESIGN_PROFILE
+        speeds, stations = self.resolveDesignSpeedArrays(dataStorage, profile)
+
+        peak = self.globalMax(speeds, stations)
+        if peak is None:
+            self.designMaxValueLabel.setText(self.noDataText())
+        else:
+            maxSpeed, location = peak
+            self.designMaxValueLabel.setText(f"{maxSpeed:.0f} km/h @ {location:.3f} km")
+
+        boundaries = [(km, name) for km, dwell, name in self.stopsList(dataStorage)]
+        self.fillSegmentTable(self.designSegmentTable, speeds, stations, boundaries)
+
+    def refreshActualSpeedSection(self):
+        dataStorage = self.lastDataStorage or {}
+        vehicleIndex = self.vehicleCombo.currentData()
+        if vehicleIndex is None:
+            self.actualMaxValueLabel.setText(self.noDataText())
+            self.actualSegmentTable.setRowCount(0)
+            return
+
+        speeds, stations = self.resolveActualSpeedArrays(dataStorage, vehicleIndex)
+        peak = self.globalMax(speeds, stations)
+        if peak is None:
+            self.actualMaxValueLabel.setText(self.noDataText())
+        else:
+            maxSpeed, location = peak
+            self.actualMaxValueLabel.setText(f"{maxSpeed:.0f} km/h @ {location:.3f} km")
+
+        boundaries = [(km, name) for km, dwell, name in self.stopsList(dataStorage)]
+        self.fillSegmentTable(self.actualSegmentTable, speeds, stations, boundaries)
+
+    def refreshTravelTimeSection(self):
+        dataStorage = self.lastDataStorage or {}
+        vehicleIndex = self.vehicleCombo.currentData()
+        if vehicleIndex is None:
+            self.totalTimeValueLabel.setText(self.noDataText())
+            self.originDestValueLabel.setText(self.noDataText())
+            self.interstationTable.setRowCount(0)
+            return
+
+        totalTime, originDestTime, legs = self.computeTravelTimeSections(dataStorage, vehicleIndex)
+        self.totalTimeValueLabel.setText(self.formatDuration(totalTime))
+        self.originDestValueLabel.setText(self.formatDuration(originDestTime))
+
+        self.interstationTable.setRowCount(0)
+        for label, legTime in legs:
+            row = self.interstationTable.rowCount()
+            self.interstationTable.insertRow(row)
+            self.interstationTable.setItem(row, 0, QTableWidgetItem(label))
+            self.interstationTable.setItem(row, 1, QTableWidgetItem(self.formatDuration(legTime)))
+
+    # Re-render the design speed section only, used by the profile selector
+    def onDesignProfileChanged(self, index):
+        self.refreshDesignSpeedSection()
+
+    # Re-render the vehicle dependent sections only, used by the vehicle selector
+    def onVehicleChanged(self, index):
+        self.refreshActualSpeedSection()
+        self.refreshTravelTimeSection()
+
+    # Main entry point called whenever alignment, TTP or simulation data changes
+    def updateStatistics(self, dataStorage, vehicleNameResolver=None):
+        self.lastDataStorage = dataStorage or {}
+        self.vehicleNameResolver = vehicleNameResolver
+        self.rebuildVehicleCombo()
+        self.refreshAll()
+
+    # Refresh every caption, header and cached value after a language change
+    def updateTexts(self, lan):
+        self.lan = lan or {}
+
+        self.lengthGroup.setTitle(self.lan.get("statsTrackLengthGroup", "Track Length"))
+        self.lengthRowLabel.setText(self.lan.get("statsTrackLengthRow", "Total length"))
+
+        self.designGroup.setTitle(self.lan.get("statsDesignSpeedGroup", "Maximum Design Speed (GPK)"))
+        self.designProfileRowLabel.setText(self.lan.get("statsDesignProfileRow", "Design profile"))
+        self.designMaxRowLabel.setText(self.lan.get("statsMaxDesignSpeedRow", "Global maximum"))
+        self.designSegmentTable.setHorizontalHeaderLabels([
+            self.lan.get("statsSegmentColumn", "Segment"),
+            self.lan.get("statsMaxSpeedColumn", "Max speed [km/h]"),
+            self.lan.get("statsChainageColumn", "Chainage [km]"),
+        ])
+
+        self.actualGroup.setTitle(self.lan.get("statsActualSpeedGroup", "Maximum Actual Train Speed"))
+        self.vehicleRowLabel.setText(self.lan.get("statsVehicleRow", "Vehicle"))
+        self.actualMaxRowLabel.setText(self.lan.get("statsMaxActualSpeedRow", "Global maximum"))
+        self.actualSegmentTable.setHorizontalHeaderLabels([
+            self.lan.get("statsSegmentColumn", "Segment"),
+            self.lan.get("statsMaxSpeedColumn", "Max speed [km/h]"),
+            self.lan.get("statsChainageColumn", "Chainage [km]"),
+        ])
+
+        self.travelGroup.setTitle(self.lan.get("statsTravelTimeGroup", "Travel Time Breakdown"))
+        self.totalTimeRowLabel.setText(self.lan.get("statsTotalTravelTimeRow", "Total (complete alignment)"))
+        self.originDestRowLabel.setText(self.lan.get("statsOriginDestRow", "Origin → Destination"))
+        self.interstationTable.setHorizontalHeaderLabels([
+            self.lan.get("statsSegmentColumn", "Segment"),
+            self.lan.get("statsTravelTimeColumn", "Travel time [mm:ss]"),
+        ])
+
+        self.rebuildVehicleCombo()
+        self.refreshAll()
+
+    # Restyle the group boxes and tables with the active theme's tokens
+    def applyTheme(self, isDark, tokens=None):
+        if tokens:
+            borderColor = tokens.get("border", "#c4c4c4")
+            backgroundColor = tokens.get("base", "#ffffff")
+        else:
+            borderColor = "#4d4d4d" if isDark else "#c4c4c4"
+            backgroundColor = "#1e1e1e" if isDark else "#ffffff"
+
+        groupStyle = (f"QGroupBox {{ border: 1px solid {borderColor}; border-radius: 4px;"
+                      f" margin-top: 10px; padding-top: 6px; font-weight: 600; }}"
+                      f"QGroupBox::title {{ subcontrol-origin: margin; left: 8px; padding: 0 4px; }}")
+        for group in (self.lengthGroup, self.designGroup, self.actualGroup, self.travelGroup):
+            group.setStyleSheet(groupStyle)
+
+        for table in (self.designSegmentTable, self.actualSegmentTable, self.interstationTable):
+            table.setAlternatingRowColors(True)
+            table.setStyleSheet(f"QTableWidget {{ background: {backgroundColor}; }}")

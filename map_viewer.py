@@ -5,14 +5,15 @@ from folium import DivIcon
 from folium.features import ColorLine
 import math
 from PySide6.QtCore import QFile, QIODevice, QObject, Qt, QUrl, Signal, Slot
-from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel, QSlider,
-                               QToolButton, QWidget, QVBoxLayout)
+from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton,
+                               QSlider, QWidget, QVBoxLayout)
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
 import numpy as np
 import branca.colormap as bcm
 
 import icons
+from ribbon import SERIES_TOGGLE_PROPERTY
 
 # Maximum number of alignment samples handed to the page for nearest point lookup
 MAX_LOOKUP_POINTS = 2000
@@ -22,11 +23,20 @@ BASEMAP_CHOICES = [
     ("positron", "mapPositron", "CartoDB Positron"),
     ("osm", "mapOSM", "OpenStreetMap"),
     ("cuzk", "mapCUZK", "CUZK orthophoto"),
+    ("cartodbDark", "mapCartoDark", "CartoDB Dark"),
 ]
 
-# Alignment rendering styles cycled by the quick toggle button
+# Alignment rendering styles offered by the style selector
+DRAW_MODE_SINGLE = "single"
 DRAW_MODE_SPEED = "speed"
 DRAW_MODE_TYPE = "type"
+
+# Alignment style combo entries, the value is emitted by drawModeChanged
+DRAW_MODE_CHOICES = [
+    (DRAW_MODE_SINGLE, "mapDrawSingleColor", "Single Color"),
+    (DRAW_MODE_TYPE, "mapDrawByType", "By Element Type"),
+    (DRAW_MODE_SPEED, "mapDrawBySpeed", "By Speed Limit"),
+]
 
 # Offset of the floating control panel, chosen to clear the Leaflet zoom buttons
 CONTROL_PANEL_MARGIN = 10
@@ -121,10 +131,10 @@ class MapControlsPanel(QFrame):
         overlayLayout.setContentsMargins(0, 0, 0, 0)
         overlayLayout.setSpacing(4)
 
-        self.railOverlayButton = QToolButton()
+        self.railOverlayButton = QPushButton()
         self.railOverlayButton.setCheckable(True)
         self.railOverlayButton.setIcon(icons.makeIcon("railway"))
-        self.railOverlayButton.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.railOverlayButton.setProperty(SERIES_TOGGLE_PROPERTY, True)
         self.railOverlayButton.toggled.connect(self.onRailOverlayToggled)
         overlayLayout.addWidget(self.railOverlayButton)
 
@@ -138,17 +148,17 @@ class MapControlsPanel(QFrame):
 
         panelLayout.addWidget(overlayRow)
 
-        self.alignmentStyleButton = QToolButton()
-        self.alignmentStyleButton.setIcon(icons.makeIcon("style"))
-        self.alignmentStyleButton.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.alignmentStyleButton.clicked.connect(self.onAlignmentStyleClicked)
-        panelLayout.addWidget(self.alignmentStyleButton)
+        self.alignmentStyleCombo = QComboBox()
+        for drawModeKey, languageKey, fallbackName in DRAW_MODE_CHOICES:
+            self.alignmentStyleCombo.addItem(self.lan.get(languageKey, fallbackName), drawModeKey)
+        self.alignmentStyleCombo.currentIndexChanged.connect(self.onAlignmentStyleSelected)
+        panelLayout.addWidget(self.alignmentStyleCombo)
 
-        self.stationsButton = QToolButton()
+        self.stationsButton = QPushButton()
         self.stationsButton.setCheckable(True)
         self.stationsButton.setChecked(True)
         self.stationsButton.setIcon(icons.makeIcon("station"))
-        self.stationsButton.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.stationsButton.setProperty(SERIES_TOGGLE_PROPERTY, True)
         self.stationsButton.toggled.connect(self.stationsToggled)
         panelLayout.addWidget(self.stationsButton)
 
@@ -169,44 +179,34 @@ class MapControlsPanel(QFrame):
         if self.railOverlayButton.isChecked():
             self.railOverlayChanged.emit(True, self.railOpacitySlider.value() / 100.0)
 
-    # Flip the alignment rendering between speed colouring and geometry elements
-    def onAlignmentStyleClicked(self):
-        if self.currentDrawMode == DRAW_MODE_SPEED:
-            self.currentDrawMode = DRAW_MODE_TYPE
-        else:
-            self.currentDrawMode = DRAW_MODE_SPEED
-
-        self.updateAlignmentStyleCaption()
+    # Report the alignment rendering style the user picked from the combo box
+    def onAlignmentStyleSelected(self, index):
+        self.currentDrawMode = self.alignmentStyleCombo.itemData(index)
         self.drawModeChanged.emit(self.currentDrawMode)
 
     # Adopt the state owned by the map widget without re-emitting signals
     def syncState(self, baseMap, drawMode, railEnabled, railOpacity, showStations):
         for controlWidget in (self.baseMapCombo, self.railOverlayButton,
-                              self.alignmentStyleButton, self.stationsButton):
+                              self.alignmentStyleCombo, self.stationsButton):
             controlWidget.blockSignals(True)
 
         comboIndex = self.baseMapCombo.findData(baseMap)
         if comboIndex >= 0:
             self.baseMapCombo.setCurrentIndex(comboIndex)
 
-        self.currentDrawMode = drawMode if drawMode in (DRAW_MODE_SPEED, DRAW_MODE_TYPE) else DRAW_MODE_SPEED
+        validModes = (DRAW_MODE_SINGLE, DRAW_MODE_TYPE, DRAW_MODE_SPEED)
+        self.currentDrawMode = drawMode if drawMode in validModes else DRAW_MODE_SPEED
+        styleIndex = self.alignmentStyleCombo.findData(self.currentDrawMode)
+        if styleIndex >= 0:
+            self.alignmentStyleCombo.setCurrentIndex(styleIndex)
         self.railOverlayButton.setChecked(bool(railEnabled))
         self.railOpacitySlider.setEnabled(bool(railEnabled))
         self.railOpacitySlider.setValue(int(round(railOpacity * 100)))
         self.stationsButton.setChecked(bool(showStations))
-        self.updateAlignmentStyleCaption()
 
         for controlWidget in (self.baseMapCombo, self.railOverlayButton,
-                              self.alignmentStyleButton, self.stationsButton):
+                              self.alignmentStyleCombo, self.stationsButton):
             controlWidget.blockSignals(False)
-
-    # Caption of the style button names the mode it will switch to next
-    def updateAlignmentStyleCaption(self):
-        if self.currentDrawMode == DRAW_MODE_SPEED:
-            caption = self.lan.get("mapDrawBySpeed", "Speed limits")
-        else:
-            caption = self.lan.get("mapDrawByType", "Geometry elements")
-        self.alignmentStyleButton.setText(caption)
 
     # Refresh every caption after a language change
     def updateTexts(self, lan):
@@ -217,19 +217,22 @@ class MapControlsPanel(QFrame):
             self.baseMapCombo.setItemText(itemIndex, self.lan.get(languageKey, fallbackName))
         self.baseMapCombo.blockSignals(False)
 
+        self.alignmentStyleCombo.blockSignals(True)
+        for itemIndex, (drawModeKey, languageKey, fallbackName) in enumerate(DRAW_MODE_CHOICES):
+            self.alignmentStyleCombo.setItemText(itemIndex, self.lan.get(languageKey, fallbackName))
+        self.alignmentStyleCombo.blockSignals(False)
+
         self.baseMapCombo.setToolTip(self.lan.get("mapBasemap", "Base map"))
         self.railOverlayButton.setText(self.lan.get("mapRailOverlay", "Railways"))
         self.railOverlayButton.setToolTip(self.lan.get("mapRailOverlayTip",
                                                        "Toggle the OpenRailwayMap overlay"))
         self.railOpacitySlider.setToolTip(self.lan.get("mapRailOpacity", "Overlay transparency"))
         self.stationsButton.setText(self.lan.get("mapShowStations", "Stations"))
-        self.alignmentStyleButton.setToolTip(self.lan.get("mapAlignmentStyle", "Alignment style"))
-        self.updateAlignmentStyleCaption()
+        self.alignmentStyleCombo.setToolTip(self.lan.get("mapAlignmentStyle", "Alignment style"))
 
     # Rebuild the icons so they follow the active theme colours
     def applyTheme(self, isDark, tokens=None):
         self.railOverlayButton.setIcon(icons.makeIcon("railway"))
-        self.alignmentStyleButton.setIcon(icons.makeIcon("style"))
         self.stationsButton.setIcon(icons.makeIcon("station"))
 
         background = "rgba(43, 43, 43, 235)" if isDark else "rgba(255, 255, 255, 235)"
@@ -269,6 +272,7 @@ class MapWidget(QWidget):
         self.railOverlayEnabled = False
         self.railOverlayOpacity = 0.7
         self.isMapReady = False
+        self.wasDarkTheme = False
         self.mapBrowser.loadFinished.connect(self.onMapLoadFinished)
 
         # Floating Qt controls sit above the web view and survive every page reload
@@ -360,8 +364,12 @@ class MapWidget(QWidget):
     def updateTexts(self, lan):
         self.controlsPanel.updateTexts(lan)
 
-    # Restyle the floating controls when the application theme changes
+    # Restyle the floating controls when the application theme changes, and default
+    # to the dark basemap the first time the app switches into dark mode
     def applyTheme(self, isDark, tokens=None):
+        if isDark and not self.wasDarkTheme and self.currentBaseMap != "cartodbDark":
+            self.setBaseMap("cartodbDark")
+        self.wasDarkTheme = isDark
         self.controlsPanel.applyTheme(isDark, tokens)
 
     def addTiles(self, m):
@@ -377,6 +385,8 @@ class MapWidget(QWidget):
             ).add_to(m)
         elif self.currentBaseMap == "osm":
             folium.TileLayer("OpenStreetMap").add_to(m)
+        elif self.currentBaseMap == "cartodbDark":
+            folium.TileLayer("CartoDB dark_matter").add_to(m)
         else:
             folium.TileLayer("CartoDB Positron").add_to(m)
 
