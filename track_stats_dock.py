@@ -33,6 +33,7 @@ class TrackStatisticsWidget(QWidget):
         self.lan = lan or {}
         self.lastDataStorage = {}
         self.vehicleNameResolver = None
+        self.useKmh = False
 
         scrollArea = QScrollArea(self)
         scrollArea.setWidgetResizable(True)
@@ -160,15 +161,30 @@ class TrackStatisticsWidget(QWidget):
             return None, None
         return speeds, stations
 
-    # Simulated actual speed [km/h] and chainage [km] arrays for one vehicle
+    # Simulated actual speed and chainage arrays for one vehicle, in the currently active unit system
     def resolveActualSpeedArrays(self, dataStorage, vehicleIndex):
         speedsMs = dataStorage.get(f"kinematicsSpeedM_{vehicleIndex}")
         stationsM = dataStorage.get(f"kinematicsStationM_{vehicleIndex}")
         if not self.hasData(speedsMs) or not self.hasData(stationsM):
             return None, None
-        speedsKmh = np.asarray(speedsMs, dtype=float) * 3.6
-        stationsKm = np.asarray(stationsM, dtype=float) / 1000.0
-        return speedsKmh, stationsKm
+        speedFactor = 3.6 if self.useKmh else 1.0
+        stationFactor = 0.001 if self.useKmh else 1.0
+        speeds = np.asarray(speedsMs, dtype=float) * speedFactor
+        stations = np.asarray(stationsM, dtype=float) * stationFactor
+        return speeds, stations
+
+    # Unit suffix and value formatter for the achieved-speed section, following the active toggle
+    def actualSpeedUnitLabel(self):
+        return "km/h" if self.useKmh else "m/s"
+
+    def actualDistanceUnitLabel(self):
+        return "km" if self.useKmh else "m"
+
+    def formatActualSpeed(self, value):
+        return f"{value:.0f}" if self.useKmh else f"{value:.1f}"
+
+    def formatActualDistance(self, value):
+        return f"{value:.3f}" if self.useKmh else f"{value:.0f}"
 
     # Highest value in a speed array and the chainage at which it occurs
     def globalMax(self, speeds, stations):
@@ -177,26 +193,30 @@ class TrackStatisticsWidget(QWidget):
         index = int(np.argmax(speeds))
         return float(speeds[index]), float(stations[index])
 
-    # Fill a Segment / Max speed / Chainage table from consecutive stop boundaries
-    def fillSegmentTable(self, table, speeds, stations, boundaries):
+    # Fill a Segment / Max speed / Chainage table from consecutive stop boundaries, in the units the
+    # caller already scaled speeds/stations/boundaries to (formatSpeed/formatDistance default to km/h, km)
+    def fillSegmentTable(self, table, speeds, stations, boundaries, formatSpeed=None, formatDistance=None):
+        formatSpeed = formatSpeed or (lambda value: f"{value:.0f}")
+        formatDistance = formatDistance or (lambda value: f"{value:.3f}")
+
         table.setRowCount(0)
         if not self.hasData(speeds) or len(boundaries) < 2:
             return
 
         for segmentIndex in range(len(boundaries) - 1):
-            startKm, startName = boundaries[segmentIndex]
-            endKm, endName = boundaries[segmentIndex + 1]
-            loKm, hiKm = sorted((startKm, endKm))
-            mask = (stations >= loKm) & (stations <= hiKm)
+            startValue, startName = boundaries[segmentIndex]
+            endValue, endName = boundaries[segmentIndex + 1]
+            loValue, hiValue = sorted((startValue, endValue))
+            mask = (stations >= loValue) & (stations <= hiValue)
 
             row = table.rowCount()
             table.insertRow(row)
-            label = f"{startName or f'{startKm:.3f}'} → {endName or f'{endKm:.3f}'}"
+            label = f"{startName or formatDistance(startValue)} → {endName or formatDistance(endValue)}"
             table.setItem(row, 0, QTableWidgetItem(label))
             if np.any(mask):
                 bestIndex = int(np.argmax(speeds[mask]))
-                table.setItem(row, 1, QTableWidgetItem(f"{speeds[mask][bestIndex]:.0f}"))
-                table.setItem(row, 2, QTableWidgetItem(f"{stations[mask][bestIndex]:.3f}"))
+                table.setItem(row, 1, QTableWidgetItem(formatSpeed(speeds[mask][bestIndex])))
+                table.setItem(row, 2, QTableWidgetItem(formatDistance(stations[mask][bestIndex])))
             else:
                 table.setItem(row, 1, QTableWidgetItem("-"))
                 table.setItem(row, 2, QTableWidgetItem("-"))
@@ -260,7 +280,17 @@ class TrackStatisticsWidget(QWidget):
         boundaries = [(km, name) for km, dwell, name in self.stopsList(dataStorage)]
         self.fillSegmentTable(self.designSegmentTable, speeds, stations, boundaries)
 
+    # Header labels for the achieved-speed table, tracking whichever unit system is active
+    def actualSegmentHeaders(self):
+        return [
+            self.lan.get("statsSegmentColumn", "Segment"),
+            f"{self.lan.get('statsMaxSpeedColumnBase', 'Max speed')} [{self.actualSpeedUnitLabel()}]",
+            f"{self.lan.get('statsChainageColumnBase', 'Chainage')} [{self.actualDistanceUnitLabel()}]",
+        ]
+
     def refreshActualSpeedSection(self):
+        self.actualSegmentTable.setHorizontalHeaderLabels(self.actualSegmentHeaders())
+
         dataStorage = self.lastDataStorage or {}
         vehicleIndex = self.vehicleCombo.currentData()
         if vehicleIndex is None:
@@ -274,10 +304,15 @@ class TrackStatisticsWidget(QWidget):
             self.actualMaxCard.setValue(self.noDataText())
         else:
             maxSpeed, location = peak
-            self.actualMaxCard.setValue(f"{maxSpeed:.0f} km/h", f"@ {location:.3f} km")
+            self.actualMaxCard.setValue(
+                f"{self.formatActualSpeed(maxSpeed)} {self.actualSpeedUnitLabel()}",
+                f"@ {self.formatActualDistance(location)} {self.actualDistanceUnitLabel()}")
 
-        boundaries = [(km, name) for km, dwell, name in self.stopsList(dataStorage)]
-        self.fillSegmentTable(self.actualSegmentTable, speeds, stations, boundaries)
+        # Stop boundaries are recorded in km; scale to metres to match stations when not using km/h
+        distanceScale = 1.0 if self.useKmh else 1000.0
+        boundaries = [(km * distanceScale, name) for km, dwell, name in self.stopsList(dataStorage)]
+        self.fillSegmentTable(self.actualSegmentTable, speeds, stations, boundaries,
+                              self.formatActualSpeed, self.formatActualDistance)
 
     def refreshTravelTimeSection(self):
         dataStorage = self.lastDataStorage or {}
@@ -310,9 +345,10 @@ class TrackStatisticsWidget(QWidget):
         self.refreshTravelTimeSection()
 
     # Main entry point called whenever alignment, TTP or simulation data changes
-    def updateStatistics(self, dataStorage, vehicleNameResolver=None):
+    def updateStatistics(self, dataStorage, vehicleNameResolver=None, useKmh=False):
         self.lastDataStorage = dataStorage or {}
         self.vehicleNameResolver = vehicleNameResolver
+        self.useKmh = bool(useKmh)
         self.rebuildVehicleCombo()
         self.refreshAll()
 
@@ -333,13 +369,14 @@ class TrackStatisticsWidget(QWidget):
         self.actualSection.setTitle(self.lan.get("statsSectionActual", "Achieved segments"))
         self.interstationSection.setTitle(self.lan.get("statsSectionInterstation", "Inter-station times"))
 
-        segmentHeaders = [
+        # Design speed data is always sourced and displayed in km/h, km regardless of the units toggle
+        designSegmentHeaders = [
             self.lan.get("statsSegmentColumn", "Segment"),
             self.lan.get("statsMaxSpeedColumn", "Max speed [km/h]"),
             self.lan.get("statsChainageColumn", "Chainage [km]"),
         ]
-        self.designSegmentTable.setHorizontalHeaderLabels(segmentHeaders)
-        self.actualSegmentTable.setHorizontalHeaderLabels(segmentHeaders)
+        self.designSegmentTable.setHorizontalHeaderLabels(designSegmentHeaders)
+        # Achieved (simulated) headers follow the active units toggle, set inside refreshActualSpeedSection
         self.interstationTable.setHorizontalHeaderLabels([
             self.lan.get("statsSegmentColumn", "Segment"),
             self.lan.get("statsTravelTimeColumn", "Travel time [mm:ss]"),

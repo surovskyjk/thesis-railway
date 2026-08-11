@@ -58,8 +58,8 @@ class PresetManager:
             action.setChecked(action.data() == themeMode)
         mainWindow.themeManager.applyTheme(themeMode)
 
+        # setChecked emits toggled only on an actual change, which refreshes the label and every plot
         mainWindow.toggleUnitsAction.setChecked(bool(payload.get("unitsKmh", False)))
-        mainWindow.plotKinematics()
 
         commands = payload.get("commands")
         if commands:

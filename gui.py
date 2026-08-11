@@ -360,10 +360,12 @@ class MainWindow(QMainWindow):
         self.designApproachAction = QAction(lan["designApproach"], self)
         self.designApproachAction.triggered.connect(self.openDesignApproach)
 
-        self.toggleUnitsAction = QAction(lan["units_kmh"], self)
+        self.toggleUnitsAction = QAction(self)
         self.toggleUnitsAction.setCheckable(True)
         self.toggleUnitsAction.setChecked(False)
-        self.toggleUnitsAction.triggered.connect(self.plotKinematics)
+        self.toggleUnitsAction.setProperty(SERIES_TOGGLE_PROPERTY, True)
+        self.toggleUnitsAction.toggled.connect(self.onUnitsToggled)
+        self.updateUnitsActionLabel()
 
         # Language actions, one per translation file discovered at startup
         self.languageActions = {}
@@ -507,6 +509,29 @@ class MainWindow(QMainWindow):
                      else lan.get("seriesHidden", "hidden"))
         self.statusBarWidget.showMessage(f"{action.text()}: {stateText}",
                                          SERIES_STATUS_TIMEOUT)
+
+    # Sync the units button's caption and tooltip to whichever unit system is currently active
+    def updateUnitsActionLabel(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        isKmh = self.toggleUnitsAction.isChecked()
+        caption = lan.get("unitsKmhShort", "km/h\nkm") if isKmh else lan.get("unitsMsShort", "m/s\nm")
+        tooltip = lan.get("unitsKmhTip", "Units: km/h, km — click for m/s, m") if isKmh \
+            else lan.get("unitsMsTip", "Units: m/s, m — click for km/h, km")
+        self.toggleUnitsAction.setText(caption)
+        self.toggleUnitsAction.setToolTip(tooltip)
+        if getattr(self, "toggleUnitsButton", None) is not None:
+            self.toggleUnitsButton.setText(caption)
+            self.toggleUnitsButton.setToolTip(tooltip)
+
+    # Refresh the button label and every plot that displays speed or distance whenever units change
+    def onUnitsToggled(self, checked):
+        self.updateUnitsActionLabel()
+        self.plotKinematics()
+        if getattr(self, "statusBarWidget", None) is not None:
+            lan = self.translationManager.getLanguage(self.currentLanguage)
+            stateText = lan.get("unitsKmhTip", "Units: km/h, km") if checked \
+                else lan.get("unitsMsTip", "Units: m/s, m")
+            self.statusBarWidget.showMessage(stateText, SERIES_STATUS_TIMEOUT)
 
     # Give every ribbon action a generated vector icon or a short text badge
     def applyActionIcons(self):
@@ -716,7 +741,7 @@ class MainWindow(QMainWindow):
         simulationConfigGroup.addAction(self.vehicleSettingsAction, shortKey="shortVehicles")
         simulationConfigGroup.addAction(self.openVehicleCatalogAction, shortKey="shortVehicleCatalog")
         simulationConfigGroup.addAction(self.stopsSettingsAction, shortKey="shortStops")
-        simulationConfigGroup.addAction(self.toggleUnitsAction, shortKey="shortUnits")
+        self.toggleUnitsButton = simulationConfigGroup.addAction(self.toggleUnitsAction)
 
         simulationReportGroup = simulationPage.addGroup(lan.get("groupReport", "Report"), "groupReport")
         simulationReportGroup.addWidget(self.reportVehicleButton)
@@ -997,7 +1022,8 @@ class MainWindow(QMainWindow):
 
     # Recompute the Track Statistics dock from the current data storage
     def refreshTrackStatsDock(self):
-        self.trackStatsWidget.updateStatistics(self.dataStorage, self.getVehicleName)
+        self.trackStatsWidget.updateStatistics(self.dataStorage, self.getVehicleName,
+                                               self.toggleUnitsAction.isChecked())
 
     # Map every series toggle action onto the series key used by the plots
     def seriesVisibility(self):
@@ -1201,7 +1227,7 @@ class MainWindow(QMainWindow):
         self.stopsSettingsAction.setText(lan.get("stopsSettings", "Stops Settings"))
         self.speedSettingsAction.setText(lan.get("speedSettings", "Speed Limits Settings"))
         self.designApproachAction.setText(lan["designApproach"])
-        self.toggleUnitsAction.setText(lan["units_kmh"])
+        self.updateUnitsActionLabel()
         self.exportPresetsAction.setText(lan.get("exportPresets", "Export Presets..."))
         self.importPresetsAction.setText(lan.get("importPresets", "Import Presets..."))
 
