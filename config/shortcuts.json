@@ -113,6 +113,18 @@
       "action": "exportBatchArchiveAction",
       "alias": "batchzip",
       "shortcut": ""
+    },
+    {
+      "commandName": "ExportPresets",
+      "action": "exportPresetsAction",
+      "alias": "exportpresets",
+      "shortcut": ""
+    },
+    {
+      "commandName": "ImportPresets",
+      "action": "importPresetsAction",
+      "alias": "importpresets",
+      "shortcut": ""
     }
   ],
   "floatingCommandInputEnabled": true

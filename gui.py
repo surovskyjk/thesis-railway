@@ -3,7 +3,8 @@ from PySide6.QtCore import QSettings, QSize, Qt, QTimer, QUrl, QEvent
 from PySide6.QtWidgets import (QTabWidget, QApplication, QMainWindow, QPushButton, QWidget,
                                 QHBoxLayout, QVBoxLayout, QLabel, QPlainTextEdit, QFileDialog,
                                 QSplitter, QMessageBox, QStyle, QToolBar, QMenu, QStackedWidget,
-                                QStatusBar, QLineEdit, QTextEdit, QComboBox, QAbstractItemView)
+                                QStatusBar, QLineEdit, QTextEdit, QComboBox, QAbstractItemView,
+                                QToolButton, QSizePolicy)
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QCursor, QDesktopServices
 
 # pyqtgraph imports
@@ -12,7 +13,7 @@ import pyqtgraph as pg
 # numpy import for data handling
 import numpy as np
 
-import csv
+import json
 from pathlib import Path
 # Local imports
 import readfile
@@ -27,7 +28,7 @@ import theme_manager
 import icons
 from theme_manager import ThemeManager
 from lazy_dock import LazyDockWidget
-from ribbon import RibbonBar, SERIES_TOGGLE_PROPERTY
+from ribbon import RibbonBar, SERIES_TOGGLE_PROPERTY, COMPACT_ICON_SIZE
 from workflow_dock import WorkflowStepperWidget
 from graphs_dock import PerformanceGraphsWidget
 from profile_dock import ProfilePlotWidget
@@ -50,6 +51,8 @@ from batch_progress import BatchProgressDialog
 from variant_dashboard import VariantDashboardWidget
 import report_formats
 import batch_export
+import presets_manager
+from resource_paths import getWritableRoot
 import tempfile
 from datetime import datetime
 import copy
@@ -103,6 +106,10 @@ ACTION_ICONS = {
     "openBatchProcessingAction": "batch",
     "showDashboardAction": "dashboard",
     "exportBatchArchiveAction": "export",
+    "reportVehicleButton": "report",
+    "exportVehicleButton": "export",
+    "exportPresetsAction": "export",
+    "importPresetsAction": "open",
 }
 
 # Compact ribbon captions for the data series toggles, full text stays in the tooltip
@@ -187,6 +194,7 @@ class MainWindow(QMainWindow):
 
         self.themeManager = ThemeManager(self)
         self.shortcutManager = ShortcutManager()
+        self.presetManager = presets_manager.PresetManager()
 
         # Batch processing: config presets, the last run's results, and the isolated-thread controller
         self.batchConfigStore = batch_config.BatchConfigStore()
@@ -343,6 +351,12 @@ class MainWindow(QMainWindow):
         self.openShortcutSettingsAction = QAction(lan.get("shortcutSettings", "Shortcuts"), self)
         self.openShortcutSettingsAction.triggered.connect(self.openShortcutSettings)
 
+        self.exportPresetsAction = QAction(lan.get("exportPresets", "Export Presets..."), self)
+        self.exportPresetsAction.triggered.connect(self.exportPresets)
+
+        self.importPresetsAction = QAction(lan.get("importPresets", "Import Presets..."), self)
+        self.importPresetsAction.triggered.connect(self.importPresets)
+
         self.designApproachAction = QAction(lan["designApproach"], self)
         self.designApproachAction.triggered.connect(self.openDesignApproach)
 
@@ -417,18 +431,16 @@ class MainWindow(QMainWindow):
         self.reportGeometryAction = QAction(lan.get("reportGeometry", "Report - Geometry"), self)
         self.reportGeometryAction.triggered.connect(self.generateGeometryReport)
 
-        self.reportVehicleActions = []
-        self.exportVehicleReportActions = []
-        for vehicleIndex in range(vehicle_catalog.MAX_VEHICLES):
-            reportAction = QAction(f'{lan.get("vehicle", "Vehicle")} {vehicleIndex + 1}', self)
-            reportAction.triggered.connect(
-                lambda checked=False, index=vehicleIndex: self.generateVehicleReport(index))
-            self.reportVehicleActions.append(reportAction)
+        # Vehicle report menu, rebuilt whenever the active vehicle count or names change
+        self.reportVehicleMenu = QMenu(self)
+        self.reportVehicleButton = self.buildVehicleMenuButton(
+            lan.get("vehicleReportButton", "Vehicle Report"), self.reportVehicleMenu)
 
-            exportAction = QAction(f'{lan.get("vehicle", "Vehicle")} {vehicleIndex + 1}', self)
-            exportAction.triggered.connect(
-                lambda checked=False, index=vehicleIndex: self.exportVehicleReport(index))
-            self.exportVehicleReportActions.append(exportAction)
+        self.exportVehicleMenu = QMenu(self)
+        self.exportVehicleButton = self.buildVehicleMenuButton(
+            lan.get("vehicleExportButton", "Export Vehicle Report"), self.exportVehicleMenu)
+
+        self.rebuildVehicleReportMenus()
 
         self.exportGeometryReportAction = QAction(
             style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton),
@@ -507,10 +519,6 @@ class MainWindow(QMainWindow):
             action = getattr(self, attributeName, None)
             if action is not None:
                 action.setIcon(icons.makeBadge(badgeText))
-
-        for vehicleIndex in range(len(self.reportVehicleActions)):
-            self.reportVehicleActions[vehicleIndex].setIcon(icons.makeIcon("report"))
-            self.exportVehicleReportActions[vehicleIndex].setIcon(icons.makeIcon("export"))
 
         for dock in self.allDocks():
             dock.toggleViewAction().setIcon(icons.makeIcon("panel"))
@@ -711,12 +719,10 @@ class MainWindow(QMainWindow):
         simulationConfigGroup.addAction(self.toggleUnitsAction, shortKey="shortUnits")
 
         simulationReportGroup = simulationPage.addGroup(lan.get("groupReport", "Report"), "groupReport")
-        for reportAction in self.reportVehicleActions:
-            simulationReportGroup.addAction(reportAction, isLarge=False)
+        simulationReportGroup.addWidget(self.reportVehicleButton)
 
         simulationExportGroup = simulationPage.addGroup(lan.get("groupExport", "Export"), "groupExport")
-        for exportAction in self.exportVehicleReportActions:
-            simulationExportGroup.addAction(exportAction, isLarge=False)
+        simulationExportGroup.addWidget(self.exportVehicleButton)
 
         batchPage = self.ribbonBar.addPage("batch", lan.get("ribbonBatch", "Batch"), "ribbonBatch")
         batchRunGroup = batchPage.addGroup(lan.get("groupBatchRun", "Run"), "groupBatchRun")
@@ -791,11 +797,12 @@ class MainWindow(QMainWindow):
         settingsConfigGroup.addAction(self.geometrySettingsAction, shortKey="shortLimits")
         settingsConfigGroup.addAction(self.openShortcutSettingsAction, shortKey="shortShortcuts")
 
+        presetsGroup = settingsPage.addGroup(lan.get("groupPresets", "Presets"), "groupPresets")
+        presetsGroup.addAction(self.exportPresetsAction, shortKey="shortExport")
+        presetsGroup.addAction(self.importPresetsAction, shortKey="shortImport")
+
         # The ribbon replaces the classic menu bar at the top of the window
         self.setMenuWidget(self.ribbonBar)
-
-        # Only show report and export buttons for the currently active vehicles
-        self.updateVehicleActionVisibility()
 
     # Build the status bar showing engine state, chainage and active theme
     def buildStatusBar(self):
@@ -1088,6 +1095,10 @@ class MainWindow(QMainWindow):
             action.setChecked(action.data() == savedMode)
 
         self.themeManager.applyTheme(savedMode)
+
+        savedUnitsKmh = self.appSettings.value("units/kmh", False, type=bool)
+        self.toggleUnitsAction.setChecked(savedUnitsKmh)
+
         self.updateTexts()
 
     # Persist geometry and dock state so the next launch reopens the same layout
@@ -1096,6 +1107,7 @@ class MainWindow(QMainWindow):
         self.appSettings.setValue("layout/state", self.saveState())
         self.appSettings.setValue("ui/language", self.currentLanguage)
         self.appSettings.setValue("theme/mode", self.themeManager.currentMode)
+        self.appSettings.setValue("units/kmh", self.toggleUnitsAction.isChecked())
 
     # Return every dock to the arrangement captured right after construction
     def resetLayout(self):
@@ -1190,6 +1202,8 @@ class MainWindow(QMainWindow):
         self.speedSettingsAction.setText(lan.get("speedSettings", "Speed Limits Settings"))
         self.designApproachAction.setText(lan["designApproach"])
         self.toggleUnitsAction.setText(lan["units_kmh"])
+        self.exportPresetsAction.setText(lan.get("exportPresets", "Export Presets..."))
+        self.importPresetsAction.setText(lan.get("importPresets", "Import Presets..."))
 
         # Theme, view and layout actions
         self.themeAutoAction.setText(lan.get("themeAuto", "System default (auto)"))
@@ -1211,10 +1225,7 @@ class MainWindow(QMainWindow):
         # Report actions
         self.reportGeometryAction.setText(lan.get("reportGeometry", "Report - Geometry"))
         self.exportGeometryReportAction.setText(lan.get("exportGeometryReport", "Export Geometry Report"))
-        for vehicleIndex in range(vehicle_catalog.MAX_VEHICLES):
-            caption = f'{lan.get("vehicle", "Vehicle")} {vehicleIndex + 1}'
-            self.reportVehicleActions[vehicleIndex].setText(caption)
-            self.exportVehicleReportActions[vehicleIndex].setText(caption)
+        self.rebuildVehicleReportMenus()
 
         # Dock titles
         self.dockWorkflow.setWindowTitle(lan.get("dockWorkflow", "Workflow"))
@@ -1254,13 +1265,39 @@ class MainWindow(QMainWindow):
         except (IndexError, KeyError, TypeError):
             return ""
 
-    # Show report and export buttons only for the currently active number of vehicles
-    def updateVehicleActionVisibility(self):
+    # Build a compact ribbon-styled QToolButton that opens a QMenu instead of triggering a single action
+    def buildVehicleMenuButton(self, text, menu):
+        button = QToolButton()
+        button.setText(text)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        button.setIconSize(COMPACT_ICON_SIZE)
+        button.setMaximumWidth(168)
+        button.setStyleSheet("QToolButton { font-size: 9px; }")
+        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        button.setMenu(menu)
+        button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        return button
+
+    # Rebuild the per-vehicle report and export menus from the currently active vehicle slots
+    def rebuildVehicleReportMenus(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
         activeCount = len(self.dataStorage.get("settingsData", {}).get("vehicles", [])) or 1
-        for index, action in enumerate(self.reportVehicleActions):
-            action.setVisible(index < activeCount)
-        for index, action in enumerate(self.exportVehicleReportActions):
-            action.setVisible(index < activeCount)
+
+        self.reportVehicleButton.setText(lan.get("vehicleReportButton", "Vehicle Report"))
+        self.exportVehicleButton.setText(lan.get("vehicleExportButton", "Export Vehicle Report"))
+
+        self.reportVehicleMenu.clear()
+        self.exportVehicleMenu.clear()
+        for vehicleIndex in range(activeCount):
+            caption = self.getVehicleName(vehicleIndex) or f'{lan.get("vehicle", "Vehicle")} {vehicleIndex + 1}'
+
+            reportAction = self.reportVehicleMenu.addAction(caption)
+            reportAction.triggered.connect(
+                lambda checked=False, index=vehicleIndex: self.generateVehicleReport(index))
+
+            exportAction = self.exportVehicleMenu.addAction(caption)
+            exportAction.triggered.connect(
+                lambda checked=False, index=vehicleIndex: self.exportVehicleReport(index))
 
     def getFileContent(self):
         filepath, _ = QFileDialog.getOpenFileName(self, "Open File", "", "All Files (*);;Text Files (*.txt);;XML Files (*.xml)")
@@ -2540,6 +2577,62 @@ class MainWindow(QMainWindow):
             self.shortcutManager.saveCommands(dialog.getCommands(), dialog.isFloatingInputEnabled())
             self.shortcutManager.applyShortcuts(self)
 
+    # Save every live preference (layout, shortcuts, theme, units, default vehicles) to a portable file
+    def exportPresets(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        defaultPath = str(getWritableRoot() / "config" / "presets.json")
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, lan.get("exportPresets", "Export Presets..."), defaultPath, "JSON Files (*.json)")
+        if not filepath:
+            return
+
+        try:
+            payload = self.presetManager.buildPresetPayload(self)
+            with open(filepath, "w", encoding="utf-8") as fileHandle:
+                json.dump(payload, fileHandle, indent=2, ensure_ascii=False)
+            self.statusBarWidget.showMessage(
+                lan.get("statusPresetsExported", "Presets exported"), SERIES_STATUS_TIMEOUT)
+        except OSError as exportError:
+            QMessageBox.critical(self, lan.get("error", "Error"), str(exportError))
+
+    # Load a portable presets file and confirm before it overwrites the current setup
+    def importPresets(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        defaultPath = str(getWritableRoot() / "config" / "presets.json")
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, lan.get("importPresets", "Import Presets..."), defaultPath, "JSON Files (*.json)")
+        if not filepath:
+            return
+
+        try:
+            with open(filepath, encoding="utf-8") as fileHandle:
+                payload = json.load(fileHandle)
+        except (OSError, json.JSONDecodeError) as importError:
+            QMessageBox.critical(self, lan.get("error", "Error"), str(importError))
+            return
+
+        answer = QMessageBox.question(
+            self, lan.get("importPresets", "Import Presets..."),
+            lan.get("importPresetsConfirm",
+                    "This replaces your current layout, shortcuts, theme and units. Continue?"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        # Rebuilding the dock layout inside the closing dialog crashes the embedded web view
+        QTimer.singleShot(0, lambda: self.runPresetImport(payload))
+
+    # Apply an imported presets payload once the confirm dialog has fully closed
+    def runPresetImport(self, payload):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        try:
+            self.presetManager.applyPresetPayload(self, payload)
+            self.statusBarWidget.showMessage(
+                lan.get("statusPresetsImported", "Presets imported"), SERIES_STATUS_TIMEOUT)
+        except Exception as importError:
+            QMessageBox.critical(self, lan.get("error", "Error"), str(importError))
+
     # Geometry settings
     def openGeometrySettings(self):
         lan = self.translationManager.getLanguage(self.currentLanguage)
@@ -2558,7 +2651,7 @@ class MainWindow(QMainWindow):
                                        tokens=self.themeManager.currentTokens, parent=self)
         if dialog.exec():
             self.dataStorage["settingsData"].update(dialog.getSettings())
-            self.updateVehicleActionVisibility()
+            self.rebuildVehicleReportMenus()
             # Step 4 of the workflow guide covers the vehicle definition
             self.workflowWidget.markCompleted(3)
 
@@ -3076,13 +3169,12 @@ class MainWindow(QMainWindow):
         self.reportGeometryWidget.setPlainText("\n".join(reportLines))
         self.showReportView()
 
-    def generateVehicleReport(self, vIdx=0):
-        lan = self.translationManager.getLanguage(self.currentLanguage)
+    # Every computed value both the on-screen table and every export format need, gathered once
+    def computeVehicleRunMetrics(self, vIdx=0):
         stations = self.dataStorage.get(f"kinematicsStationM_{vIdx}", [])
-        if len(stations) == 0:
-            self.reportVehicleTable.setData([{"Info": lan.get("no_data", "No data available. Calculate values first.")}])
-            self.showReportView()
-            return
+        metrics = {"hasData": len(stations) > 0}
+        if not metrics["hasData"]:
+            return metrics
 
         speeds = self.dataStorage.get(f"kinematicsSpeedM_{vIdx}", np.zeros_like(stations))
         accels = self.dataStorage.get(f"kinematicsAcceleration_{vIdx}", np.zeros_like(stations))
@@ -3092,7 +3184,61 @@ class MainWindow(QMainWindow):
         times = self.dataStorage.get(f"kinematicsTimeS_{vIdx}", [])
         hasTimes = len(times) == len(stations)
 
-        # Shorthand column key names (keeps dict literals concise and order consistent)
+        metrics.update({
+            "vehicleName": self.getVehicleName(vIdx),
+            "stations": stations, "speeds": speeds, "accels": accels,
+            "fTrac": fTrac, "fBrake": fBrake, "fRes": fRes, "times": times, "hasTimes": hasTimes,
+        })
+
+        # Every 10th point + always include first and last (V=0 endpoints)
+        stepIndices = list(range(0, len(stations), 10))
+        if len(stations) - 1 not in stepIndices:
+            stepIndices.append(len(stations) - 1)
+        metrics["stepIndices"] = stepIndices
+
+        # Travel time, average speed, and maximum speed
+        metrics["summary"] = None
+        if len(stations) > 1 and len(times) > 1:
+            totalDistanceM = abs(stations[-1] - stations[0])
+            totalTimeS = times[-1]
+            avgSpeedMs = totalDistanceM / totalTimeS if totalTimeS > 0 else 0
+            metrics["summary"] = {
+                "totalTimeS": totalTimeS,
+                "avgSpeedKmh": avgSpeedMs * 3.6,
+                "maxSpeedKmh": float(np.max(speeds)) * 3.6 if len(speeds) > 0 else 0.0,
+            }
+
+        # Energy calculation (use abs(dx) so reversed vehicles give positive values)
+        dx = np.abs(np.diff(stations))
+        dx = np.append(dx, 0)
+        metrics["energyKwh"] = float(np.sum(fTrac * dx) / 3600.0)
+        metrics["brakeEnergyKwh"] = float(np.sum(fBrake * dx) / 3600.0)
+
+        # Train stops matched against the sampled stations
+        metrics["stopsRows"] = []
+        trainStops = self.dataStorage.get("settingsData", {}).get("trainStops", [])
+        if trainStops:
+            for stop in trainStops:
+                try:
+                    sKm = float(stop[0])
+                    dwell = float(stop[1])
+                    name = str(stop[2]) if len(stop) > 2 else ""
+                    sM = sKm * 1000.0
+                    idx = np.argmin(np.abs(stations - sM))
+                    if np.abs(stations[idx] - sM) < 2.0:
+                        depTime = times[idx] if hasTimes else 0.0
+                        arrTime = max(0.0, depTime - dwell)
+                        metrics["stopsRows"].append({
+                            "stationKm": sKm, "name": name,
+                            "arrivalS": arrTime, "departureS": depTime, "dwellS": dwell,
+                        })
+                except Exception:
+                    continue
+
+        return metrics
+
+    # Table-dict rows for the shared pg.TableWidget report view
+    def buildVehicleReportTableRows(self, metrics, lan):
         kSta   = lan.get("station", "Station [km]")
         kTime  = lan.get("time", "Time [s]")
         kSpd   = lan.get("speed", "Speed [km/h]")
@@ -3103,101 +3249,118 @@ class MainWindow(QMainWindow):
 
         tableData = []
 
-        # Vehicle name for report header
-        vehicleName = self.getVehicleName(vIdx)
         summaryTitle = lan.get('run_summary_title', 'RUN SUMMARY')
-        if vehicleName:
-            summaryTitle = f"{summaryTitle} — {vehicleName}"
+        if metrics["vehicleName"]:
+            summaryTitle = f"{summaryTitle} — {metrics['vehicleName']}"
 
-        # Travel time, average speed, and maximum speed
-        if len(stations) > 1 and len(times) > 1:
-            totalDistanceM = abs(stations[-1] - stations[0])
-            totalTimeS = times[-1]
-            avgSpeedMs = totalDistanceM / totalTimeS if totalTimeS > 0 else 0
-            avgSpeedKmh = avgSpeedMs * 3.6
-            maxSpeedKmh = float(np.max(speeds)) * 3.6 if len(speeds) > 0 else 0.0
-            minutes, seconds = divmod(totalTimeS, 60)
-
+        if metrics["summary"]:
+            minutes, seconds = divmod(metrics["summary"]["totalTimeS"], 60)
             tableData.append({
                 kSta:   f"=== {summaryTitle} ===",
                 kTime:  "",
                 kSpd:   lan.get('total_travel_time', 'Total travel time:'),
                 kAcc:   f"{int(minutes):02d} min {int(seconds):02d} s",
                 kTrac:  lan.get('average_speed', 'Average speed:'),
-                kBrake: f"{avgSpeedKmh:.2f} km/h",
-                kRes:   f"{lan.get('maxSpeed_achieved', 'Max speed:')} {maxSpeedKmh:.0f} km/h"
+                kBrake: f"{metrics['summary']['avgSpeedKmh']:.2f} km/h",
+                kRes:   f"{lan.get('maxSpeed_achieved', 'Max speed:')} {metrics['summary']['maxSpeedKmh']:.0f} km/h"
             })
             tableData.append({k: "---" for k in tableData[0].keys()})
-
-        # Energy calculation (use abs(dx) so reversed vehicles give positive values)
-        dx = np.abs(np.diff(stations))
-        dx = np.append(dx, 0)
-        energyKwh = np.sum(fTrac * dx) / 3600.0
-        brakeEnergyKwh = np.sum(fBrake * dx) / 3600.0
 
         tableData.append({
             kSta:   f"=== {lan.get('energy_title', 'ENERGY')} ===",
             kTime:  "",
             kSpd:   f"{lan.get('energyTraction', 'Traction [kWh]')}:",
-            kAcc:   f"{energyKwh:.2f}",
+            kAcc:   f"{metrics['energyKwh']:.2f}",
             kTrac:  f"{lan.get('energyBraking', 'Braking [kWh]')}:",
-            kBrake: f"{brakeEnergyKwh:.2f}",
+            kBrake: f"{metrics['brakeEnergyKwh']:.2f}",
             kRes:   ""
         })
         tableData.append({k: "---" for k in tableData[0].keys()})
 
-        # Train stops summary block
-        trainStops = self.dataStorage.get("settingsData", {}).get("trainStops", [])
-        if trainStops:
+        if metrics["stopsRows"]:
             tableData.append({
-                kSta:   f"=== {lan.get('stopsHeader', 'STOPS')} ===",
-                kTime:  "",
-                kSpd:   "",
-                kAcc:   "",
-                kTrac:  "",
-                kBrake: "",
-                kRes:   ""
+                kSta: f"=== {lan.get('stopsHeader', 'STOPS')} ===", kTime: "", kSpd: "",
+                kAcc: "", kTrac: "", kBrake: "", kRes: ""
             })
-            for stop in trainStops:
-                try:
-                    sKm = float(stop[0])
-                    dwell = float(stop[1])
-                    name = str(stop[2]) if len(stop) > 2 else ""
-                    sM = sKm * 1000.0
-                    idx = np.argmin(np.abs(stations - sM))
-                    if np.abs(stations[idx] - sM) < 2.0:
-                        depTime = self.dataStorage.get(f"kinematicsTimeS_{vIdx}")[idx]
-                        arrTime = max(0, depTime - dwell)
-                        tableData.append({
-                            kSta:   f"{sKm:.3f} {name}",
-                            kTime:  "",
-                            kSpd:   f"Arr: {arrTime:.1f} s",
-                            kAcc:   f"Dep: {depTime:.1f} s",
-                            kTrac:  f"Dwell: {dwell} s",
-                            kBrake: "-",
-                            kRes:   "-"
-                        })
-                except Exception:
-                    continue
+            for stop in metrics["stopsRows"]:
+                tableData.append({
+                    kSta:   f"{stop['stationKm']:.3f} {stop['name']}",
+                    kTime:  "",
+                    kSpd:   f"Arr: {stop['arrivalS']:.1f} s",
+                    kAcc:   f"Dep: {stop['departureS']:.1f} s",
+                    kTrac:  f"Dwell: {stop['dwellS']} s",
+                    kBrake: "-",
+                    kRes:   "-"
+                })
             tableData.append({k: "---" for k in tableData[0].keys()})
 
-        # Every 10th point + always include first and last (V=0 endpoints)
-        stepIndices = list(range(0, len(stations), 10))
-        if len(stations) - 1 not in stepIndices:
-            stepIndices.append(len(stations) - 1)
-        for i in stepIndices:
-            sKm = stations[i] / 1000.0
+        for i in metrics["stepIndices"]:
+            sKm = metrics["stations"][i] / 1000.0
             tableData.append({
                 kSta:   f"{sKm:.3f}",
-                kTime:  f"{times[i]:.1f}" if hasTimes else "",
-                kSpd:   f"{speeds[i]*3.6:.1f}",
-                kAcc:   f"{accels[i]:.3f}",
-                kTrac:  f"{fTrac[i]:.1f}",
-                kBrake: f"{fBrake[i]:.1f}",
-                kRes:   f"{fRes[i]:.1f}"
+                kTime:  f"{metrics['times'][i]:.1f}" if metrics["hasTimes"] else "",
+                kSpd:   f"{metrics['speeds'][i]*3.6:.1f}",
+                kAcc:   f"{metrics['accels'][i]:.3f}",
+                kTrac:  f"{metrics['fTrac'][i]:.1f}",
+                kBrake: f"{metrics['fBrake'][i]:.1f}",
+                kRes:   f"{metrics['fRes'][i]:.1f}"
             })
 
-        self.reportVehicleTable.setData(tableData)
+        return tableData
+
+    # Flat text lines for txt/pdf/md/tex export, using the "=== TITLE ===" section convention
+    def buildVehicleReportLines(self, metrics, lan):
+        reportLines = []
+
+        summaryTitle = lan.get('run_summary_title', 'RUN SUMMARY')
+        if metrics["vehicleName"]:
+            summaryTitle = f"{summaryTitle} — {metrics['vehicleName']}"
+        reportLines.append(f"=== {summaryTitle} ===")
+        if metrics["summary"]:
+            minutes, seconds = divmod(metrics["summary"]["totalTimeS"], 60)
+            reportLines.append(f"{lan.get('total_travel_time', 'Total travel time:')} {int(minutes):02d} min {int(seconds):02d} s")
+            reportLines.append(f"{lan.get('average_speed', 'Average speed:')} {metrics['summary']['avgSpeedKmh']:.2f} km/h")
+            reportLines.append(f"{lan.get('maxSpeed_achieved', 'Max speed:')} {metrics['summary']['maxSpeedKmh']:.0f} km/h")
+        reportLines.append("")
+
+        reportLines.append(f"=== {lan.get('energy_title', 'ENERGY')} ===")
+        reportLines.append(f"{lan.get('energyTraction', 'Traction [kWh]')}: {metrics['energyKwh']:.2f}")
+        reportLines.append(f"{lan.get('energyBraking', 'Braking [kWh]')}: {metrics['brakeEnergyKwh']:.2f}")
+        reportLines.append("")
+
+        if metrics["stopsRows"]:
+            reportLines.append(f"=== {lan.get('stopsHeader', 'STOPS')} ===")
+            for stop in metrics["stopsRows"]:
+                reportLines.append(
+                    f"{stop['stationKm']:.3f} km  {stop['name']}  "
+                    f"Arr: {stop['arrivalS']:.1f}s  Dep: {stop['departureS']:.1f}s  Dwell: {stop['dwellS']:.0f}s")
+            reportLines.append("")
+
+        reportLines.append(f"=== {lan.get('dataSectionTitle', 'DATA')} ===")
+        reportLines.append(
+            f"{lan.get('station', 'Station [km]'):>12} {lan.get('time', 'Time [s]'):>10} "
+            f"{lan.get('speed', 'Speed [km/h]'):>10} {lan.get('accel', 'Accel [m/s²]'):>10} "
+            f"{lan.get('forceTraction', 'Tractive Force [kN]'):>14} "
+            f"{lan.get('forceBraking', 'Braking Force [kN]'):>14} "
+            f"{lan.get('forceResistance', 'Resistance [kN]'):>14}")
+        for i in metrics["stepIndices"]:
+            sKm = metrics["stations"][i] / 1000.0
+            timeStr = f"{metrics['times'][i]:.1f}" if metrics["hasTimes"] else ""
+            reportLines.append(
+                f"{sKm:12.3f} {timeStr:>10} {metrics['speeds'][i]*3.6:10.1f} {metrics['accels'][i]:10.3f} "
+                f"{metrics['fTrac'][i]:14.1f} {metrics['fBrake'][i]:14.1f} {metrics['fRes'][i]:14.1f}")
+
+        return reportLines
+
+    def generateVehicleReport(self, vIdx=0):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        metrics = self.computeVehicleRunMetrics(vIdx)
+        if not metrics["hasData"]:
+            self.reportVehicleTable.setData([{"Info": lan.get("no_data", "No data available. Calculate values first.")}])
+            self.showReportView()
+            return
+
+        self.reportVehicleTable.setData(self.buildVehicleReportTableRows(metrics, lan))
         self.showReportView()
 
     def exportGeometryReport(self):
@@ -3225,107 +3388,37 @@ class MainWindow(QMainWindow):
 
     def exportVehicleReport(self, vIdx=0):
         lan = self.translationManager.getLanguage(self.currentLanguage)
-        stations = self.dataStorage.get(f"kinematicsStationM_{vIdx}", [])
-        if len(stations) == 0:
+        metrics = self.computeVehicleRunMetrics(vIdx)
+        if not metrics["hasData"]:
             QMessageBox.warning(self, lan.get("error", "Error"), lan.get("no_data", "No data available. Calculate values first."))
             return
 
-        filepath, _ = QFileDialog.getSaveFileName(self, lan.get("exportVehicleReport", "Export Vehicle Report"), "", "CSV Files (*.csv);;All Files (*)")
+        reportFilter = "Text (*.txt);;PDF (*.pdf);;Markdown (*.md);;LaTeX (*.tex);;CSV (*.csv)"
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, lan.get("exportVehicleReport", "Export Vehicle Report"), "", reportFilter)
         if not filepath:
             return
 
         try:
-            speeds = self.dataStorage.get(f"kinematicsSpeedM_{vIdx}", np.zeros_like(stations))
-            accels = self.dataStorage.get(f"kinematicsAcceleration_{vIdx}", np.zeros_like(stations))
-            fTrac = self.dataStorage.get(f"kinematicsForceTractionKN_{vIdx}", np.zeros_like(stations))
-            fBrake = self.dataStorage.get(f"kinematicsForceBrakingKN_{vIdx}", np.zeros_like(stations))
-            fRes = self.dataStorage.get(f"kinematicsForceResistanceKN_{vIdx}", np.zeros_like(stations))
-            times = self.dataStorage.get(f"kinematicsTimeS_{vIdx}", [])
-            hasTimes = len(times) == len(stations)
+            titleText = lan.get("reportVehicleTitle", "Vehicle Report")
+            if metrics["vehicleName"]:
+                titleText = f"{titleText} — {metrics['vehicleName']}"
 
-            with open(filepath, "w", newline="", encoding="utf-8") as file:
-                writer = csv.writer(file)
-
-                # === RUN SUMMARY ===
-                vehicleName = self.getVehicleName(vIdx)
-                if len(stations) > 1 and len(times) > 1:
-                    totalDistanceM = abs(stations[-1] - stations[0])
-                    totalTimeS = times[-1]
-                    avgSpeedMs = totalDistanceM / totalTimeS if totalTimeS > 0 else 0
-                    avgSpeedKmh = avgSpeedMs * 3.6
-                    maxSpeedKmh = float(np.max(speeds)) * 3.6 if len(speeds) > 0 else 0.0
-                    minutes, seconds = divmod(totalTimeS, 60)
-                    writer.writerow([f"=== {lan.get('run_summary_title', 'RUN SUMMARY')} ==="])
-                    if vehicleName:
-                        writer.writerow([lan.get('vehicle', 'Vehicle') + ":", vehicleName])
-                    writer.writerow([lan.get('total_travel_time', 'Total travel time:'),
-                                     f"{int(minutes):02d} min {int(seconds):02d} s"])
-                    writer.writerow([lan.get('average_speed', 'Average speed:'),
-                                     f"{avgSpeedKmh:.2f} km/h"])
-                    writer.writerow([lan.get('maxSpeed_achieved', 'Maximum speed achieved:'),
-                                     f"{maxSpeedKmh:.0f} km/h"])
-                    writer.writerow([])
-
-                # === ENERGY (abs(dx) so reversed vehicles give positive values) ===
-                dx = np.abs(np.diff(stations))
-                dx = np.append(dx, 0)
-                energyKwh = np.sum(fTrac * dx) / 3600.0
-                brakeEnergyKwh = np.sum(fBrake * dx) / 3600.0
-                writer.writerow([f"=== {lan.get('energy_title', 'ENERGY')} ==="])
-                writer.writerow([lan.get('energyTraction', 'Traction [kWh]'), f"{energyKwh:.2f}"])
-                writer.writerow([lan.get('energyBraking', 'Braking [kWh]'), f"{brakeEnergyKwh:.2f}"])
-                writer.writerow([])
-
-                # === STOPS ===
-                trainStops = self.dataStorage.get("settingsData", {}).get("trainStops", [])
-                if trainStops and hasTimes:
-                    writer.writerow([f"=== {lan.get('stopsHeader', 'STOPS')} ==="])
-                    writer.writerow([
-                        lan.get("station", "Station [km]"),
-                        lan.get("stopName", "Stop Name"),
-                        lan.get("arrivalTime", "Arr [s]"),
-                        lan.get("departureTime", "Dep [s]"),
-                        lan.get("dwellTimeTable", "Dwell Time [s]")
-                    ])
-                    for stop in trainStops:
-                        try:
-                            sKm = float(stop[0])
-                            dwell = float(stop[1])
-                            name = str(stop[2]) if len(stop) > 2 else ""
-                            sM = sKm * 1000.0
-                            idx = np.argmin(np.abs(stations - sM))
-                            if np.abs(stations[idx] - sM) < 2.0:
-                                depTime = times[idx]
-                                arrTime = max(0.0, depTime - dwell)
-                                writer.writerow([f"{sKm:.3f}", name,
-                                                 f"{arrTime:.1f}", f"{depTime:.1f}",
-                                                 f"{dwell:.0f}"])
-                        except Exception:
-                            continue
-                    writer.writerow([])
-
-                # === DATA ROWS ===
-                writer.writerow([
-                    lan.get("station", "Station [km]"),
-                    lan.get("time", "Time [s]"),
-                    lan.get("speed", "Speed [km/h]"),
-                    "Accel [m/s2]",
-                    lan.get("forceTraction", "Tractive Force [kN]"),
-                    lan.get("forceBraking", "Braking Force [kN]"),
-                    lan.get("forceResistance", "Resistance [kN]")
-                ])
-                for i in range(len(stations)):
-                    sKm = stations[i] / 1000.0
-                    writer.writerow([
-                        f"{sKm:.3f}",
-                        f"{times[i]:.1f}" if hasTimes else "",
-                        f"{speeds[i]*3.6:.1f}",
-                        f"{accels[i]:.3f}",
-                        f"{fTrac[i]:.1f}",
-                        f"{fBrake[i]:.1f}",
-                        f"{fRes[i]:.1f}"
-                    ])
-
+            if filepath.lower().endswith(".csv"):
+                headerRow = [lan.get("station", "Station [km]"), lan.get("time", "Time [s]"),
+                            lan.get("speed", "Speed [km/h]"), "Accel [m/s2]",
+                            lan.get("forceTraction", "Tractive Force [kN]"),
+                            lan.get("forceBraking", "Braking Force [kN]"),
+                            lan.get("forceResistance", "Resistance [kN]")]
+                dataRows = [[f"{metrics['stations'][i]/1000.0:.3f}",
+                            f"{metrics['times'][i]:.1f}" if metrics["hasTimes"] else "",
+                            f"{metrics['speeds'][i]*3.6:.1f}", f"{metrics['accels'][i]:.3f}",
+                            f"{metrics['fTrac'][i]:.1f}", f"{metrics['fBrake'][i]:.1f}",
+                            f"{metrics['fRes'][i]:.1f}"] for i in range(len(metrics["stations"]))]
+                report_formats.rowsToCsv(filepath, headerRow, dataRows)
+            else:
+                reportLines = self.buildVehicleReportLines(metrics, lan)
+                report_formats.writeReportFile(reportLines, filepath, titleText)
         except Exception as e:
             QMessageBox.critical(self, lan.get("error", "Error"), f"{e}")
 
@@ -3476,7 +3569,7 @@ class MainWindow(QMainWindow):
         vehicle.speedLimitsToTime()
 
         self.plotKinematics()
-        self.updateVehicleActionVisibility()
+        self.rebuildVehicleReportMenus()
 
         # Step 6 of the workflow guide covers the running simulation
         self.workflowWidget.markCompleted(5)

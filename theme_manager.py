@@ -41,6 +41,7 @@ LIGHT_TOKENS = {
     "plotGrid": "#c8c8c8",
     "accentDone": "#2e9e4f",
     "accentDoneBackground": "#dff3e4",
+    "error": "#c0392b",
 }
 
 # Colour tokens for the dark theme
@@ -59,6 +60,7 @@ DARK_TOKENS = {
     "plotGrid": "#4d4d4d",
     "accentDone": "#4cc46e",
     "accentDoneBackground": "#264d33",
+    "error": "#e57373",
 }
 
 
@@ -307,6 +309,70 @@ QHeaderView::section {{
     color: {tokens['text']};
     border: 1px solid {tokens['border']};
     padding: 3px;
+}}
+QDialog {{
+    background: {tokens['window']};
+    color: {tokens['text']};
+}}
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
+    background: {tokens['base']};
+    color: {tokens['text']};
+    border: 1px solid {tokens['border']};
+    border-radius: 3px;
+    padding: 3px 6px;
+    selection-background-color: {tokens['highlight']};
+    selection-color: {tokens['highlightText']};
+}}
+QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{
+    color: {tokens['disabledText']};
+    background: {tokens['alternateBase']};
+}}
+QComboBox::drop-down {{
+    border-left: 1px solid {tokens['border']};
+}}
+QComboBox QAbstractItemView {{
+    background: {tokens['base']};
+    color: {tokens['text']};
+    border: 1px solid {tokens['border']};
+    selection-background-color: {tokens['highlight']};
+    selection-color: {tokens['highlightText']};
+    outline: 0;
+}}
+QMenu {{
+    background: {tokens['base']};
+    color: {tokens['text']};
+    border: 1px solid {tokens['border']};
+}}
+QMenu::item {{
+    padding: 4px 20px;
+}}
+QMenu::item:selected {{
+    background: {tokens['highlight']};
+    color: {tokens['highlightText']};
+}}
+QMenu::separator {{
+    height: 1px;
+    background: {tokens['border']};
+    margin: 4px 8px;
+}}
+QListWidget, QTreeWidget, QTableWidget {{
+    background: {tokens['base']};
+    alternate-background-color: {tokens['alternateBase']};
+    color: {tokens['text']};
+    border: 1px solid {tokens['border']};
+    gridline-color: {tokens['border']};
+}}
+QListWidget::item, QTreeWidget::item, QTreeView::item {{
+    padding: 2px;
+    color: {tokens['text']};
+}}
+QListWidget::item:selected, QTreeWidget::item:selected, QTreeView::item:selected,
+QTableWidget::item:selected {{
+    background: {tokens['highlight']};
+    color: {tokens['highlightText']};
+}}
+QLabel[errorState="true"] {{
+    color: {tokens['error']};
 }}
 """
 

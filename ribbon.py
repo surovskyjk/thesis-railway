@@ -1,13 +1,16 @@
 # Modern ribbon style tabbed command bar built from QToolButton groups
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QSizePolicy, QTabWidget,
-                               QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtCore import QEvent, QSize, Qt
+from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QScrollArea, QSizePolicy,
+                               QTabWidget, QToolButton, QVBoxLayout, QWidget)
 
 # Icon size used by the large buttons of a ribbon group
 LARGE_ICON_SIZE = QSize(26, 26)
 
 # Icon size used by the compact buttons of a ribbon group
 COMPACT_ICON_SIZE = QSize(18, 18)
+
+# Pixels scrolled per wheel notch or per overflow arrow click
+RIBBON_SCROLL_STEP = 80
 
 # Dynamic property marking the independently checkable data series buttons
 SERIES_TOGGLE_PROPERTY = "seriesToggle"
@@ -130,11 +133,85 @@ class RibbonPage(QWidget):
             group.retranslate(lan)
 
 
+class RibbonPageContainer(QWidget):
+    def __init__(self, page, parent=None):
+        super().__init__(parent)
+
+        self.page = page
+
+        outerLayout = QHBoxLayout(self)
+        outerLayout.setContentsMargins(0, 0, 0, 0)
+        outerLayout.setSpacing(0)
+
+        self.scrollArea = QScrollArea()
+        self.scrollArea.setWidgetResizable(True)
+        self.scrollArea.setFrameShape(QFrame.Shape.NoFrame)
+        self.scrollArea.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scrollArea.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scrollArea.setWidget(page)
+        self.scrollArea.viewport().installEventFilter(self)
+
+        self.leftArrowButton = QToolButton()
+        self.leftArrowButton.setArrowType(Qt.ArrowType.LeftArrow)
+        self.leftArrowButton.setAutoRepeat(True)
+        self.leftArrowButton.clicked.connect(self.scrollLeft)
+
+        self.rightArrowButton = QToolButton()
+        self.rightArrowButton.setArrowType(Qt.ArrowType.RightArrow)
+        self.rightArrowButton.setAutoRepeat(True)
+        self.rightArrowButton.clicked.connect(self.scrollRight)
+
+        outerLayout.addWidget(self.leftArrowButton)
+        outerLayout.addWidget(self.scrollArea, 1)
+        outerLayout.addWidget(self.rightArrowButton)
+
+        self.scrollArea.horizontalScrollBar().valueChanged.connect(self.updateArrowState)
+        self.scrollArea.horizontalScrollBar().rangeChanged.connect(self.updateArrowState)
+        self.updateArrowState()
+
+    def scrollLeft(self):
+        bar = self.scrollArea.horizontalScrollBar()
+        bar.setValue(bar.value() - RIBBON_SCROLL_STEP)
+
+    def scrollRight(self):
+        bar = self.scrollArea.horizontalScrollBar()
+        bar.setValue(bar.value() + RIBBON_SCROLL_STEP)
+
+    # Hide both arrows once the page fits, disable whichever side is exhausted otherwise
+    def updateArrowState(self, *_args):
+        bar = self.scrollArea.horizontalScrollBar()
+        hasOverflow = bar.maximum() > 0
+        self.leftArrowButton.setVisible(hasOverflow)
+        self.rightArrowButton.setVisible(hasOverflow)
+        self.leftArrowButton.setEnabled(bar.value() > bar.minimum())
+        self.rightArrowButton.setEnabled(bar.value() < bar.maximum())
+
+    # Translate a Shift+Wheel or a horizontal tilt wheel into ribbon scrolling
+    def eventFilter(self, watched, event):
+        if watched is self.scrollArea.viewport() and event.type() == QEvent.Type.Wheel:
+            tiltDelta = event.angleDelta().x()
+            if tiltDelta:
+                bar = self.scrollArea.horizontalScrollBar()
+                bar.setValue(bar.value() - tiltDelta)
+                return True
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                bar = self.scrollArea.horizontalScrollBar()
+                bar.setValue(bar.value() - event.angleDelta().y())
+                return True
+        return super().eventFilter(watched, event)
+
+    # Re-evaluate overflow whenever the window (and therefore the ribbon) is resized
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.updateArrowState()
+
+
 class RibbonBar(QTabWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
         self.pages = {}
+        self.pageContainers = {}
         self.pageTitleKeys = {}
         self.setDocumentMode(True)
 
@@ -145,8 +222,10 @@ class RibbonBar(QTabWidget):
     # Register a new ribbon tab and return its page for populating
     def addPage(self, pageKey, title, titleKey=None):
         page = RibbonPage()
-        self.addTab(page, title)
+        container = RibbonPageContainer(page)
+        self.addTab(container, title)
         self.pages[pageKey] = page
+        self.pageContainers[pageKey] = container
         self.pageTitleKeys[pageKey] = titleKey
         return page
 
@@ -156,10 +235,10 @@ class RibbonBar(QTabWidget):
 
     # Update the tab captions after a language change
     def setPageTitle(self, pageKey, title):
-        page = self.pages.get(pageKey)
-        if page is None:
+        container = self.pageContainers.get(pageKey)
+        if container is None:
             return
-        index = self.indexOf(page)
+        index = self.indexOf(container)
         if index >= 0:
             self.setTabText(index, title)
 
@@ -168,5 +247,7 @@ class RibbonBar(QTabWidget):
         for pageKey, page in self.pages.items():
             titleKey = self.pageTitleKeys.get(pageKey)
             if titleKey:
-                self.setPageTitle(pageKey, lan.get(titleKey, self.tabText(self.indexOf(page))))
+                container = self.pageContainers.get(pageKey)
+                fallbackIndex = self.indexOf(container) if container is not None else -1
+                self.setPageTitle(pageKey, lan.get(titleKey, self.tabText(fallbackIndex)))
             page.retranslate(lan)

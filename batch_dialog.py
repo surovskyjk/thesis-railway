@@ -371,6 +371,12 @@ class BatchProcessingDialog(QDialog):
         configData["exportFormats"] = {key: check.isChecked() for key, check in self.formatChecks.items()}
         return configData
 
+    # Toggle the themed error styling on the variant preview label
+    def setPreviewError(self, isError):
+        self.variantPreviewLabel.setProperty("errorState", isError)
+        self.variantPreviewLabel.style().unpolish(self.variantPreviewLabel)
+        self.variantPreviewLabel.style().polish(self.variantPreviewLabel)
+
     def refreshVariantPreview(self, *args):
         if not self.isFullyBuilt:
             return
@@ -378,16 +384,16 @@ class BatchProcessingDialog(QDialog):
         problems = self.batchConfigStore.validateConfig(configData)
         if problems:
             self.variantPreviewLabel.setText("; ".join(self.lan.get(code, code) for code in problems))
-            self.variantPreviewLabel.setStyleSheet("color: #c0392b;")
+            self.setPreviewError(True)
             return
         try:
             variantCount = len(batch_config.expandVariantSpecs(configData))
             previewText = self.lan.get("batchVariantPreview", "{count} variants will be executed")
             self.variantPreviewLabel.setText(previewText.format(count=variantCount))
-            self.variantPreviewLabel.setStyleSheet("")
+            self.setPreviewError(False)
         except ValueError as exc:
             self.variantPreviewLabel.setText(str(exc))
-            self.variantPreviewLabel.setStyleSheet("color: #c0392b;")
+            self.setPreviewError(True)
 
     def onAccept(self):
         configData = self.collectConfigData()
