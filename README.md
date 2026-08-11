@@ -24,7 +24,8 @@ Built with Python and PySide6.
 - Light and dark themes following the operating system, with a manual override
 - Dock layout, theme and language persisted between sessions
 - Multi-language UI: Czech, English, German
-- Export geometry report (text) and kinematics results (CSV)
+- Export geometry report (Text, PDF, Markdown or LaTeX) and kinematics results (CSV)
+- Batch processing: merge several LandXML files with rebased chainage, run a matrix of stopping patterns x design approaches x an optional sensitivity sweep as isolated background variants, compare them on a dedicated overlay dashboard, and export every report, protocol and comparison table as one ZIP archive
 
 ---
 
@@ -124,6 +125,19 @@ Train stops are enforced by setting the speed limit to zero at the stop station.
 
 ---
 
+## Batch Processing and Variant Comparison
+
+The Batch page runs many track variants unattended and compares them side by side.
+
+- Multi-LandXML merger - select several LandXML files in one picker; they are concatenated end to end with chainage rebased so file N+1 continues where file N ends (or kept as imported for genuinely contiguous surveys), with a warning if a junction gap exceeds 100 m
+- Variant matrix - cross a set of station CSV stopping patterns (e.g. Regional vs Express) with a set of design-approach combinations (standard / limit / minmax per I, deltaI, n, nI), optionally stepping one further parameter (D_max, cant gradient, braking deceleration, ...) across a `[min, max, step]` range
+- Isolated execution - every variant runs the unmodified `GeometryCalculator` and `VehicleCalculator` engines against its own deep-copied data on a background thread, so the ribbon stays responsive and a failed or cancelled variant never aborts the rest of the batch
+- Variant Comparison Dashboard - a third central view overlaying every variant's speed profile v(s) and cant deficiency I(s) on synchronised pyqtgraph plots, plus side-by-side summary and inter-station travel-time tables
+- Presets - a batch configuration (files, stopping patterns, approaches, sweep, output formats) can be saved to and reloaded from a JSON preset
+- ZIP export - packages every variant's report, calculation protocol, raw CSV data and comparison matrices, plus the overlay plot images, into one structured archive; reports can be written as Text, PDF, Markdown or LaTeX
+
+---
+
 ## Project Structure
 
 - `main.py` - application entry point
@@ -151,7 +165,17 @@ Train stops are enforced by setting the speed limit to zero at the stop station.
 - `shortcut_manager.py` - loads `config/shortcuts.json`, applies shortcuts, resolves typed commands
 - `settings_dialog.py` - dialog for editing command aliases and keyboard shortcuts
 - `config/shortcuts.json` - external command name, alias, and keyboard shortcut mappings
-- `tests/` - unit tests for geometry engine functions
+- `landxml_merger.py` - chainage-rebasing concatenation of several parsed LandXML alignments
+- `batch_config.py` - batch configuration schema, JSON preset persistence, variant cross-product expansion
+- `batch_metrics.py` - headless travel-time, track-length and variant metric helpers shared by the track stats dock
+- `batch_runner.py` - isolated per-variant execution and the QThread worker/controller running a batch
+- `batch_results.py` - holds the most recently run batch's results, outside the live project data
+- `batch_dialog.py` - batch configuration modal (track sources, stopping patterns, approaches, sensitivity, output)
+- `batch_progress.py` - progress dialog shown while a batch runs and while the archive is packaged
+- `variant_dashboard.py` - overlay plots and comparison tables for the Variant Comparison Dashboard
+- `report_formats.py` - renders a report's lines to Text, Markdown, LaTeX, CSV or PDF
+- `batch_export.py` - assembles a batch's reports, protocols and comparison data into one ZIP archive
+- `tests/` - unit tests for the geometry engine, vehicle catalog, and batch processing modules
 
 ---
 

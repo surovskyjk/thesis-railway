@@ -1,6 +1,7 @@
 # Shared pyqtgraph plotting infrastructure used by every plot dock and popup
 import numpy as np
 import pyqtgraph as pg
+import pyqtgraph.exporters
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor
 from PySide6.QtWidgets import QFileDialog, QMenu, QToolBar
@@ -36,6 +37,10 @@ VEHICLE_LIMIT_COLORS = ["#f0a0a0", "#a8dcae", "#a8c8ef", "#d4a8ef", "#f0d0a0"]
 VEHICLE_TRACTION_COLORS = ["#2e9e4f", "#63d17c", "#1c6b34", "#7fd68a", "#0f7a2e"]
 VEHICLE_BRAKING_COLORS = ["#d64545", "#8f2020", "#f08e8e", "#b03030", "#f0aaaa"]
 VEHICLE_RESISTANCE_COLORS = ["#e08a2e", "#f0a95c", "#c9a227", "#f0c67a", "#b8801a"]
+
+# Qualitative colour bank for overlaying an arbitrary number of batch variants on one plot
+VARIANT_COLORS = ["#d64545", "#2e9e4f", "#4a7fd4", "#a04fd6", "#d68f2e",
+                   "#0f8b8d", "#e377c2", "#8c564b", "#bcbd22", "#17becf"]
 
 # Series that keep the theme foreground colour so they stay readable on both themes
 FOREGROUND_SERIES = ("cant", "speedLimits")
@@ -500,6 +505,34 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
 
         self.refreshStationMarkers()
 
+    # Save the whole canvas as a high resolution raster image, callable without a toolbar
+    def exportSceneImage(self, filePath, widthMultiplier=3):
+        exporter = pg.exporters.ImageExporter(self.scene())
+        exporter.parameters()["width"] = int(self.width() * widthMultiplier)
+        exporter.export(filePath)
+
+    # Save the whole canvas as a vector SVG image, callable without a toolbar
+    def exportSceneVector(self, filePath):
+        exporter = pg.exporters.SVGExporter(self.scene())
+        exporter.export(filePath)
+
+    # Save a single plot row as a high resolution raster image, e.g. one variant-overlay panel of several
+    def exportPlotItemImage(self, plotKey, filePath, widthMultiplier=3):
+        plotItem = self.plotItems.get(plotKey)
+        if plotItem is None:
+            return
+        exporter = pg.exporters.ImageExporter(plotItem)
+        exporter.parameters()["width"] = int(self.width() * widthMultiplier)
+        exporter.export(filePath)
+
+    # Save a single plot row as a vector SVG image
+    def exportPlotItemVector(self, plotKey, filePath):
+        plotItem = self.plotItems.get(plotKey)
+        if plotItem is None:
+            return
+        exporter = pg.exporters.SVGExporter(plotItem)
+        exporter.export(filePath)
+
     # Start reporting the chainage under the mouse from every tracked plot
     def enableCursorTracking(self, readoutPlotKey=None):
         self.readoutPlotKey = readoutPlotKey or next(iter(self.plotItems), None)
@@ -783,18 +816,18 @@ class PlotNavigationToolbar(QToolBar):
         for plotKey in self.plotWidget.zeroLockedPlots:
             self.plotWidget.syncZeroAlignment(plotKey)
 
-    # Save the whole plot canvas as a high resolution raster image
+    # Save the whole plot canvas as a high resolution raster or vector image
     def exportHighRes(self):
         filePath, _ = QFileDialog.getSaveFileName(
             self, self.lan.get("plotExportHighRes", "High resolution export"),
-            "plot.png", "PNG (*.png);;JPEG (*.jpg)")
+            "plot.png", "PNG (*.png);;SVG (*.svg);;JPEG (*.jpg)")
         if not filePath:
             return
 
-        exporter = pg.exporters.ImageExporter(self.plotWidget.scene())
-        # Multiplying the canvas width gives a print ready pixel density
-        exporter.parameters()["width"] = int(self.plotWidget.width() * 3)
-        exporter.export(filePath)
+        if filePath.lower().endswith(".svg"):
+            self.plotWidget.exportSceneVector(filePath)
+        else:
+            self.plotWidget.exportSceneImage(filePath)
 
     # Refresh the toolbar captions after a language change
     def retranslate(self, lan):

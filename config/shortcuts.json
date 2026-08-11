@@ -95,6 +95,24 @@
       "action": "openPurgeDialogAction",
       "alias": "purge",
       "shortcut": "Ctrl+Shift+P"
+    },
+    {
+      "commandName": "BatchProcessing",
+      "action": "openBatchProcessingAction",
+      "alias": "batch",
+      "shortcut": "Ctrl+Shift+B"
+    },
+    {
+      "commandName": "VariantDashboard",
+      "action": "showDashboardAction",
+      "alias": "variants",
+      "shortcut": "Ctrl+Shift+D"
+    },
+    {
+      "commandName": "ExportBatchArchive",
+      "action": "exportBatchArchiveAction",
+      "alias": "batchzip",
+      "shortcut": ""
     }
   ],
   "floatingCommandInputEnabled": true

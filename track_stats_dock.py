@@ -5,6 +5,7 @@ import numpy as np
 
 from ui_kit import CollapsibleSection, MetricCard
 from vehicle_catalog import MAX_VEHICLES
+import batch_metrics
 
 # Design speed profiles offered by the profile selector, matches gui_overlay's MapSettingsDialog
 DESIGN_PROFILE_CHOICES = [
@@ -121,7 +122,7 @@ class TrackStatisticsWidget(QWidget):
 
     # Guard used before touching any optional array
     def hasData(self, values):
-        return values is not None and len(values) > 0
+        return batch_metrics.hasData(values)
 
     # Fallback text shown wherever a statistic cannot be computed yet
     def noDataText(self):
@@ -129,31 +130,15 @@ class TrackStatisticsWidget(QWidget):
 
     # Render a duration in seconds as MM:SS, or the no-data placeholder
     def formatDuration(self, seconds):
-        if seconds is None:
-            return self.noDataText()
-        minutes, secs = divmod(max(0.0, seconds), 60)
-        return f"{int(minutes):02d}:{int(secs):02d}"
+        return batch_metrics.formatDuration(seconds, self.noDataText())
 
     # Scheduled stops in the order they were imported, never sorted by chainage
     def stopsList(self, dataStorage):
-        stops = []
-        for stop in (dataStorage.get("settingsData", {}) or {}).get("trainStops", []):
-            try:
-                stationKm = float(stop[0])
-                dwell = float(stop[1])
-                name = str(stop[2]) if len(stop) > 2 else ""
-            except (IndexError, ValueError, TypeError):
-                continue
-            stops.append((stationKm, dwell, name))
-        return stops
+        return batch_metrics.stopsList(dataStorage)
 
     # Track length in kilometres derived from the parsed alignment chainage
     def computeTrackLength(self, dataStorage):
-        stationHorizontal = dataStorage.get("LandXML", {}).get("stationHorizontal")
-        if not self.hasData(stationHorizontal):
-            return None
-        stationHorizontal = np.asarray(stationHorizontal, dtype=float)
-        return float(np.max(stationHorizontal) - np.min(stationHorizontal))
+        return batch_metrics.computeTrackLengthKm(dataStorage)
 
     # Design speed limit and matching chainage arrays for the requested GPK profile
     def resolveDesignSpeedArrays(self, dataStorage, profile):
@@ -220,46 +205,15 @@ class TrackStatisticsWidget(QWidget):
 
     # Cumulative time at the chainage nearest to a stop, mirrors generateVehicleReport's lookup
     def lookupTimeAtStation(self, stationsM, timesS, stationKm):
-        if not self.hasData(stationsM) or not self.hasData(timesS):
-            return None
-        stationsM = np.asarray(stationsM, dtype=float)
-        index = int(np.argmin(np.abs(stationsM - stationKm * 1000.0)))
-        return float(timesS[index])
+        return batch_metrics.lookupTimeAtStation(stationsM, timesS, stationKm)
 
     # Arrival (before dwelling) and departure (after dwelling) time at one stop
     def stopTiming(self, stationsM, timesS, stationKm, dwellSeconds):
-        depTime = self.lookupTimeAtStation(stationsM, timesS, stationKm)
-        if depTime is None:
-            return None, None
-        return max(0.0, depTime - dwellSeconds), depTime
+        return batch_metrics.stopTiming(stationsM, timesS, stationKm, dwellSeconds)
 
     # Total, origin-to-destination and inter-station travel times for one vehicle
     def computeTravelTimeSections(self, dataStorage, vehicleIndex):
-        stationsM = dataStorage.get(f"kinematicsStationM_{vehicleIndex}")
-        timesS = dataStorage.get(f"kinematicsTimeS_{vehicleIndex}")
-        totalTime = float(timesS[-1]) if self.hasData(timesS) else None
-
-        stops = self.stopsList(dataStorage)
-        originDestTime = None
-        interstationRows = []
-
-        if self.hasData(stationsM) and self.hasData(timesS) and len(stops) >= 2:
-            _, depFirst = self.stopTiming(stationsM, timesS, stops[0][0], stops[0][1])
-            arrLast, _ = self.stopTiming(stationsM, timesS, stops[-1][0], stops[-1][1])
-            if depFirst is not None and arrLast is not None:
-                originDestTime = arrLast - depFirst
-
-            for legIndex in range(len(stops) - 1):
-                kmA, dwellA, nameA = stops[legIndex]
-                kmB, dwellB, nameB = stops[legIndex + 1]
-                _, depA = self.stopTiming(stationsM, timesS, kmA, dwellA)
-                arrB, _ = self.stopTiming(stationsM, timesS, kmB, dwellB)
-                if depA is None or arrB is None:
-                    continue
-                label = f"{nameA or f'{kmA:.3f}'} → {nameB or f'{kmB:.3f}'}"
-                interstationRows.append((label, arrB - depA))
-
-        return totalTime, originDestTime, interstationRows
+        return batch_metrics.computeTravelTimeSections(dataStorage, vehicleIndex)
 
     # Rebuild the vehicle selector from the currently simulated vehicle count
     def rebuildVehicleCombo(self):

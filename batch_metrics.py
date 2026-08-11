@@ -1,0 +1,144 @@
+# Headless metric helpers shared by TrackStatisticsWidget and the batch runner, no Qt involved
+import numpy as np
+
+# Placeholder used when no explicit no-data text is supplied
+NO_DATA_PLACEHOLDER = "--:--"
+
+
+# Guard used before touching any optional array
+def hasData(values):
+    return values is not None and len(values) > 0
+
+
+# Render a duration in seconds as MM:SS, or a placeholder when the value is missing
+def formatDuration(seconds, noDataText=NO_DATA_PLACEHOLDER):
+    if seconds is None:
+        return noDataText
+    minutes, secs = divmod(max(0.0, seconds), 60)
+    return f"{int(minutes):02d}:{int(secs):02d}"
+
+
+# Scheduled stops in the order they were imported, never sorted by chainage
+def stopsList(dataStorage):
+    stops = []
+    for stop in (dataStorage.get("settingsData", {}) or {}).get("trainStops", []):
+        try:
+            stationKm = float(stop[0])
+            dwell = float(stop[1])
+            name = str(stop[2]) if len(stop) > 2 else ""
+        except (IndexError, ValueError, TypeError):
+            continue
+        stops.append((stationKm, dwell, name))
+    return stops
+
+
+# Track length in kilometres derived from the parsed alignment chainage
+def computeTrackLengthKm(dataStorage):
+    stationHorizontal = dataStorage.get("LandXML", {}).get("stationHorizontal")
+    if not hasData(stationHorizontal):
+        return None
+    stationHorizontal = np.asarray(stationHorizontal, dtype=float)
+    return float(np.max(stationHorizontal) - np.min(stationHorizontal))
+
+
+# Cumulative time at the chainage nearest to a stop, mirrors generateVehicleReport's lookup
+def lookupTimeAtStation(stationsM, timesS, stationKm):
+    if not hasData(stationsM) or not hasData(timesS):
+        return None
+    stationsM = np.asarray(stationsM, dtype=float)
+    index = int(np.argmin(np.abs(stationsM - stationKm * 1000.0)))
+    return float(timesS[index])
+
+
+# Arrival (before dwelling) and departure (after dwelling) time at one stop
+def stopTiming(stationsM, timesS, stationKm, dwellSeconds):
+    depTime = lookupTimeAtStation(stationsM, timesS, stationKm)
+    if depTime is None:
+        return None, None
+    return max(0.0, depTime - dwellSeconds), depTime
+
+
+# Total, origin-to-destination and inter-station travel times for one vehicle
+def computeTravelTimeSections(dataStorage, vehicleIndex):
+    stationsM = dataStorage.get(f"kinematicsStationM_{vehicleIndex}")
+    timesS = dataStorage.get(f"kinematicsTimeS_{vehicleIndex}")
+    totalTime = float(timesS[-1]) if hasData(timesS) else None
+
+    stops = stopsList(dataStorage)
+    originDestTime = None
+    interstationRows = []
+
+    if hasData(stationsM) and hasData(timesS) and len(stops) >= 2:
+        _, depFirst = stopTiming(stationsM, timesS, stops[0][0], stops[0][1])
+        arrLast, _ = stopTiming(stationsM, timesS, stops[-1][0], stops[-1][1])
+        if depFirst is not None and arrLast is not None:
+            originDestTime = arrLast - depFirst
+
+        for legIndex in range(len(stops) - 1):
+            kmA, dwellA, nameA = stops[legIndex]
+            kmB, dwellB, nameB = stops[legIndex + 1]
+            _, depA = stopTiming(stationsM, timesS, kmA, dwellA)
+            arrB, _ = stopTiming(stationsM, timesS, kmB, dwellB)
+            if depA is None or arrB is None:
+                continue
+            label = f"{nameA or f'{kmA:.3f}'} → {nameB or f'{kmB:.3f}'}"
+            interstationRows.append((label, arrB - depA))
+
+    return totalTime, originDestTime, interstationRows
+
+
+# Linear-interpolate a station-indexed series onto a common chainage grid, NaN outside its range
+def resampleSeries(stationsKm, values, gridKm):
+    stationsKm = np.asarray(stationsKm, dtype=float)
+    values = np.asarray(values, dtype=float)
+    gridKm = np.asarray(gridKm, dtype=float)
+    if len(stationsKm) == 0:
+        return np.full(len(gridKm), np.nan)
+    order = np.argsort(stationsKm)
+    return np.interp(gridKm, stationsKm[order], values[order], left=np.nan, right=np.nan)
+
+
+# Every scalar and table metric the dashboard and the ZIP exporter need for one variant result
+def computeVariantMetrics(dataStorage, vehicleIndex=0, designProfileSuffix="150"):
+    lxml = dataStorage.get("LandXML", {}) or {}
+
+    designSpeeds = dataStorage.get(f"speedLimits{designProfileSuffix}")
+    maxSpeedDesignKmh = float(np.max(designSpeeds)) if hasData(designSpeeds) else None
+
+    actualSpeedsMs = dataStorage.get(f"kinematicsSpeedM_{vehicleIndex}")
+    maxSpeedActualKmh = float(np.max(actualSpeedsMs) * 3.6) if hasData(actualSpeedsMs) else None
+    meanSpeedActualKmh = float(np.mean(actualSpeedsMs) * 3.6) if hasData(actualSpeedsMs) else None
+
+    totalTimeS, originDestTimeS, interstationRows = computeTravelTimeSections(dataStorage, vehicleIndex)
+
+    cantDefValues = lxml.get(f"cDef{designProfileSuffix}")
+    maxCantDefMm = float(np.max(np.abs(cantDefValues))) if hasData(cantDefValues) else None
+
+    cantValues = lxml.get("cantPossible")
+    maxCantMm = float(np.max(np.abs(cantValues))) if hasData(cantValues) else None
+
+    utilD = lxml.get(f"util_D_{designProfileSuffix}")
+    utilI = lxml.get(f"util_I_{designProfileSuffix}")
+    meanUtilD = float(np.mean(utilD)) if hasData(utilD) else None
+    meanUtilI = float(np.mean(utilI)) if hasData(utilI) else None
+
+    limitD = lxml.get(f"limitReachedD_{designProfileSuffix}")
+    limitI = lxml.get(f"limitReachedI_{designProfileSuffix}")
+    limitCountD = int(np.sum(limitD)) if hasData(limitD) else None
+    limitCountI = int(np.sum(limitI)) if hasData(limitI) else None
+
+    return {
+        "trackLengthKm": computeTrackLengthKm(dataStorage),
+        "maxSpeedDesignKmh": maxSpeedDesignKmh,
+        "maxSpeedActualKmh": maxSpeedActualKmh,
+        "meanSpeedActualKmh": meanSpeedActualKmh,
+        "totalTimeS": totalTimeS,
+        "originDestTimeS": originDestTimeS,
+        "interstationRows": interstationRows,
+        "maxCantMm": maxCantMm,
+        "maxCantDefMm": maxCantDefMm,
+        "meanUtilD": meanUtilD,
+        "meanUtilI": meanUtilI,
+        "limitCountD": limitCountD,
+        "limitCountI": limitCountI,
+    }

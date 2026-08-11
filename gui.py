@@ -41,11 +41,23 @@ from settings_dialog import ShortcutSettingsDialog
 from vehicle_dialog import VehicleSettingsDialog, VehicleCatalogDialog
 from purge_dialog import PurgeDataDialog
 from floating_command_input import FloatingCommandInput
+import batch_config
+import batch_results
+import batch_runner
+import landxml_merger
+from batch_dialog import BatchProcessingDialog
+from batch_progress import BatchProgressDialog
+from variant_dashboard import VariantDashboardWidget
+import report_formats
+import batch_export
+import tempfile
+from datetime import datetime
 import copy
 
 # Central viewport page indices
 VIEW_MAP = 0
 VIEW_REPORT = 1
+VIEW_DASHBOARD = 2
 
 # How long a transient status bar confirmation stays visible in milliseconds
 SERIES_STATUS_TIMEOUT = 4000
@@ -88,6 +100,9 @@ ACTION_ICONS = {
     "unfoldAllAction": "unfoldAll",
     "reportGeometryAction": "report",
     "exportGeometryReportAction": "export",
+    "openBatchProcessingAction": "batch",
+    "showDashboardAction": "dashboard",
+    "exportBatchArchiveAction": "export",
 }
 
 # Compact ribbon captions for the data series toggles, full text stays in the tooltip
@@ -172,6 +187,20 @@ class MainWindow(QMainWindow):
 
         self.themeManager = ThemeManager(self)
         self.shortcutManager = ShortcutManager()
+
+        # Batch processing: config presets, the last run's results, and the isolated-thread controller
+        self.batchConfigStore = batch_config.BatchConfigStore()
+        self.batchResults = batch_results.BatchResultStore()
+        self.batchController = batch_runner.BatchController(self)
+        self.batchController.variantStarted.connect(self.onBatchVariantStarted)
+        self.batchController.variantFinished.connect(self.onBatchVariantFinished)
+        self.batchController.batchFinished.connect(self.onBatchFinished)
+        self.batchController.batchFailed.connect(self.onBatchFailed)
+        self.batchProgressDialog = None
+        self.batchMergedLandXml = None
+
+        # Lines behind the currently displayed geometry report, reused by every export format
+        self.lastGeometryReportLines = []
 
         # Provenance for imported files and the folder based vehicle library
         self.sourceStack = source_stack.SourceStack()
@@ -273,6 +302,13 @@ class MainWindow(QMainWindow):
             lan.get("purgeData", "Purge Data..."), self)
         self.openPurgeDialogAction.triggered.connect(self.openPurgeDialog)
 
+        # Batch processing actions
+        self.openBatchProcessingAction = QAction(lan.get("batchTitle", "Batch Processing"), self)
+        self.openBatchProcessingAction.triggered.connect(self.openBatchProcessing)
+
+        self.exportBatchArchiveAction = QAction(lan.get("exportBatchArchive", "Export batch reports to ZIP..."), self)
+        self.exportBatchArchiveAction.triggered.connect(self.exportBatchArchive)
+
         # Settings actions
         self.mapSettingsAction = QAction(
             QIcon.fromTheme("internet-web-browser",
@@ -357,6 +393,13 @@ class MainWindow(QMainWindow):
         self.showReportAction.setCheckable(True)
         self.showReportAction.triggered.connect(self.showReportView)
         self.viewGroup.addAction(self.showReportAction)
+
+        self.showDashboardAction = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView),
+            lan.get("viewDashboard", "Variant comparison"), self)
+        self.showDashboardAction.setCheckable(True)
+        self.showDashboardAction.triggered.connect(self.showDashboardView)
+        self.viewGroup.addAction(self.showDashboardAction)
 
         # Layout action, the tooltip spells out what the short caption hides
         self.resetLayoutAction = QAction(lan.get("resetLayout", "Reset Layout"), self)
@@ -502,6 +545,11 @@ class MainWindow(QMainWindow):
         reportLayout.addWidget(self.reportSplitter)
 
         self.centralStack.addWidget(reportPage)
+
+        # View 3 is the variant comparison dashboard, populated once a batch has run
+        self.variantDashboardWidget = VariantDashboardWidget(self.translationManager.getLanguage(self.currentLanguage))
+        self.centralStack.addWidget(self.variantDashboardWidget)
+
         self.setCentralWidget(self.centralStack)
 
     # Build every dockable panel and arrange the default layout
@@ -670,10 +718,19 @@ class MainWindow(QMainWindow):
         for exportAction in self.exportVehicleReportActions:
             simulationExportGroup.addAction(exportAction, isLarge=False)
 
+        batchPage = self.ribbonBar.addPage("batch", lan.get("ribbonBatch", "Batch"), "ribbonBatch")
+        batchRunGroup = batchPage.addGroup(lan.get("groupBatchRun", "Run"), "groupBatchRun")
+        batchRunGroup.addAction(self.openBatchProcessingAction, shortKey="shortBatch")
+        batchCompareGroup = batchPage.addGroup(lan.get("groupBatchCompare", "Compare"), "groupBatchCompare")
+        batchCompareGroup.addAction(self.showDashboardAction, shortKey="shortDashboard")
+        batchExportGroup = batchPage.addGroup(lan.get("groupBatchExport", "Export"), "groupBatchExport")
+        batchExportGroup.addAction(self.exportBatchArchiveAction, shortKey="shortBatchExport")
+
         viewPage = self.ribbonBar.addPage("view", lan.get("ribbonView", "View"), "ribbonView")
         centralGroup = viewPage.addGroup(lan.get("groupCentral", "Central view"), "groupCentral")
         centralGroup.addAction(self.showMapAction, shortKey="viewMap")
         centralGroup.addAction(self.showReportAction, shortKey="viewReport")
+        centralGroup.addAction(self.showDashboardAction, shortKey="viewDashboard")
 
         panelsGroup = viewPage.addGroup(lan.get("groupPanels", "Panels"), "groupPanels")
         panelShortKeys = ("shortPanelWorkflow", "shortPanelGraphs", "shortPanelProfile",
@@ -769,6 +826,7 @@ class MainWindow(QMainWindow):
         self.graphsWidget.cursorMoved.connect(self.onCursorMoved)
         self.profileWidget.cursorMoved.connect(self.onCursorMoved)
         self.mapWidget.cursorMoved.connect(self.onCursorMoved)
+        self.variantDashboardWidget.cursorMoved.connect(self.onCursorMoved)
 
     # Keep the map settings dialog and the floating map controls in agreement
     def connectMapSignals(self):
@@ -793,6 +851,7 @@ class MainWindow(QMainWindow):
         self.graphsWidget.setCursorStation(stationKm)
         self.profileWidget.setCursorStation(stationKm)
         self.mapWidget.setCursorStation(stationKm)
+        self.variantDashboardWidget.setCursorStation(stationKm)
 
     # Render the chainage readout in the status bar
     def updateStatusChainage(self, stationKm):
@@ -894,6 +953,7 @@ class MainWindow(QMainWindow):
         self.trackStatsWidget.applyTheme(isDark, tokens)
         self.helpWidget.applyTheme(isDark, tokens)
         self.mapWidget.applyTheme(isDark, tokens)
+        self.variantDashboardWidget.applyTheme(isDark, tokens)
         self.updateStatusTheme()
 
     # Switch the central viewport to the map page
@@ -905,6 +965,11 @@ class MainWindow(QMainWindow):
     def showReportView(self):
         self.centralStack.setCurrentIndex(VIEW_REPORT)
         self.showReportAction.setChecked(True)
+
+    # Switch the central viewport to the variant comparison dashboard
+    def showDashboardView(self):
+        self.centralStack.setCurrentIndex(VIEW_DASHBOARD)
+        self.showDashboardAction.setChecked(True)
 
     # Collapse every node in both XML source viewers
     def foldAllXml(self):
@@ -1060,6 +1125,9 @@ class MainWindow(QMainWindow):
             SERIES_STATUS_TIMEOUT)
 
     def closeEvent(self, event):
+        if self.batchController.isRunning():
+            self.batchController.cancelBatch()
+            self.batchController.waitForFinish()
         self.saveSession()
         super().closeEvent(event)
 
@@ -1078,6 +1146,7 @@ class MainWindow(QMainWindow):
         self.ribbonBar.setPageTitle("project", lan.get("ribbonProject", "Project"))
         self.ribbonBar.setPageTitle("geometry", lan.get("ribbonGeometry", "Geometry"))
         self.ribbonBar.setPageTitle("simulation", lan.get("ribbonSimulation", "Simulation"))
+        self.ribbonBar.setPageTitle("batch", lan.get("ribbonBatch", "Batch"))
         self.ribbonBar.setPageTitle("view", lan.get("ribbonView", "View"))
         self.ribbonBar.setPageTitle("series", lan.get("groupSeries", "Data series"))
         self.ribbonBar.setPageTitle("settings", lan.get("ribbonSettings", "Settings"))
@@ -1108,6 +1177,10 @@ class MainWindow(QMainWindow):
         self.cleanCalculatedCantsAction.setText(lan["cleanCants"])
         self.cleanCalculatedSpeedsAction.setText(lan["cleanSpeeds"])
 
+        # Batch processing actions
+        self.openBatchProcessingAction.setText(lan.get("batchTitle", "Batch Processing"))
+        self.exportBatchArchiveAction.setText(lan.get("exportBatchArchive", "Export batch reports to ZIP..."))
+
         # Settings actions
         self.mapSettingsAction.setText(lan["mapSettings"])
         self.geometrySettingsAction.setText(lan["geometrySettings"])
@@ -1124,6 +1197,7 @@ class MainWindow(QMainWindow):
         self.themeDarkAction.setText(lan.get("themeDark", "Always dark"))
         self.showMapAction.setText(lan.get("viewMap", "Map"))
         self.showReportAction.setText(lan.get("viewReport", "Report"))
+        self.showDashboardAction.setText(lan.get("viewDashboard", "Variant comparison"))
         self.resetLayoutAction.setText(lan.get("resetLayout", "Reset Layout"))
         self.resetLayoutAction.setToolTip(
             lan.get("resetLayoutTip", "Restore Default Window Layout"))
@@ -1165,6 +1239,7 @@ class MainWindow(QMainWindow):
         self.trackStatsWidget.updateTexts(lan)
         self.helpWidget.updateTexts(lan)
         self.mapWidget.updateTexts(lan)
+        self.variantDashboardWidget.updateLabels(lan)
         self.ribbonBar.retranslate(lan)
 
         self.setEngineStatus(lan.get("statusReady", "Ready"))
@@ -2305,6 +2380,8 @@ class MainWindow(QMainWindow):
         self.kinematicsWidget.clearAll()
         # A full clean must not leave a stale alignment behind on the map
         self.mapWidget.resetMap()
+        self.batchResults.clear()
+        self.variantDashboardWidget.clearAll()
         self.setEngineStatus(self.translationManager.getLanguage(self.currentLanguage).get("statusNoData", "No data"))
         self.updateStatusChainage(None)
 
@@ -2535,6 +2612,163 @@ class MainWindow(QMainWindow):
         lan = self.translationManager.getLanguage(self.currentLanguage)
         self.statusBarWidget.showMessage(lan.get("purgeDone", "Purge completed"), SERIES_STATUS_TIMEOUT)
 
+    # Launch the batch configuration dialog and, once accepted, start the run on the next event loop turn
+    def openBatchProcessing(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        if self.batchController.isRunning():
+            QMessageBox.warning(self, lan.get("error", "Error"),
+                                lan.get("batchAlreadyRunning", "A batch is already running"))
+            return
+
+        dialog = BatchProcessingDialog(self.dataStorage.get("settingsData", {}), self.batchConfigStore, lan, self)
+        if dialog.exec():
+            batchConfigData = dialog.getBatchConfig()
+            # Deferred so the closing modal never overlaps building the progress dialog and starting a thread
+            QTimer.singleShot(0, lambda: self.startBatchRun(batchConfigData))
+
+    # Parse and merge every LandXML source, then expand the full cross product of variant specs
+    def prepareBatchVariants(self, batchConfigData):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        problems = self.batchConfigStore.validateConfig(batchConfigData)
+        if problems:
+            raise ValueError("; ".join(lan.get(code, code) for code in problems))
+
+        epsgInput = batchConfigData.get("epsgInput", "EPSG:5514")
+        parsedList = []
+        for source in batchConfigData["trackSources"]:
+            fileContent = readfile.ReadFile().Read(source["filePath"])
+            if not fileContent or fileContent.startswith("Error"):
+                raise ValueError(f"{source.get('fileName', source['filePath'])}: {fileContent}")
+            parsed = readfile.ReadFile().ParseLandXML(fileContent, epsgInput, source.get("alignmentIndex", 0))
+            if "error" in parsed:
+                raise ValueError(f"{source.get('fileName', source['filePath'])}: {parsed['error']}")
+            parsedList.append(parsed)
+
+        rebaseChainage = batchConfigData.get("chainageMode", "sequential") != "asImported"
+        mergedLandXml, junctions = landxml_merger.concatAlignments(
+            parsedList, startChainageKm=batchConfigData.get("startChainageKm", 0.0), rebaseChainage=rebaseChainage)
+
+        warnJunctions = [j for j in junctions if j["gapMeters"] > landxml_merger.JUNCTION_GAP_WARN_M]
+        if warnJunctions:
+            gapText = ", ".join(f"{j['gapMeters']:.0f} m @ {j['stationKm']:.3f} km" for j in warnJunctions)
+            QMessageBox.warning(self, lan.get("merge_gap_warning_title", "Warning"),
+                                f"{lan.get('batchJunctionGapWarn', 'Large gap detected')}: {gapText}")
+
+        variantSpecs = batch_config.expandVariantSpecs(batchConfigData)
+        return variantSpecs, mergedLandXml, junctions
+
+    # Enable or disable every action that would otherwise race a running batch against dataStorage
+    def setBatchActionsEnabled(self, isEnabled):
+        for actionName in ("calculateGeometryAction", "calculateGeometryIAction", "calculateTrainSpeedAction",
+                          "cleanDataAction", "openPurgeDialogAction", "openBatchProcessingAction",
+                          "exportBatchArchiveAction"):
+            getattr(self, actionName).setEnabled(isEnabled)
+
+    # Merge the configured LandXML files, expand the variant matrix, and hand it to the batch controller
+    def startBatchRun(self, batchConfigData):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+
+        try:
+            variantSpecs, mergedLandXml, junctions = self.prepareBatchVariants(batchConfigData)
+        except ValueError as exc:
+            QMessageBox.critical(self, lan.get("error", "Error"), str(exc))
+            return
+
+        self.batchMergedLandXml = mergedLandXml
+        self.batchJunctions = junctions
+        self.batchResults.setBatchConfig(batchConfigData)
+
+        self.batchProgressDialog = BatchProgressDialog(lan, self)
+        self.batchProgressDialog.setVariantCount(len(variantSpecs))
+        self.batchProgressDialog.setPhase(lan.get("batchProgressGeometry", "Calculating variants..."))
+        self.batchProgressDialog.cancelRequested.connect(self.batchController.cancelBatch)
+        self.batchProgressDialog.show()
+
+        self.setBatchActionsEnabled(False)
+
+        baseStorage = {"settingsData": batchConfigData.get("baseSettings", {})}
+        self.batchController.startBatch(baseStorage, variantSpecs, mergedLandXml=mergedLandXml)
+
+    # One variant has started, only used for progress feedback
+    def onBatchVariantStarted(self, index, label):
+        pass
+
+    # One variant has finished, advance the progress dialog
+    def onBatchVariantFinished(self, index, result):
+        if self.batchProgressDialog is not None:
+            self.batchProgressDialog.advance(index, result.get("spec", {}).get("label", result["variantId"]))
+
+    # The whole batch has finished, successfully or partially (cancelled variants included)
+    def onBatchFinished(self, results):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        self.batchResults.setResults(results)
+        self.variantDashboardWidget.setResults(self.batchResults)
+        self.setBatchActionsEnabled(True)
+
+        failedCount = sum(1 for result in results if result["status"] == "failed")
+        cancelledCount = sum(1 for result in results if result["status"] == "cancelled")
+        summaryText = lan.get("batchCancelled" if cancelledCount else "batchDone", "Batch completed")
+        if self.batchProgressDialog is not None:
+            self.batchProgressDialog.finish(summaryText)
+        self.setEngineStatus(summaryText)
+        self.showDashboardView()
+
+        if failedCount:
+            QMessageBox.warning(self, lan.get("error", "Error"),
+                                f"{failedCount} variant(s) failed, see the batch progress log")
+
+    # The worker thread raised an exception outside of a single variant's own try/except
+    def onBatchFailed(self, message):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        self.setBatchActionsEnabled(True)
+        if self.batchProgressDialog is not None:
+            self.batchProgressDialog.finish(lan.get("batchFailed", "Batch failed"))
+        QMessageBox.critical(self, lan.get("error", "Error"), message)
+
+    # Package the last batch's reports, protocols and comparison data into one ZIP archive
+    def exportBatchArchive(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        if self.batchResults.isEmpty():
+            QMessageBox.warning(self, lan.get("error", "Error"), lan.get("dashboardNoResults", "No batch results yet"))
+            return
+
+        batchConfigData = self.batchResults.batchConfig()
+        configName = batchConfigData.get("configName") or "batch"
+        defaultName = f"COYPU_batch_{configName}_{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+        zipPath, _ = QFileDialog.getSaveFileName(
+            self, lan.get("exportBatchArchive", "Export batch reports to ZIP..."), defaultName, "ZIP Archive (*.zip)")
+        if not zipPath:
+            return
+
+        exportFormats = batchConfigData.get("exportFormats", {"txt": True, "csv": True})
+
+        progressDialog = BatchProgressDialog(lan, self)
+        progressDialog.setVariantCount(len(self.batchResults.results()))
+        progressDialog.setPhase(lan.get("batchProgressZip", "Packaging archive..."))
+        # A synchronous write cannot be safely interrupted mid-archive
+        progressDialog.cancelButton.setEnabled(False)
+        progressDialog.show()
+        QApplication.processEvents()
+
+        exporter = batch_export.BatchArchiveExporter(self.batchResults, batchConfigData, lan,
+                                                      mergedLandXml=self.batchMergedLandXml, junctions=self.batchJunctions)
+
+        def onArchiveProgress(index, total):
+            label = self.batchResults.results()[index].get("spec", {}).get("label", "")
+            progressDialog.advance(index, label)
+            QApplication.processEvents()
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpDir:
+                plotFormats = {key for key in ("png", "svg") if exportFormats.get(key)}
+                plotImagePaths = self.variantDashboardWidget.exportPlotImages(tmpDir, plotFormats) if plotFormats else []
+                exporter.exportArchive(zipPath, exportFormats, plotImagePaths, progressCallback=onArchiveProgress)
+            progressDialog.finish(lan.get("batchDone", "Batch completed"))
+            self.setEngineStatus(f"{lan.get('exportBatchArchive', 'Export batch reports to ZIP...')}: {zipPath}")
+        except Exception as exc:
+            progressDialog.finish(lan.get("batchFailed", "Batch failed"))
+            QMessageBox.critical(self, lan.get("error", "Error"), str(exc))
+
     # Drop the chosen source stack entries and rebuild the affected datasets from the survivors
     def applySourceRemovals(self, removedSourceIds):
         for sourceId in removedSourceIds:
@@ -2584,7 +2818,8 @@ class MainWindow(QMainWindow):
         lan = self.translationManager.getLanguage(self.currentLanguage)
         lxml = self.dataStorage.get("LandXML", {})
         if not lxml or "stationCantPossible" not in lxml or len(lxml.get("stationCantPossible", [])) < 2:
-            self.reportGeometryWidget.setPlainText(lan.get("no_data", "No data available. Calculate values first."))
+            self.lastGeometryReportLines = [lan.get("no_data", "No data available. Calculate values first.")]
+            self.reportGeometryWidget.setPlainText(self.lastGeometryReportLines[0])
             self.showReportView()
             return
 
@@ -2601,7 +2836,8 @@ class MainWindow(QMainWindow):
         utilILbl = lan.get("utilI", "Util I")
         
         if len(geomType) != len(stations):
-            self.reportGeometryWidget.setPlainText(lan.get("error", "Error") + ": Data lengths do not match. Please recalculate.")
+            self.lastGeometryReportLines = [lan.get("error", "Error") + ": Data lengths do not match. Please recalculate."]
+            self.reportGeometryWidget.setPlainText(self.lastGeometryReportLines[0])
             self.showReportView()
             return
 
@@ -2836,6 +3072,7 @@ class MainWindow(QMainWindow):
             reportLines.append(f"  {lan.get('stat_max_deltaI', 'Max deltaI [mm]')}: {pStats['max_deltaI']:.0f}")
             reportLines.append("")
 
+        self.lastGeometryReportLines = reportLines
         self.reportGeometryWidget.setPlainText("\n".join(reportLines))
         self.showReportView()
 
@@ -2969,14 +3206,22 @@ class MainWindow(QMainWindow):
         if not content:
             QMessageBox.warning(self, lan.get("error", "Error"), lan.get("no_data", "No data available. Calculate values first."))
             return
-            
-        filepath, _ = QFileDialog.getSaveFileName(self, lan.get("exportGeometryReport", "Export Geometry Report"), "", "Text Files (*.txt);;All Files (*)")
-        if filepath:
-            try:
-                with open(filepath, "w", encoding="utf-8") as file:
-                    file.write(content)
-            except Exception as e:
-                QMessageBox.critical(self, lan.get("error", "Error"), f"{e}")
+
+        reportFilter = "Text (*.txt);;PDF (*.pdf);;Markdown (*.md);;LaTeX (*.tex);;CSV (*.csv)"
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, lan.get("exportGeometryReport", "Export Geometry Report"), "", reportFilter)
+        if not filepath:
+            return
+
+        try:
+            titleText = lan.get("reportGeometryTitle", "Geometry Report")
+            reportLines = self.lastGeometryReportLines or content.splitlines()
+            if filepath.lower().endswith(".csv"):
+                report_formats.rowsToCsv(filepath, [titleText], [[line] for line in reportLines])
+            else:
+                report_formats.writeReportFile(reportLines, filepath, titleText)
+        except Exception as e:
+            QMessageBox.critical(self, lan.get("error", "Error"), f"{e}")
 
     def exportVehicleReport(self, vIdx=0):
         lan = self.translationManager.getLanguage(self.currentLanguage)
