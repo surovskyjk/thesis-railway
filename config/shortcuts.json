@@ -1,6 +1,42 @@
 {
   "commands": [
     {
+      "commandName": "NewProject",
+      "action": "newProjectAction",
+      "alias": "newproject",
+      "shortcut": "Ctrl+N"
+    },
+    {
+      "commandName": "OpenProject",
+      "action": "openProjectAction",
+      "alias": "openproject",
+      "shortcut": "Ctrl+Shift+O"
+    },
+    {
+      "commandName": "SaveProject",
+      "action": "saveProjectAction",
+      "alias": "saveproject",
+      "shortcut": "Ctrl+S"
+    },
+    {
+      "commandName": "SaveProjectAs",
+      "action": "saveProjectAsAction",
+      "alias": "saveprojectas",
+      "shortcut": "Ctrl+Shift+S"
+    },
+    {
+      "commandName": "ProjectProperties",
+      "action": "projectPropertiesAction",
+      "alias": "metadata",
+      "shortcut": "Ctrl+I"
+    },
+    {
+      "commandName": "ExportLandXML",
+      "action": "exportLandXmlAction",
+      "alias": "exportxml",
+      "shortcut": "Ctrl+Shift+X"
+    },
+    {
       "commandName": "AutodetectImport",
       "action": "autodetectXMLAction",
       "alias": "open",

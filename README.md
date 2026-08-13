@@ -26,6 +26,10 @@ Built with Python and PySide6.
 - Multi-language UI: Czech, English, German
 - Export geometry report (Text, PDF, Markdown or LaTeX) and kinematics results (CSV)
 - Batch processing: merge several LandXML files with rebased chainage, run a matrix of stopping patterns x design approaches x an optional sensitivity sweep as isolated background variants, compare them on a dedicated overlay dashboard, and export every report, protocol and comparison table as one ZIP archive
+- Native `.coypu` project files: one compressed archive holding the project metadata, every merged alignment with its raw imported assets, stops and TTP data, vehicle configurations, the cached GPK and cant deficiency results, and the saved viewport state, so a reopened project restores its plots without recalculating
+- Extended project metadata dialog: title, author, contract number, date, notes, target norm, optional track / definition section and TUDU codes, and the coordinate system descriptor reused by the LandXML export
+- Export the designed alignment back to LandXML 1.2 including the application header, the coordinate system, the horizontal geometry, the newly calculated cant D with its design speeds, and a vertical profile whose curve tangents are guaranteed never to overlap
+- Unsaved changes tracker in the window title, a recent projects list, and a background recovery snapshot written every five minutes and offered for restore after a crash
 
 ---
 
@@ -166,6 +170,9 @@ The Batch page runs many track variants unattended and compares them side by sid
 - `settings_dialog.py` - dialog for editing command aliases and keyboard shortcuts
 - `config/shortcuts.json` - external command name, alias, and keyboard shortcut mappings
 - `landxml_merger.py` - chainage-rebasing concatenation of several parsed LandXML alignments
+- `project_metadata.py` - project metadata model and the Project Properties dialog
+- `project_file.py` - native `.coypu` archive format, recent projects list and recovery snapshot paths
+- `landxml_exporter.py` - LandXML 1.2 writer for the horizontal geometry, calculated cant and vertical profile
 - `batch_config.py` - batch configuration schema, JSON preset persistence, variant cross-product expansion
 - `batch_metrics.py` - headless travel-time, track-length and variant metric helpers shared by the track stats dock
 - `batch_runner.py` - isolated per-variant execution and the QThread worker/controller running a batch

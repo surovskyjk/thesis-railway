@@ -92,6 +92,13 @@ if (typeof qt !== 'undefined' && qt.webChannelTransport) {{
 }}
 
 {mapName}.on('mousemove', function (event) {{ window.coypuReportNearest(event.latlng); }});
+
+// Report the camera back to Qt so the viewport survives a project save and reload
+{mapName}.on('moveend', function () {{
+    if (!window.coypuBridge) {{ return; }}
+    var center = {mapName}.getCenter();
+    window.coypuBridge.reportViewState(center.lat, center.lng, {mapName}.getZoom());
+}});
 </script>
 """
 
@@ -245,10 +252,18 @@ class MapBridge(QObject):
     # Emitted with the chainage in kilometres reported by the page
     chainageReported = Signal(float)
 
+    # Emitted with the map centre and zoom level after every pan or zoom
+    viewStateReported = Signal(float, float, int)
+
     # Invoked from JavaScript through the web channel on every throttled mouse move
     @Slot(float)
     def reportChainage(self, stationKm):
         self.chainageReported.emit(float(stationKm))
+
+    # Invoked from JavaScript once the Leaflet camera settles after a pan or zoom
+    @Slot(float, float, int)
+    def reportViewState(self, centerLat, centerLon, zoomLevel):
+        self.viewStateReported.emit(float(centerLat), float(centerLon), int(zoomLevel))
 
 class MapWidget(QWidget):
     # Emitted with the chainage in kilometres when the alignment is hovered on the map
@@ -273,6 +288,10 @@ class MapWidget(QWidget):
         self.railOverlayOpacity = 0.7
         self.isMapReady = False
         self.wasDarkTheme = False
+        # Live Leaflet camera, restored from a project file or reported back by the page
+        self.viewCenterLat = None
+        self.viewCenterLon = None
+        self.viewZoom = None
         self.mapBrowser.loadFinished.connect(self.onMapLoadFinished)
 
         # Floating Qt controls sit above the web view and survive every page reload
@@ -286,6 +305,7 @@ class MapWidget(QWidget):
         # The bridge lets the page report the chainage under the mouse back to Qt
         self.bridge = MapBridge(self)
         self.bridge.chainageReported.connect(self.cursorMoved)
+        self.bridge.viewStateReported.connect(self.onViewStateReported)
         self.webChannel = QWebChannel(self)
         self.webChannel.registerObject("coypuBridge", self.bridge)
         self.mapBrowser.page().setWebChannel(self.webChannel)
@@ -334,6 +354,37 @@ class MapWidget(QWidget):
     def setStationsVisible(self, isVisible):
         self.showStations = bool(isVisible)
         self.redraw()
+
+    # Remember the camera the page just settled on, no redraw is needed for a pure pan or zoom
+    def onViewStateReported(self, centerLat, centerLon, zoomLevel):
+        self.viewCenterLat = centerLat
+        self.viewCenterLon = centerLon
+        self.viewZoom = zoomLevel
+
+    # Current map camera as a (lat, lon, zoom) triple, all None while the map was never moved
+    def getViewState(self):
+        return self.viewCenterLat, self.viewCenterLon, self.viewZoom
+
+    # Restore a previously saved camera, any missing component falls back to the computed view
+    def setViewState(self, centerLat, centerLon, zoomLevel):
+        if centerLat is None or centerLon is None or zoomLevel is None:
+            return
+        self.viewCenterLat = float(centerLat)
+        self.viewCenterLon = float(centerLon)
+        self.viewZoom = int(zoomLevel)
+
+    # Forget the saved camera so the next draw re-frames the alignment
+    def clearViewState(self):
+        self.viewCenterLat = None
+        self.viewCenterLon = None
+        self.viewZoom = None
+
+    # Build the folium map on the saved camera when there is one, otherwise on the computed view
+    def buildMap(self, centerLat, centerLon, zoomStart):
+        if self.viewCenterLat is not None and self.viewZoom is not None:
+            return folium.Map(location=[self.viewCenterLat, self.viewCenterLon],
+                              zoom_start=self.viewZoom, tiles=None)
+        return folium.Map(location=[centerLat, centerLon], zoom_start=zoomStart, tiles=None)
 
     # Store the scheduled stops so they can be placed along the alignment
     def setStations(self, stations):
@@ -423,7 +474,7 @@ class MapWidget(QWidget):
                 popup=caption).add_to(m)
 
     def resetMap(self):
-        m = folium.Map(location=[49.8, 15.5], zoom_start=7, tiles=None)
+        m = self.buildMap(49.8, 15.5, 7)
         self.addTiles(m)
         self.renderMap(m)
 
@@ -449,7 +500,7 @@ class MapWidget(QWidget):
         lons = [pt[1] for pt in allPoints]
         centerLat = (min(lats) + max(lats)) / 2
         centerLon = (min(lons) + max(lons)) / 2
-        m = folium.Map(location=[centerLat, centerLon], zoom_start=11, tiles=None)
+        m = self.buildMap(centerLat, centerLon, 11)
         self.addTiles(m)
 
         if self.drawMode == "single":

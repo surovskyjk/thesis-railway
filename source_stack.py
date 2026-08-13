@@ -5,7 +5,7 @@ TTP_KIND = "ttp"
 
 # One imported file's resolved contribution, kept so it can be replayed or dropped
 class SourceEntry:
-    def __init__(self, sourceId, kind, fileName, payload, stationStart, stationEnd):
+    def __init__(self, sourceId, kind, fileName, payload, stationStart, stationEnd, rawText=""):
         self.sourceId = sourceId
         self.kind = kind
         self.fileName = fileName
@@ -13,6 +13,8 @@ class SourceEntry:
         self.payload = payload
         self.stationStart = stationStart
         self.stationEnd = stationEnd
+        # Original file text, kept so a saved .coypu project can carry the raw asset alongside the parse
+        self.rawText = rawText or ""
 
 
 class SourceStack:
@@ -21,8 +23,8 @@ class SourceStack:
         self.nextId = 1
 
     # Record one resolved import and return the entry created for it
-    def addEntry(self, kind, fileName, payload, stationStart, stationEnd):
-        entry = SourceEntry(self.nextId, kind, fileName, payload, stationStart, stationEnd)
+    def addEntry(self, kind, fileName, payload, stationStart, stationEnd, rawText=""):
+        entry = SourceEntry(self.nextId, kind, fileName, payload, stationStart, stationEnd, rawText)
         self.entries.append(entry)
         self.nextId += 1
         return entry

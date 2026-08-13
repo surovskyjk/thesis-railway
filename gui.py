@@ -52,6 +52,10 @@ from variant_dashboard import VariantDashboardWidget
 import report_formats
 import batch_export
 import presets_manager
+import project_file
+import project_metadata
+import landxml_exporter
+from project_metadata import ProjectMetadataDialog
 from resource_paths import getWritableRoot
 import tempfile
 from datetime import datetime
@@ -110,6 +114,13 @@ ACTION_ICONS = {
     "exportVehicleButton": "export",
     "exportPresetsAction": "export",
     "importPresetsAction": "open",
+    "newProjectAction": "openText",
+    "openProjectAction": "open",
+    "saveProjectAction": "export",
+    "saveProjectAsAction": "export",
+    "projectPropertiesAction": "report",
+    "exportLandXmlAction": "openLandxml",
+    "recentProjectsButton": "open",
 }
 
 # Compact ribbon captions for the data series toggles, full text stays in the tooltip
@@ -196,6 +207,16 @@ class MainWindow(QMainWindow):
         self.shortcutManager = ShortcutManager()
         self.presetManager = presets_manager.PresetManager()
 
+        # Native .coypu project state: metadata header, current file and the unsaved changes flag
+        self.projectMetadata = project_metadata.buildDefaultMetadata()
+        self.currentProjectPath = None
+        self.isProjectModified = False
+        self.projectFileManager = project_file.ProjectFileManager()
+        self.recentProjectsStore = project_file.RecentProjectsStore(self.appSettings)
+        self.autoSaveTimer = QTimer(self)
+        self.autoSaveTimer.setInterval(project_file.AUTO_SAVE_INTERVAL_MS)
+        self.autoSaveTimer.timeout.connect(self.performAutoSave)
+
         # Batch processing: config presets, the last run's results, and the isolated-thread controller
         self.batchConfigStore = batch_config.BatchConfigStore()
         self.batchResults = batch_results.BatchResultStore()
@@ -232,11 +253,44 @@ class MainWindow(QMainWindow):
 
         self.themeManager.themeChanged.connect(self.onThemeChanged)
         self.restoreSession()
+        self.updateWindowTitle()
+        self.autoSaveTimer.start()
+
+        # Deferred so the main window is already visible when the recovery question appears
+        QTimer.singleShot(0, self.promptRecoveryIfAvailable)
 
     # Create every QAction once and keep a named reference for translation
     def buildActions(self):
         lan = self.translationManager.getLanguage(self.currentLanguage)
         style = self.style()
+
+        # Native project actions
+        self.newProjectAction = QAction(lan.get("newProject", "New Project"), self)
+        self.newProjectAction.triggered.connect(self.newProject)
+
+        self.openProjectAction = QAction(lan.get("openProject", "Open Project..."), self)
+        self.openProjectAction.triggered.connect(self.openProject)
+
+        self.saveProjectAction = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton),
+            lan.get("saveProject", "Save Project"), self)
+        self.saveProjectAction.triggered.connect(self.saveProject)
+
+        self.saveProjectAsAction = QAction(lan.get("saveProjectAs", "Save Project As..."), self)
+        self.saveProjectAsAction.triggered.connect(self.saveProjectAs)
+
+        self.projectPropertiesAction = QAction(
+            lan.get("projectProperties", "Project Properties..."), self)
+        self.projectPropertiesAction.triggered.connect(self.openProjectProperties)
+
+        self.exportLandXmlAction = QAction(
+            lan.get("exportLandXml", "Export Alignment to LandXML..."), self)
+        self.exportLandXmlAction.triggered.connect(self.exportLandXml)
+
+        # Recent projects live in their own menu button, rebuilt whenever the list changes
+        self.recentProjectsMenu = QMenu(self)
+        self.recentProjectsButton = self.buildVehicleMenuButton(
+            lan.get("recentProjects", "Recent Projects"), self.recentProjectsMenu)
 
         # File actions
         self.openFileAction = QAction(lan["open_file"], self)
@@ -443,6 +497,7 @@ class MainWindow(QMainWindow):
             lan.get("vehicleExportButton", "Export Vehicle Report"), self.exportVehicleMenu)
 
         self.rebuildVehicleReportMenus()
+        self.rebuildRecentProjectsMenu()
 
         self.exportGeometryReportAction = QAction(
             style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton),
@@ -688,6 +743,14 @@ class MainWindow(QMainWindow):
 
         projectPage = self.ribbonBar.addPage("project", lan.get("ribbonProject", "Project"),
                                              "ribbonProject")
+        projectGroup = projectPage.addGroup(lan.get("groupProject", "Project"), "groupProject")
+        projectGroup.addAction(self.newProjectAction, shortKey="shortNewProject")
+        projectGroup.addAction(self.openProjectAction, shortKey="shortOpenProject")
+        projectGroup.addAction(self.saveProjectAction, shortKey="shortSaveProject")
+        projectGroup.addAction(self.saveProjectAsAction, shortKey="shortSaveProjectAs")
+        projectGroup.addAction(self.projectPropertiesAction, shortKey="shortProjectProperties")
+        projectGroup.addWidget(self.recentProjectsButton)
+
         openGroup = projectPage.addGroup(lan.get("groupOpen", "Open"), "groupOpen")
         openGroup.addAction(self.autodetectXMLAction, shortKey="shortAutodetect")
         openGroup.addAction(self.openParseLandXMLAction, shortKey="shortLandxml")
@@ -704,6 +767,9 @@ class MainWindow(QMainWindow):
         cleanGroup.addAction(self.cleanLandXMLDataAction, shortKey="shortLandxml")
         cleanGroup.addAction(self.cleanTTPDataAction, shortKey="shortTtp")
         cleanGroup.addAction(self.openPurgeDialogAction, shortKey="shortPurge")
+
+        projectExportGroup = projectPage.addGroup(lan.get("groupExport", "Export"), "groupExport")
+        projectExportGroup.addAction(self.exportLandXmlAction, shortKey="shortExportLandXml")
 
         exitGroup = projectPage.addGroup(lan.get("groupSession", "Session"), "groupSession")
         exitGroup.addAction(self.helpAction, shortKey="shortHelp")
@@ -1135,6 +1201,332 @@ class MainWindow(QMainWindow):
         self.appSettings.setValue("theme/mode", self.themeManager.currentMode)
         self.appSettings.setValue("units/kmh", self.toggleUnitsAction.isChecked())
 
+
+    # Window title carries the project file name and an asterisk while changes are unsaved
+    def updateWindowTitle(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        projectName = (Path(self.currentProjectPath).name if self.currentProjectPath
+                       else lan.get("untitledProject", "Untitled.coypu"))
+        title = f"{lan['app_title']} - {projectName}"
+        if self.isProjectModified:
+            title += " *"
+        self.setWindowTitle(title)
+
+    # Flag the project as dirty, called by every operation that changes persisted state
+    def markProjectModified(self):
+        if not self.isProjectModified:
+            self.isProjectModified = True
+            self.updateWindowTitle()
+
+    # Clear the dirty flag after a successful save, a load or a fresh project
+    def clearProjectModified(self):
+        self.isProjectModified = False
+        self.updateWindowTitle()
+
+    # Switch the central viewport to a saved index, keeping the ribbon toggle in sync
+    def restoreCentralView(self, viewIndex):
+        viewHandlers = {VIEW_MAP: self.showMapView, VIEW_REPORT: self.showReportView,
+                        VIEW_DASHBOARD: self.showDashboardView}
+        viewHandlers.get(viewIndex, self.showMapView)()
+
+    # Extended project metadata, reachable from the ribbon, the HUD and every new project
+    def openProjectProperties(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        dialog = ProjectMetadataDialog(self.projectMetadata, lan, self)
+        if dialog.exec():
+            self.projectMetadata = dialog.getMetadata()
+            self.markProjectModified()
+            self.statusBarWidget.showMessage(
+                lan.get("statusMetadataSaved", "Project properties updated"), SERIES_STATUS_TIMEOUT)
+
+    # Ask before throwing away unsaved work, returning False when the user backs out
+    def confirmDiscardChanges(self):
+        if not self.isProjectModified:
+            return True
+
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        answer = QMessageBox.question(
+            self, lan.get("unsavedChangesTitle", "Unsaved changes"),
+            lan.get("unsavedChangesPrompt",
+                    "This project has unsaved changes. Save them before continuing?"),
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save)
+
+        if answer == QMessageBox.StandardButton.Cancel:
+            return False
+        if answer == QMessageBox.StandardButton.Save:
+            return self.saveProject()
+        return True
+
+    # Start an empty project and immediately ask for its identification
+    def newProject(self):
+        if not self.confirmDiscardChanges():
+            return
+        # Rebuilding the map inside the closing confirm dialog crashes the embedded web view
+        QTimer.singleShot(0, self.startNewProject)
+
+    # Wipe every dataset, forget the current file and prompt for the new project metadata
+    def startNewProject(self):
+        self.performCompleteReset()
+        self.mapWidget.clearViewState()
+        self.currentProjectPath = None
+        self.projectMetadata = project_metadata.buildDefaultMetadata()
+        self.discardRecoverySnapshot()
+        self.clearProjectModified()
+        self.openProjectProperties()
+
+    # File name suggested by the Save As dialog, derived from the project title
+    def suggestProjectFileName(self):
+        title = self.projectMetadata.get("projectTitle", "").strip()
+        slug = batch_export.slugifyLabel(title) if title else "untitled"
+        return f"{slug}{project_file.PROJECT_EXTENSION}"
+
+    # Save to the current file, falling back to Save As while the project has no path yet
+    def saveProject(self):
+        if not self.currentProjectPath:
+            return self.saveProjectAs()
+        return self.writeProjectTo(self.currentProjectPath)
+
+    # Ask for a target path and save the project there, adopting it as the current file
+    def saveProjectAs(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        suggestedPath = (self.currentProjectPath if self.currentProjectPath
+                         else self.suggestProjectFileName())
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, lan.get("saveProjectAs", "Save Project As..."), suggestedPath,
+            lan.get("projectFileFilter", "COYPU Project (*.coypu)"))
+        if not filepath:
+            return False
+        if not filepath.lower().endswith(project_file.PROJECT_EXTENSION):
+            filepath += project_file.PROJECT_EXTENSION
+        return self.writeProjectTo(filepath)
+
+    # Serialize the whole live project into one .coypu archive
+    def writeProjectTo(self, filepath):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        try:
+            payload = self.projectFileManager.buildProjectPayload(self)
+            rawAssets = self.projectFileManager.collectRawAssets(self)
+            self.projectFileManager.writeProjectArchive(filepath, payload, rawAssets)
+        except Exception as saveError:
+            QMessageBox.critical(self, lan.get("error", "Error"), str(saveError))
+            return False
+
+        self.currentProjectPath = str(filepath)
+        self.recentProjectsStore.rememberProject(filepath)
+        self.rebuildRecentProjectsMenu()
+        self.discardRecoverySnapshot()
+        self.clearProjectModified()
+        self.statusBarWidget.showMessage(
+            lan.get("statusProjectSaved", "Project saved"), SERIES_STATUS_TIMEOUT)
+        self.setEngineStatus(f"{lan.get('statusProjectSaved', 'Project saved')}: {filepath}")
+        return True
+
+    # Pick a .coypu archive and load it over the current session
+    def openProject(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        if not self.confirmDiscardChanges():
+            return
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, lan.get("openProject", "Open Project..."), "",
+            lan.get("projectFileFilter", "COYPU Project (*.coypu)"))
+        if not filepath:
+            return
+        # Deferred so the closing file dialog never overlaps the folium rebuild
+        QTimer.singleShot(0, lambda: self.loadProjectFile(filepath))
+
+    # Read one .coypu archive and rebuild every dataset, dock, plot and the map from it
+    def loadProjectFile(self, filepath, adoptPath=True):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        try:
+            payload, rawAssets = self.projectFileManager.readProjectArchive(filepath)
+            self.projectFileManager.applyProjectPayload(self, payload, rawAssets)
+        except Exception as loadError:
+            QMessageBox.critical(self, lan.get("error", "Error"), str(loadError))
+            return False
+
+        if adoptPath:
+            self.currentProjectPath = str(filepath)
+            self.recentProjectsStore.rememberProject(filepath)
+
+        self.refreshAfterProjectLoad()
+        self.clearProjectModified()
+        self.statusBarWidget.showMessage(
+            lan.get("statusProjectLoaded", "Project loaded"), SERIES_STATUS_TIMEOUT)
+        self.setEngineStatus(f"{lan.get('statusProjectLoaded', 'Project loaded')}: {filepath}")
+        return True
+
+    # Rebuild every table, source viewer, plot and the map from freshly loaded project data
+    def refreshAfterProjectLoad(self):
+        lxml = self.dataStorage.get("LandXML", {})
+
+        self.updateTableLandXML(lxml)
+        self.tableTTP.setData({
+            "stationSpeedLimits": self.dataStorage.get("stationSpeedLimits", []),
+            "speedLimits": self.dataStorage.get("speedLimits", []),
+        })
+        self.refreshLandXmlSourceText()
+        self.refreshTtpSourceText()
+        self.reportGeometryWidget.setPlainText("\n".join(self.lastGeometryReportLines))
+
+        self.rebuildVehicleReportMenus()
+        self.rebuildRecentProjectsMenu()
+        self.refreshStations()
+        self.plotCant()
+        self.plotCurvature()
+        self.plotProfile()
+        self.plotSpeedLimits()
+        self.plotKinematics()
+        self.refreshTrackStatsDock()
+
+        if lxml.get("alignmentCoordinates"):
+            self.updateMapWithSpeeds()
+        else:
+            self.mapWidget.resetMap()
+
+        self.updateTexts()
+
+    # Rebuild the recent projects submenu from the persisted list, newest first
+    def rebuildRecentProjectsMenu(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        self.recentProjectsMenu.clear()
+
+        recentPaths = self.recentProjectsStore.recentProjects()
+        if not recentPaths:
+            emptyAction = self.recentProjectsMenu.addAction(
+                lan.get("recentProjectsEmpty", "No recent projects"))
+            emptyAction.setEnabled(False)
+            return
+
+        for projectPath in recentPaths:
+            entryAction = self.recentProjectsMenu.addAction(Path(projectPath).name)
+            entryAction.setToolTip(projectPath)
+            entryAction.triggered.connect(
+                lambda checked=False, path=projectPath: self.openRecentProject(path))
+
+        self.recentProjectsMenu.addSeparator()
+        clearAction = self.recentProjectsMenu.addAction(
+            lan.get("recentProjectsClear", "Clear list"))
+        clearAction.triggered.connect(self.clearRecentProjects)
+
+    # Open one entry of the recent projects submenu with the usual unsaved changes guard
+    def openRecentProject(self, projectPath):
+        if not self.confirmDiscardChanges():
+            return
+        QTimer.singleShot(0, lambda: self.loadProjectFile(projectPath))
+
+    # Forget every remembered project, used when the list points at moved files
+    def clearRecentProjects(self):
+        self.recentProjectsStore.clearProjects()
+        self.rebuildRecentProjectsMenu()
+
+    # File name suggested by the LandXML export dialog
+    def suggestExportFileName(self):
+        title = self.projectMetadata.get("projectTitle", "").strip()
+        slug = batch_export.slugifyLabel(title) if title else "alignment"
+        return f"COYPU_{slug}.xml"
+
+    # Write the merged alignment, its optimized cant and its vertical profile as LandXML 1.2
+    def exportLandXml(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        lxml = self.dataStorage.get("LandXML", {})
+        if len(lxml.get("stationHorizontal", [])) == 0:
+            QMessageBox.warning(self, lan.get("error", "Error"),
+                                lan.get("no_data", "No data available. Calculate values first."))
+            return
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, lan.get("exportLandXml", "Export Alignment to LandXML..."),
+            self.suggestExportFileName(), lan.get("landXmlFileFilter", "LandXML (*.xml)"))
+        if not filepath:
+            return
+
+        try:
+            elementCount = landxml_exporter.exportAlignmentToFile(
+                filepath, lxml, self.projectMetadata, self.dataStorage.get("settingsData", {}))
+        except Exception as exportError:
+            QMessageBox.critical(self, lan.get("error", "Error"), str(exportError))
+            return
+
+        successText = lan.get("landXmlExportDone", "Alignment exported to LandXML")
+        elementsText = lan.get("landXmlExportElements", "Geometry elements")
+        QMessageBox.information(self, lan.get("exportLandXml", "Export Alignment to LandXML..."),
+                                f"{successText}\n{filepath}\n{elementsText}: {elementCount}")
+        self.statusBarWidget.showMessage(successText, SERIES_STATUS_TIMEOUT)
+        self.setEngineStatus(f"{successText}: {filepath}")
+
+    # Path the background recovery snapshot is written to for the current project
+    def recoverySnapshotPath(self):
+        return project_file.recoveryPathFor(self.currentProjectPath)
+
+    # Background recovery snapshot, skipped whenever there is nothing unsaved to protect
+    def performAutoSave(self):
+        if not self.isProjectModified:
+            return
+
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        snapshotPath = self.recoverySnapshotPath()
+        try:
+            payload = self.projectFileManager.buildProjectPayload(self)
+            rawAssets = self.projectFileManager.collectRawAssets(self)
+            self.projectFileManager.writeProjectArchive(snapshotPath, payload, rawAssets)
+        except Exception:
+            # A failed snapshot must never interrupt the user, the next tick simply tries again
+            return
+
+        self.appSettings.setValue(project_file.RECOVERY_PATH_SETTING, str(snapshotPath))
+        self.statusBarWidget.showMessage(
+            lan.get("statusAutoSaved", "Recovery snapshot saved"), SERIES_STATUS_TIMEOUT)
+
+    # Delete the recovery snapshot and its marker once the work is safely saved or discarded
+    def discardRecoverySnapshot(self):
+        storedPath = self.appSettings.value(project_file.RECOVERY_PATH_SETTING, "")
+        candidatePaths = {str(self.recoverySnapshotPath())}
+        if storedPath:
+            candidatePaths.add(str(storedPath))
+
+        for candidatePath in candidatePaths:
+            try:
+                Path(candidatePath).unlink(missing_ok=True)
+            except OSError:
+                continue
+        self.appSettings.remove(project_file.RECOVERY_PATH_SETTING)
+
+    # Offer the snapshot a crashed session left behind, once, right after startup
+    def promptRecoveryIfAvailable(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        storedPath = self.appSettings.value(project_file.RECOVERY_PATH_SETTING, "")
+        candidatePath = Path(storedPath) if storedPath else project_file.recoveryPathFor(None)
+        if not candidatePath.is_file():
+            return
+
+        promptText = lan.get("recoveryPrompt",
+                             "An unsaved recovery snapshot was found. Restore it?")
+        answer = QMessageBox.question(
+            self, lan.get("recoveryTitle", "Recover Project"),
+            f"{promptText}\n{candidatePath}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes)
+        if answer != QMessageBox.StandardButton.Yes:
+            self.discardRecoverySnapshot()
+            return
+
+        if not self.loadProjectFile(str(candidatePath), adoptPath=False):
+            return
+
+        # A snapshot is not the project file itself, so the restored work stays unsaved
+        self.currentProjectPath = self.originalProjectPathFor(candidatePath)
+        self.markProjectModified()
+
+    # Project file a recovery snapshot belongs to, or None for the untitled snapshot
+    def originalProjectPathFor(self, snapshotPath):
+        snapshotText = str(snapshotPath)
+        if not snapshotText.endswith(project_file.RECOVERY_SUFFIX):
+            return None
+        originalPath = Path(snapshotText[:-len(project_file.RECOVERY_SUFFIX)])
+        return str(originalPath) if originalPath.is_file() else None
+
     # Return every dock to the arrangement captured right after construction
     def resetLayout(self):
         lan = self.translationManager.getLanguage(self.currentLanguage)
@@ -1163,9 +1555,14 @@ class MainWindow(QMainWindow):
             SERIES_STATUS_TIMEOUT)
 
     def closeEvent(self, event):
+        if not self.confirmDiscardChanges():
+            event.ignore()
+            return
         if self.batchController.isRunning():
             self.batchController.cancelBatch()
             self.batchController.waitForFinish()
+        self.autoSaveTimer.stop()
+        self.discardRecoverySnapshot()
         self.saveSession()
         super().closeEvent(event)
 
@@ -1178,7 +1575,7 @@ class MainWindow(QMainWindow):
     def updateTexts(self):
         lan = self.translationManager.getLanguage(self.currentLanguage)
 
-        self.setWindowTitle(lan["app_title"])
+        self.updateWindowTitle()
 
         # Ribbon tab captions
         self.ribbonBar.setPageTitle("project", lan.get("ribbonProject", "Project"))
@@ -1188,6 +1585,16 @@ class MainWindow(QMainWindow):
         self.ribbonBar.setPageTitle("view", lan.get("ribbonView", "View"))
         self.ribbonBar.setPageTitle("series", lan.get("groupSeries", "Data series"))
         self.ribbonBar.setPageTitle("settings", lan.get("ribbonSettings", "Settings"))
+
+        # Native project actions
+        self.newProjectAction.setText(lan.get("newProject", "New Project"))
+        self.openProjectAction.setText(lan.get("openProject", "Open Project..."))
+        self.saveProjectAction.setText(lan.get("saveProject", "Save Project"))
+        self.saveProjectAsAction.setText(lan.get("saveProjectAs", "Save Project As..."))
+        self.projectPropertiesAction.setText(lan.get("projectProperties", "Project Properties..."))
+        self.exportLandXmlAction.setText(lan.get("exportLandXml", "Export Alignment to LandXML..."))
+        self.recentProjectsButton.setText(lan.get("recentProjects", "Recent Projects"))
+        self.rebuildRecentProjectsMenu()
 
         # File actions
         self.openFileAction.setText(lan["open_file"])
@@ -1512,7 +1919,7 @@ class MainWindow(QMainWindow):
             return
 
         # Cache this file's resolved contribution before merging, enables a later selective purge
-        self.recordTtpSource(fileName, stationsRaw, speedLimitsRaw)
+        self.recordTtpSource(fileName, stationsRaw, speedLimitsRaw, fileContent)
 
         oldStations = self.dataStorage["stationSpeedLimits"]
         oldSpeeds = self.dataStorage["speedLimits"]
@@ -1569,7 +1976,7 @@ class MainWindow(QMainWindow):
         newLandXMLData = readfile.ReadFile().ParseLandXML(fileContent, self.epsgInput, selectedIdx)
 
         # Cache this file's resolved contribution before merging, enables a later selective purge
-        self.recordLandXMLSource(fileName, newLandXMLData)
+        self.recordLandXMLSource(fileName, newLandXMLData, fileContent)
 
         self.mergeLandXMLData(newLandXMLData)
 
@@ -1710,26 +2117,28 @@ class MainWindow(QMainWindow):
         self.mapWidget.drawAlignment(mergedData.get("alignmentCoordinates",[]), mergedData)
 
     # Cache one imported LandXML file's resolved contribution, enables a later selective purge
-    def recordLandXMLSource(self, fileName, landXmlData):
+    def recordLandXMLSource(self, fileName, landXmlData, rawText=""):
         stations = landXmlData.get("stationHorizontal", [])
         if len(stations) == 0:
             return
         stationStart = float(np.nanmin(stations))
         stationEnd = float(np.nanmax(stations))
         self.sourceStack.addEntry(source_stack.LANDXML_KIND, fileName or "LandXML.xml",
-                                  copy.deepcopy(landXmlData), stationStart, stationEnd)
+                                  copy.deepcopy(landXmlData), stationStart, stationEnd, rawText)
         self.refreshLandXmlSourceText()
+        self.markProjectModified()
 
     # Cache one imported TTP file's resolved contribution, enables a later selective purge
-    def recordTtpSource(self, fileName, stations, speedLimits):
+    def recordTtpSource(self, fileName, stations, speedLimits, rawText=""):
         if len(stations) == 0:
             return
         stationStart = float(np.nanmin(stations))
         stationEnd = float(np.nanmax(stations))
         payload = (np.array(stations, dtype=float), np.array(speedLimits, dtype=float))
         self.sourceStack.addEntry(source_stack.TTP_KIND, fileName or "TTP.xml",
-                                  payload, stationStart, stationEnd)
+                                  payload, stationStart, stationEnd, rawText)
         self.refreshTtpSourceText()
+        self.markProjectModified()
 
     # Replace the LandXML source viewer with a summary of the currently surviving segments
     def refreshLandXmlSourceText(self):
@@ -1845,7 +2254,7 @@ class MainWindow(QMainWindow):
 
             # A fresh import replaces the whole route stack, not just the merged arrays
             self.sourceStack.clearKind(source_stack.LANDXML_KIND)
-            self.recordLandXMLSource(fileName, LandXMLData)
+            self.recordLandXMLSource(fileName, LandXMLData, fileContent)
 
             # Plot and draw data
             lxml = self.dataStorage.get("LandXML",{})
@@ -2001,7 +2410,7 @@ class MainWindow(QMainWindow):
 
             # A fresh import replaces the whole TTP stack, not just the merged arrays
             self.sourceStack.clearKind(source_stack.TTP_KIND)
-            self.recordTtpSource(fileName, stations, speedLimits)
+            self.recordTtpSource(fileName, stations, speedLimits, fileContent)
 
             TTPData = {
                 "stationSpeedLimits": stations,
@@ -2447,6 +2856,7 @@ class MainWindow(QMainWindow):
         self.variantDashboardWidget.clearAll()
         self.setEngineStatus(self.translationManager.getLanguage(self.currentLanguage).get("statusNoData", "No data"))
         self.updateStatusChainage(None)
+        self.markProjectModified()
 
     def cleanTTPData(self):
         self.textboxRawTTP.setXmlText("")
@@ -2456,6 +2866,7 @@ class MainWindow(QMainWindow):
         self.sourceStack.clearKind(source_stack.TTP_KIND)
         self.plotSpeedLimits()
         self.plotKinematics()
+        self.markProjectModified()
 
     def cleanLandXMLData(self):
         self.textboxRawLandXML.setXmlText("")
@@ -2465,6 +2876,7 @@ class MainWindow(QMainWindow):
         self.plotCant()
         self.plotCurvature()
         self.plotProfile()
+        self.markProjectModified()
 
     def cleanCalculatedCants(self):
         lxml = self.dataStorage.setdefault("LandXML", {})
@@ -2666,6 +3078,7 @@ class MainWindow(QMainWindow):
         dialog = gui_overlay.GeometrySettingsDialog(self.dataStorage.get("settingsData", {}), lan, self)
         if dialog.exec():
             self.dataStorage["settingsData"].update(dialog.getSettings())
+            self.markProjectModified()
 
     # Vehicle settings
     def openVehicleSettings(self):
@@ -2678,6 +3091,7 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             self.dataStorage["settingsData"].update(dialog.getSettings())
             self.rebuildVehicleReportMenus()
+            self.markProjectModified()
             # Step 4 of the workflow guide covers the vehicle definition
             self.workflowWidget.markCompleted(3)
 
@@ -2719,12 +3133,14 @@ class MainWindow(QMainWindow):
         self.refreshStations()
         self.plotKinematics()
         self.refreshTrackStatsDock()
+        self.markProjectModified()
         self.statusBarWidget.showMessage(lan.get("purgeDone", "Purge completed"), SERIES_STATUS_TIMEOUT)
 
     # Wipe the entire project, the deferred complete reset scope of the purge dialog
     def performCompleteReset(self):
         self.cleanData()
         self.sourceStack.clearAll()
+        self.mapWidget.clearViewState()
         self.dataStorage["settingsData"] = copy.deepcopy(default_values.defVal)
         self.mapWidget.resetMap()
 
@@ -2906,6 +3322,7 @@ class MainWindow(QMainWindow):
             # New stops must reach the map and both station aware plots
             self.refreshStations()
             self.plotKinematics()
+            self.markProjectModified()
 
     # Speed settings
     def openSpeedSettings(self):
@@ -2913,6 +3330,7 @@ class MainWindow(QMainWindow):
         dialog = gui_overlay.SpeedSettingsDialog(self.dataStorage.get("settingsData", {}), lan, self)
         if dialog.exec():
             self.dataStorage["settingsData"].update(dialog.getSettings())
+            self.markProjectModified()
 
     # Design approach settings
     def openDesignApproach(self):
@@ -2921,6 +3339,7 @@ class MainWindow(QMainWindow):
         dialog = gui_overlay.DesignApproachDialog(self.dataStorage.get("settingsData", {}), lan, self)
         if dialog.exec():
             self.dataStorage["settingsData"]["designApproach"] = dialog.getDesignApproach()
+            self.markProjectModified()
 
     # Help, reveals the documentation dock instead of opening a modal dialog
     def openHelp(self):
@@ -3561,6 +3980,7 @@ class MainWindow(QMainWindow):
         # Step 5 of the workflow guide covers the GPK calculation
         self.workflowWidget.markCompleted(4)
         self.setEngineStatus(self.translationManager.getLanguage(self.currentLanguage).get("statusGeometryDone", "Geometry calculated"))
+        self.markProjectModified()
 
     def calculateGeometryI(self):
 
@@ -3577,6 +3997,7 @@ class MainWindow(QMainWindow):
         # Step 5 of the workflow guide covers the GPK calculation
         self.workflowWidget.markCompleted(4)
         self.setEngineStatus(self.translationManager.getLanguage(self.currentLanguage).get("statusGeometryDone", "Geometry calculated"))
+        self.markProjectModified()
 
     def calculateTrainSpeed(self):
         vehicle = vehicle_engine.VehicleCalculator(self.dataStorage)
@@ -3600,6 +4021,7 @@ class MainWindow(QMainWindow):
         # Step 6 of the workflow guide covers the running simulation
         self.workflowWidget.markCompleted(5)
         self.setEngineStatus(self.translationManager.getLanguage(self.currentLanguage).get("statusSimulationDone", "Simulation finished"))
+        self.markProjectModified()
 
     def updateMapWithSpeeds(self):
         lxml = self.dataStorage.get("LandXML", {})
