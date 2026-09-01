@@ -39,7 +39,10 @@ RAW_DATA_STORAGE_KEYS = ("settingsData", "LandXML", "stationSpeedLimits", "speed
 # LandXML sub-dictionary key prefixes produced by the geometry engine, cached separately
 CALCULATED_LANDXML_PREFIXES = ("stationCantPossible", "cantPossible", "cDef", "cantDef",
                                "dDdt", "dIdt", "util_D_", "util_I_", "limitReachedD_",
-                               "limitReachedI_", "speedLimits", "stationSpeed")
+                               "limitReachedI_", "speedLimits", "stationSpeed",
+                               "stationHorizontalNew", "geometryTypeNew", "curvatureNew",
+                               "curvatureSignNew", "radiusNew", "alignmentCoordinatesNew",
+                               "denseAlignmentNew", "optimizationSummary")
 
 # How many recently opened projects the File menu keeps
 MAX_RECENT_PROJECTS = 5

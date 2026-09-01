@@ -96,7 +96,9 @@ class BatchArchiveExporter:
         writer = csv.writer(buffer)
         writer.writerow(["variantId", "label", "status", "trackLengthKm", "maxSpeedDesignKmh",
                          "maxSpeedActualKmh", "meanSpeedActualKmh", "totalTimeS", "originDestTimeS",
-                         "maxCantMm", "maxCantDefMm", "meanUtilD", "meanUtilI", "limitCountD", "limitCountI"])
+                         "maxCantMm", "maxCantDefMm", "meanUtilD", "meanUtilI", "limitCountD", "limitCountI",
+                         "optimizedGroupCount", "skippedGroupCount", "maxSlewM", "meanSlewM",
+                         "minRadiusOldM", "minRadiusNewM", "spiralLengthGainM"])
         for result in results:
             label = result.get("spec", {}).get("label", result["variantId"])
             metrics = result.get("metrics", {})
@@ -106,7 +108,11 @@ class BatchArchiveExporter:
                              metrics.get("totalTimeS"), metrics.get("originDestTimeS"),
                              metrics.get("maxCantMm"), metrics.get("maxCantDefMm"),
                              metrics.get("meanUtilD"), metrics.get("meanUtilI"),
-                             metrics.get("limitCountD"), metrics.get("limitCountI")])
+                             metrics.get("limitCountD"), metrics.get("limitCountI"),
+                             metrics.get("optimizedGroupCount"), metrics.get("skippedGroupCount"),
+                             metrics.get("maxSlewM"), metrics.get("meanSlewM"),
+                             metrics.get("minRadiusOldM"), metrics.get("minRadiusNewM"),
+                             metrics.get("spiralLengthGainM")])
         archive.writestr("comparison/variantMatrix.csv", buffer.getvalue())
 
     def writeTravelTimeMatrix(self, archive, results):

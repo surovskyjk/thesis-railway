@@ -288,6 +288,8 @@ class MapWidget(QWidget):
         self.railOverlayOpacity = 0.7
         self.isMapReady = False
         self.wasDarkTheme = False
+        self.lan = lan or {}
+        self.themeTokens = None
         # Live Leaflet camera, restored from a project file or reported back by the page
         self.viewCenterLat = None
         self.viewCenterLon = None
@@ -413,6 +415,7 @@ class MapWidget(QWidget):
 
     # Refresh the floating control captions after a language change
     def updateTexts(self, lan):
+        self.lan = lan or {}
         self.controlsPanel.updateTexts(lan)
 
     # Restyle the floating controls when the application theme changes, and default
@@ -421,6 +424,7 @@ class MapWidget(QWidget):
         if isDark and not self.wasDarkTheme and self.currentBaseMap != "cartodbDark":
             self.setBaseMap("cartodbDark")
         self.wasDarkTheme = isDark
+        self.themeTokens = tokens
         self.controlsPanel.applyTheme(isDark, tokens)
 
     def addTiles(self, m):
@@ -491,7 +495,9 @@ class MapWidget(QWidget):
             return
         
         # Bounds
+        optimizedAlignment = (lxml or {}).get("alignmentCoordinatesNew") or []
         allPoints = [pt for segmentData in alignment for pt in segmentData[0]]
+        allPoints += [pt for segmentData in optimizedAlignment for pt in segmentData[0]]
         if not allPoints:
             self.resetMap()
             return
@@ -505,11 +511,13 @@ class MapWidget(QWidget):
 
         if self.drawMode == "single":
             allCoords = [segmentData[0] for segmentData in alignment]
-            folium.PolyLine(allCoords, color="red", weight=2.5, opacity=1, tooltip="Alignment").add_to(m)
+            baselineColor = "#888888" if optimizedAlignment else "red"
+            baselineTooltip = self.lan.get("mapBaselineAlignment", "Baseline alignment") if optimizedAlignment else "Alignment"
+            folium.PolyLine(allCoords, color=baselineColor, weight=2.5, opacity=1, tooltip=baselineTooltip).add_to(m)
         elif self.drawMode == "type":
             typeColors = {"Line": "blue", "Spiral": "orange", "Curve": "purple"}
             for segmentCoords, segmentType in alignment:
-                color = typeColors.get(segmentType, "gray")
+                color = "#888888" if optimizedAlignment else typeColors.get(segmentType, "gray")
                 folium.PolyLine(segmentCoords, color=color, weight=2.5, opacity=1, tooltip=segmentType).add_to(m)
         elif self.drawMode == "speed" and lxml:
             self.drawSpeedColoredAlignment(m, lxml)
@@ -517,8 +525,18 @@ class MapWidget(QWidget):
             allCoords = [segmentData[0] for segmentData in alignment]
             folium.PolyLine(allCoords, color="red", weight=2.5, opacity=1, tooltip="Alignment").add_to(m)
 
+        if optimizedAlignment:
+            self.drawOptimizedOverlay(m, optimizedAlignment)
+
         self.addStationMarkers(m)
         self.renderMap(m)
+
+    # Draws the optimizer's revised axis in the theme accent colour on top of the baseline
+    def drawOptimizedOverlay(self, m, optimizedAlignment):
+        accentColor = (self.themeTokens or {}).get("highlight", "#2f6fb5")
+        tooltip = self.lan.get("mapNewAlignment", "New Alignment")
+        newCoords = [segmentData[0] for segmentData in optimizedAlignment]
+        folium.PolyLine(newCoords, color=accentColor, weight=3, opacity=1, tooltip=tooltip).add_to(m)
 
     def drawSpeedColoredAlignment(self, m, lxml):
         denseAlignment = lxml.get("denseAlignment")

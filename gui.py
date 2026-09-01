@@ -96,6 +96,8 @@ ACTION_ICONS = {
     "stopsSettingsAction": "stops",
     "speedSettingsAction": "settings",
     "designApproachAction": "settings",
+    "alignmentOptimizationAction": "optimize",
+    "clearOptimizationAction": "cleanPart",
     "toggleUnitsAction": "units",
     "themeAutoAction": "themeAuto",
     "themeLightAction": "themeLight",
@@ -137,6 +139,11 @@ SERIES_SHORT_KEYS = {
     "toggleCantDefKAction": "shortSeriesCantDefK",
     "toggleCurvatureAction": "shortSeriesCurvature",
     "toggleCurvatureNewAction": "shortSeriesCurvatureNew",
+    "toggleCantPossibleNewAction": "shortSeriesCantPossibleNew",
+    "toggleCDef100NewAction": "shortSeriesCDef100New",
+    "toggleCDef130NewAction": "shortSeriesCDef130New",
+    "toggleCDef150NewAction": "shortSeriesCDef150New",
+    "toggleCDefKNewAction": "shortSeriesCDefKNew",
     "toggleSpeedAction": "shortSeriesSpeed",
     "toggleSpeed100Action": "shortSeriesSpeed100",
     "toggleSpeed130Action": "shortSeriesSpeed130",
@@ -163,6 +170,11 @@ SERIES_BADGES = {
     "toggleCantDefKAction": "D+IK",
     "toggleCurvatureAction": "1/R",
     "toggleCurvatureNewAction": "1/Rn",
+    "toggleCantPossibleNewAction": "Dn",
+    "toggleCDef100NewAction": "In100",
+    "toggleCDef130NewAction": "In130",
+    "toggleCDef150NewAction": "In150",
+    "toggleCDefKNewAction": "InK",
     "toggleSpeedAction": "v_lim",
     "toggleSpeed100Action": "V100",
     "toggleSpeed130Action": "V130",
@@ -414,6 +426,12 @@ class MainWindow(QMainWindow):
         self.designApproachAction = QAction(lan["designApproach"], self)
         self.designApproachAction.triggered.connect(self.openDesignApproach)
 
+        self.alignmentOptimizationAction = QAction(lan.get("alignmentOptimization", "Alignment Optimization"), self)
+        self.alignmentOptimizationAction.triggered.connect(self.openAlignmentOptimization)
+
+        self.clearOptimizationAction = QAction(lan.get("clearOptimization", "Clear Optimization"), self)
+        self.clearOptimizationAction.triggered.connect(self.clearOptimizationResults)
+
         self.toggleUnitsAction = QAction(self)
         self.toggleUnitsAction.setCheckable(True)
         self.toggleUnitsAction.setChecked(False)
@@ -524,6 +542,11 @@ class MainWindow(QMainWindow):
             ("toggleCantDefKAction", "cant_def_K", self.toggleCantDefKVisibility),
             ("toggleCurvatureAction", "curvature", self.toggleCurvatureVisibility),
             ("toggleCurvatureNewAction", "curvature_new", self.toggleCurvatureNewVisibility),
+            ("toggleCantPossibleNewAction", "cant_possible_new", self.toggleCantPossibleNewVisibility),
+            ("toggleCDef100NewAction", "cdef_100_new", self.toggleCDef100NewVisibility),
+            ("toggleCDef130NewAction", "cdef_130_new", self.toggleCDef130NewVisibility),
+            ("toggleCDef150NewAction", "cdef_150_new", self.toggleCDef150NewVisibility),
+            ("toggleCDefKNewAction", "cdef_K_new", self.toggleCDefKNewVisibility),
             ("toggleSpeedAction", "speed_lim", self.toggleSpeedVisibility),
             ("toggleSpeed100Action", "speed_lim_100", self.toggleSpeed100Visibility),
             ("toggleSpeed130Action", "speed_lim_130", self.toggleSpeed130Visibility),
@@ -793,6 +816,10 @@ class MainWindow(QMainWindow):
         geometryConfigGroup.addAction(self.designApproachAction, shortKey="shortApproach")
         geometryConfigGroup.addAction(self.speedSettingsAction, shortKey="shortSpeeds")
 
+        optimizeGroup = geometryPage.addGroup(lan.get("groupOptimize", "Optimization"), "groupOptimize")
+        optimizeGroup.addAction(self.alignmentOptimizationAction, shortKey="shortOptimize")
+        optimizeGroup.addAction(self.clearOptimizationAction, shortKey="shortClearOptimize")
+
         geometryReportGroup = geometryPage.addGroup(lan.get("groupReport", "Report"), "groupReport")
         geometryReportGroup.addAction(self.reportGeometryAction, shortKey="shortReport")
         geometryReportGroup.addAction(self.exportGeometryReportAction, shortKey="shortExport")
@@ -849,7 +876,9 @@ class MainWindow(QMainWindow):
                               "toggleCDef130Action", "toggleCDef150Action", "toggleCDefKAction",
                               "toggleCantDef100Action", "toggleCantDef130Action",
                               "toggleCantDef150Action", "toggleCantDefKAction",
-                              "toggleCurvatureAction", "toggleCurvatureNewAction"):
+                              "toggleCurvatureAction", "toggleCurvatureNewAction",
+                              "toggleCantPossibleNewAction", "toggleCDef100NewAction",
+                              "toggleCDef130NewAction", "toggleCDef150NewAction", "toggleCDefKNewAction"):
             cantSeriesGroup.addAction(getattr(self, attributeName), isLarge=False,
                                       shortKey=SERIES_SHORT_KEYS[attributeName])
 
@@ -1106,6 +1135,11 @@ class MainWindow(QMainWindow):
             "cantDefK": self.toggleCantDefKAction,
             "curvature": self.toggleCurvatureAction,
             "curvatureNew": self.toggleCurvatureNewAction,
+            "cantPossibleNew": self.toggleCantPossibleNewAction,
+            "cDef100New": self.toggleCDef100NewAction,
+            "cDef130New": self.toggleCDef130NewAction,
+            "cDef150New": self.toggleCDef150NewAction,
+            "cDefKNew": self.toggleCDefKNewAction,
             "speedLimits": self.toggleSpeedAction,
             "speedLimits100": self.toggleSpeed100Action,
             "speedLimits130": self.toggleSpeed130Action,
@@ -1634,6 +1668,8 @@ class MainWindow(QMainWindow):
         self.stopsSettingsAction.setText(lan.get("stopsSettings", "Stops Settings"))
         self.speedSettingsAction.setText(lan.get("speedSettings", "Speed Limits Settings"))
         self.designApproachAction.setText(lan["designApproach"])
+        self.alignmentOptimizationAction.setText(lan.get("alignmentOptimization", "Alignment Optimization"))
+        self.clearOptimizationAction.setText(lan.get("clearOptimization", "Clear Optimization"))
         self.updateUnitsActionLabel()
         self.exportPresetsAction.setText(lan.get("exportPresets", "Export Presets..."))
         self.importPresetsAction.setText(lan.get("importPresets", "Import Presets..."))
@@ -2596,6 +2632,11 @@ class MainWindow(QMainWindow):
                 ("stationCantPossible", "cantDef130", lan.get("cant_def_130"), 'aqua'),
                 ("stationCantPossible", "cantDef150", lan.get("cant_def_150"), 'mediumorchid'),
                 ("stationCantPossible", "cantDefK",   lan.get("cant_def_K"),   'royalblue'),
+                ("stationCantPossibleNew", "cantPossibleNew", lan.get("cant_possible_new"), 'darkgreen'),
+                ("stationCantPossibleNew", "cDef100New",      lan.get("cdef_100_new"),      'darkred'),
+                ("stationCantPossibleNew", "cDef130New",      lan.get("cdef_130_new"),      'darkcyan'),
+                ("stationCantPossibleNew", "cDef150New",      lan.get("cdef_150_new"),      'indigo'),
+                ("stationCantPossibleNew", "cDefKNew",        lan.get("cdef_K_new"),        'navy'),
             ]
             for sk, dk, lbl, col in cantSeries:
                 x = lxml.get(sk)
@@ -2900,6 +2941,7 @@ class MainWindow(QMainWindow):
             lxml[f"limitReachedD_{profile}"] = []
             lxml[f"limitReachedI_{profile}"] = []
 
+        self.clearOptimizationResults(refresh=False)
         self.reportGeometryWidget.setPlainText("")
         self.plotCant()
         self.plotSpeedLimits()
@@ -2966,6 +3008,21 @@ class MainWindow(QMainWindow):
 
     def toggleCurvatureNewVisibility(self, isChecked):
         self.graphsWidget.setSeriesVisible("geometry", "curvatureNew", isChecked)
+
+    def toggleCantPossibleNewVisibility(self, isChecked):
+        self.graphsWidget.setSeriesVisible("geometry", "cantPossibleNew", isChecked)
+
+    def toggleCDef100NewVisibility(self, isChecked):
+        self.graphsWidget.setSeriesVisible("geometry", "cDef100New", isChecked)
+
+    def toggleCDef130NewVisibility(self, isChecked):
+        self.graphsWidget.setSeriesVisible("geometry", "cDef130New", isChecked)
+
+    def toggleCDef150NewVisibility(self, isChecked):
+        self.graphsWidget.setSeriesVisible("geometry", "cDef150New", isChecked)
+
+    def toggleCDefKNewVisibility(self, isChecked):
+        self.graphsWidget.setSeriesVisible("geometry", "cDefKNew", isChecked)
 
     def toggleSpeedVisibility(self, isChecked):
         self.graphsWidget.setSeriesVisible("speed", "speedLimits", isChecked)
@@ -3339,7 +3396,19 @@ class MainWindow(QMainWindow):
         dialog = gui_overlay.DesignApproachDialog(self.dataStorage.get("settingsData", {}), lan, self)
         if dialog.exec():
             self.dataStorage["settingsData"]["designApproach"] = dialog.getDesignApproach()
+            self.dataStorage["settingsData"]["disableGeometryMaxD"] = dialog.isGeometryMaxDDisabled()
+            self.dataStorage["settingsData"]["balanceInflectionCants"] = dialog.isInflectionBalancingEnabled()
             self.markProjectModified()
+
+    # Alignment optimization settings, opens the dialog and triggers the optimizer on accept
+    def openAlignmentOptimization(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+
+        dialog = gui_overlay.AlignmentOptimizationDialog(self.dataStorage.get("settingsData", {}), lan, self)
+        if dialog.exec():
+            self.dataStorage["settingsData"]["alignmentOptimization"] = dialog.getOptimizationConfig()
+            self.markProjectModified()
+            self.runAlignmentOptimization()
 
     # Help, reveals the documentation dock instead of opening a modal dialog
     def openHelp(self):
@@ -3998,6 +4067,67 @@ class MainWindow(QMainWindow):
         self.workflowWidget.markCompleted(4)
         self.setEngineStatus(self.translationManager.getLanguage(self.currentLanguage).get("statusGeometryDone", "Geometry calculated"))
         self.markProjectModified()
+
+    # Runs the parametric slew/spiral optimizer on the imported baseline geometry, additive to it
+    def runAlignmentOptimization(self):
+        lxml = self.dataStorage.get("LandXML", {})
+        if "alignmentCoordinates" not in lxml:
+            return
+
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        self.clearOptimizationResults(refresh=False)
+
+        config = self.dataStorage.get("settingsData", {}).get("alignmentOptimization", {})
+        optimizer = geometry_engine.AlignmentOptimizer(lxml, config)
+        summary, optimizedElements = optimizer.run()
+
+        if optimizedElements is None:
+            self.setEngineStatus(lan.get("optNoGroups", "No optimizable element groups found"))
+            self.updateMapWithSpeeds()
+            self.plotCant()
+            self.markProjectModified()
+            return
+
+        # Harvest lat/lon polylines for the map overlay the same way the baseline import does
+        readfile.ReadFile().alignmentCoordinates(optimizedElements, self.epsgInput, "EPSG:4326")
+        lxml["alignmentCoordinatesNew"] = optimizedElements.get("alignmentCoordinates", [])
+        lxml["denseAlignmentNew"] = optimizedElements.get("denseAlignment", [])
+
+        # Cant re-run on an isolated clone, never touching the baseline cant arrays
+        cantStorage = {
+            "settingsData": self.dataStorage.get("settingsData", {}),
+            "defaultProfile": self.dataStorage.get("defaultProfile", "I150"),
+            "LandXML": {
+                "stationHorizontal": lxml["stationHorizontalNew"],
+                "geometryType": lxml["geometryTypeNew"],
+                "curvature": lxml["curvatureNew"],
+                "curvatureSign": lxml["curvatureSignNew"],
+            },
+        }
+        geometry_engine.GeometryCalculator(cantStorage).runCalculationLoop()
+        cantLxml = cantStorage["LandXML"]
+        lxml["stationCantPossibleNew"] = cantLxml.get("stationCantPossible", [])
+        lxml["cantPossibleNew"] = cantLxml.get("cantPossible", [])
+        for profileSuffix in ("100", "130", "150", "K"):
+            lxml[f"cDef{profileSuffix}New"] = cantLxml.get(f"cDef{profileSuffix}", [])
+
+        self.updateMapWithSpeeds()
+        self.plotCant()
+        self.setEngineStatus(lan.get("statusOptimizationDone", "Alignment optimized"))
+        self.markProjectModified()
+
+    # Drops every optimizer output, reverting the map/plots to the baseline-only view
+    def clearOptimizationResults(self, refresh=True):
+        lxml = self.dataStorage.setdefault("LandXML", {})
+        for key in ("stationHorizontalNew", "geometryTypeNew", "curvatureNew", "curvatureSignNew", "radiusNew",
+                    "alignmentCoordinatesNew", "denseAlignmentNew", "optimizationSummary",
+                    "stationCantPossibleNew", "cantPossibleNew",
+                    "cDef100New", "cDef130New", "cDef150New", "cDefKNew"):
+            lxml.pop(key, None)
+        if refresh:
+            self.updateMapWithSpeeds()
+            self.plotCant()
+            self.markProjectModified()
 
     def calculateTrainSpeed(self):
         vehicle = vehicle_engine.VehicleCalculator(self.dataStorage)

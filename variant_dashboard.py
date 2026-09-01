@@ -181,6 +181,7 @@ class VariantDashboardWidget(QWidget):
                 self.lan.get("statsCardTotalTime", "Total travel time"): batch_metrics.formatDuration(metrics.get("totalTimeS")),
                 "Max I [mm]": self.formatNumber(metrics.get("maxCantDefMm")),
                 "Max D [mm]": self.formatNumber(metrics.get("maxCantMm")),
+                "Max slew [m]": self.formatNumber(metrics.get("maxSlewM")),
             })
         self.summaryTable.setData(rows)
 

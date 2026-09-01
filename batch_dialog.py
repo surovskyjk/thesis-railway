@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, Q
                                 QDialogButtonBox)
 
 import batch_config
+import geometry_engine
 import readfile
 
 # Default export formats offered on the Output tab, key -> initially checked
@@ -46,6 +47,7 @@ class BatchProcessingDialog(QDialog):
         self.buildStopsProfilesTab()
         self.buildDesignApproachesTab()
         self.buildSensitivityTab()
+        self.buildOptimizationTab()
         self.buildOutputTab()
 
         previewLayout = QHBoxLayout()
@@ -267,6 +269,98 @@ class BatchProcessingDialog(QDialog):
             approaches.append({"approachId": f"a{row + 1}", "label": label, "approach": approach})
         return approaches
 
+    # --- Optimization tab ----------------------------------------------------
+
+    def buildOptimizationTab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        self.includeBaselineCheck = QCheckBox(self.lan.get("batchIncludeBaseline", "Include baseline scenario (no optimization)"))
+        self.includeBaselineCheck.setChecked(True)
+        self.includeBaselineCheck.stateChanged.connect(self.refreshVariantPreview)
+        layout.addWidget(self.includeBaselineCheck)
+
+        self.scenarioTable = QTableWidget(0, 5)
+        self.scenarioTable.setHorizontalHeaderLabels([
+            self.lan.get("batchScenarioLabel", "Label"),
+            self.lan.get("optPatternLcl", "Line-Curve-Line"),
+            self.lan.get("optPatternLscsl", "Line-Spiral-Curve-Spiral-Line"),
+            self.lan.get("batchScenarioDMax", "d_max [m]"), self.lan.get("batchScenarioLMin", "L_min [m]"),
+        ])
+        self.scenarioTable.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.scenarioTable, 1)
+
+        buttonsRow = QHBoxLayout()
+        self.addScenarioButton = QPushButton(self.lan.get("batchAddScenario", "Add scenario"))
+        self.addScenarioButton.clicked.connect(lambda: self.addOptimizationScenarioRow())
+        buttonsRow.addWidget(self.addScenarioButton)
+        self.removeScenarioButton = QPushButton(self.lan.get("batchRemoveScenario", "Remove"))
+        self.removeScenarioButton.clicked.connect(self.removeOptimizationScenarioRow)
+        buttonsRow.addWidget(self.removeScenarioButton)
+        layout.addLayout(buttonsRow)
+
+        self.tabs.addTab(tab, self.lan.get("batchTabOptimization", "Optimization"))
+
+    def buildOptModeCombo(self, allowedModes, currentMode):
+        combo = QComboBox()
+        combo.addItem(self.lan.get("optModeNone", "Do not optimize"), geometry_engine.OPTIMIZATION_MODE_NONE)
+        modeLabelKeys = {
+            geometry_engine.OPTIMIZATION_MODE_SHIFT_AND_EXTEND: "optModeShiftAndExtend",
+            geometry_engine.OPTIMIZATION_MODE_EXTEND_SPIRALS: "optModeExtendSpirals",
+            geometry_engine.OPTIMIZATION_MODE_SHIFT_ARC: "optModeShiftArc",
+            geometry_engine.OPTIMIZATION_MODE_INVERTED_SHIFT: "optModeInvertedShift",
+        }
+        for mode in allowedModes:
+            combo.addItem(self.lan.get(modeLabelKeys[mode], mode), mode)
+        index = combo.findData(currentMode)
+        combo.setCurrentIndex(max(0, index))
+        combo.currentIndexChanged.connect(self.refreshVariantPreview)
+        return combo
+
+    def addOptimizationScenarioRow(self, label="", modeLcl=geometry_engine.OPTIMIZATION_MODE_NONE,
+                                   modeLscsl=geometry_engine.OPTIMIZATION_MODE_SHIFT_AND_EXTEND,
+                                   dMaxM=0.5, lMinM=25.0):
+        row = self.scenarioTable.rowCount()
+        self.scenarioTable.insertRow(row)
+        self.scenarioTable.setItem(row, 0, QTableWidgetItem(label or f"d_max={dMaxM}"))
+        self.scenarioTable.setCellWidget(row, 1, self.buildOptModeCombo(geometry_engine.LCL_OPTIMIZATION_MODES, modeLcl))
+        self.scenarioTable.setCellWidget(row, 2, self.buildOptModeCombo(geometry_engine.OPTIMIZATION_MODES, modeLscsl))
+        dMaxInput = QLineEdit(str(dMaxM))
+        dMaxInput.textChanged.connect(self.refreshVariantPreview)
+        self.scenarioTable.setCellWidget(row, 3, dMaxInput)
+        lMinInput = QLineEdit(str(lMinM))
+        lMinInput.textChanged.connect(self.refreshVariantPreview)
+        self.scenarioTable.setCellWidget(row, 4, lMinInput)
+        self.refreshVariantPreview()
+
+    def removeOptimizationScenarioRow(self):
+        row = self.scenarioTable.currentRow()
+        if row >= 0:
+            self.scenarioTable.removeRow(row)
+        self.refreshVariantPreview()
+
+    def collectOptimizationScenarios(self):
+        scenarios = []
+        for row in range(self.scenarioTable.rowCount()):
+            labelItem = self.scenarioTable.item(row, 0)
+            label = labelItem.text() if labelItem else f"Scenario {row + 1}"
+            modeLclCombo = self.scenarioTable.cellWidget(row, 1)
+            modeLscslCombo = self.scenarioTable.cellWidget(row, 2)
+            dMaxInput = self.scenarioTable.cellWidget(row, 3)
+            lMinInput = self.scenarioTable.cellWidget(row, 4)
+            try:
+                dMaxM = float(dMaxInput.text())
+                lMinM = float(lMinInput.text())
+            except ValueError:
+                dMaxM, lMinM = 0.0, 0.0
+            scenarios.append({
+                "scenarioId": f"opt{row + 1}", "label": label, "isEnabled": True,
+                "dMaxM": dMaxM, "lMinM": lMinM,
+                "modeLcl": modeLclCombo.currentData() if modeLclCombo else geometry_engine.OPTIMIZATION_MODE_NONE,
+                "modeLscsl": modeLscslCombo.currentData() if modeLscslCombo else geometry_engine.OPTIMIZATION_MODE_NONE,
+            })
+        return scenarios
+
     # --- Sensitivity tab -----------------------------------------------------
 
     def buildSensitivityTab(self):
@@ -364,6 +458,8 @@ class BatchProcessingDialog(QDialog):
         configData["stopsProfiles"] = list(self.stopsProfiles)
         configData["designApproaches"] = self.collectDesignApproaches()
         configData["sweep"] = self.collectSweepConfig()
+        configData["optimizationScenarios"] = self.collectOptimizationScenarios()
+        configData["includeBaselineScenario"] = self.includeBaselineCheck.isChecked()
         configData["calculationMode"] = self.calculationModeCombo.currentData()
         configData["designProfile"] = self.designProfileCombo.currentData()
         configData["runVehicles"] = self.runVehiclesCheck.isChecked()
@@ -449,6 +545,14 @@ class BatchProcessingDialog(QDialog):
             levels = approach.get("approach", {})
             self.addApproachRow(approach.get("label", ""), levels.get("I", "standard"), levels.get("dI", "standard"),
                                 levels.get("nLin", "standard"), levels.get("nILin", "standard"))
+
+        self.scenarioTable.setRowCount(0)
+        for scenario in configData.get("optimizationScenarios", []):
+            self.addOptimizationScenarioRow(scenario.get("label", ""),
+                                            scenario.get("modeLcl", geometry_engine.OPTIMIZATION_MODE_NONE),
+                                            scenario.get("modeLscsl", geometry_engine.OPTIMIZATION_MODE_SHIFT_AND_EXTEND),
+                                            scenario.get("dMaxM", 0.5), scenario.get("lMinM", 25.0))
+        self.includeBaselineCheck.setChecked(bool(configData.get("includeBaselineScenario", True)))
 
         sweep = configData.get("sweep", {})
         self.sweepEnabledCheck.setChecked(bool(sweep.get("isEnabled", False)))

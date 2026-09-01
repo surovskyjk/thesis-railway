@@ -16,6 +16,7 @@ import csv
 import readfile
 import io
 import default_values
+import geometry_engine
 
 # Extra headroom around a symmetric popup axis, replaces the old setYRange padding argument
 POPUP_RANGE_HEADROOM = 1.05
@@ -543,9 +544,18 @@ class DesignApproachDialog(QDialog):
             
         layout.addLayout(formLayout)
 
+        # Extra empirical/geometric options layered on top of the standard approach columns
+        self.checkDisableGeometryMaxD = QCheckBox(lan.get("designApproachDisableRadiusCant", "Disable empirical cant radius limit D <= (R-50)/1.5"))
+        self.checkDisableGeometryMaxD.setChecked(bool(self.settingsData.get("disableGeometryMaxD", False)))
+        layout.addWidget(self.checkDisableGeometryMaxD)
+
+        self.checkBalanceInflectionCants = QCheckBox(lan.get("designApproachBalanceInflections", "Balance cant at inflection points (L1/L2 = D1/D2)"))
+        self.checkBalanceInflectionCants.setChecked(bool(self.settingsData.get("balanceInflectionCants", False)))
+        layout.addWidget(self.checkBalanceInflectionCants)
+
         # Buttons for the whole dialog
         self.buttonBox = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        
+
         self.buttonBox.accepted.connect(self.accept)
         self.buttonBox.rejected.connect(self.reject)
         layout.addWidget(self.buttonBox)
@@ -563,6 +573,100 @@ class DesignApproachDialog(QDialog):
             else:
                 result[paramKey] = "standard"
         return result
+
+    def isGeometryMaxDDisabled(self):
+        return self.checkDisableGeometryMaxD.isChecked()
+
+    def isInflectionBalancingEnabled(self):
+        return self.checkBalanceInflectionCants.isChecked()
+
+class AlignmentOptimizationDialog(QDialog):
+    def __init__(self, settingsData, lan, parent=None):
+        super().__init__(parent)
+        self.lan = lan or {}
+        self.settingsData = settingsData
+        config = settingsData.get("alignmentOptimization", {}) if isinstance(settingsData, dict) else {}
+
+        self.setWindowTitle(self.lan.get("alignmentOptimization", "Alignment Optimization"))
+
+        layout = QVBoxLayout(self)
+        formLayout = QFormLayout()
+
+        self.dMaxInput = QLineEdit(str(config.get("dMaxM", 0.5)))
+        formLayout.addRow(QLabel(self.lan.get("optDMaxLabel", "Maximum lateral shift d_max [m]:")), self.dMaxInput)
+
+        self.lMinInput = QLineEdit(str(config.get("lMinM", 25.0)))
+        formLayout.addRow(QLabel(self.lan.get("optLMinLabel", "Minimum element length L_min [m]:")), self.lMinInput)
+
+        layout.addLayout(formLayout)
+        layout.addWidget(QLabel(self.lan.get("optPatternsLabel", "Pattern optimization modes")))
+
+        patternFormLayout = QFormLayout()
+        self.comboModeLcl = QComboBox(self)
+        self.comboModeLcl.addItem(self.lan.get("optModeNone", "Do not optimize"), geometry_engine.OPTIMIZATION_MODE_NONE)
+        self.comboModeLcl.addItem(self.lan.get("optModeShiftAndExtend", "1 - Shift arc and extend transitions (C+S)"), geometry_engine.OPTIMIZATION_MODE_SHIFT_AND_EXTEND)
+        self.comboModeLcl.addItem(self.lan.get("optModeShiftArc", "3 - Enlarge radius only (C)"), geometry_engine.OPTIMIZATION_MODE_SHIFT_ARC)
+        self.setComboCurrentData(self.comboModeLcl, config.get("modeLcl", geometry_engine.OPTIMIZATION_MODE_NONE))
+        patternFormLayout.addRow(QLabel(self.lan.get("optPatternLcl", "Line-Curve-Line")), self.comboModeLcl)
+
+        self.comboModeLscsl = QComboBox(self)
+        self.comboModeLscsl.addItem(self.lan.get("optModeNone", "Do not optimize"), geometry_engine.OPTIMIZATION_MODE_NONE)
+        self.comboModeLscsl.addItem(self.lan.get("optModeShiftAndExtend", "1 - Shift arc and extend transitions (C+S)"), geometry_engine.OPTIMIZATION_MODE_SHIFT_AND_EXTEND)
+        self.comboModeLscsl.addItem(self.lan.get("optModeExtendSpirals", "2 - Extend transitions only (S)"), geometry_engine.OPTIMIZATION_MODE_EXTEND_SPIRALS)
+        self.comboModeLscsl.addItem(self.lan.get("optModeShiftArc", "3 - Enlarge radius only (C)"), geometry_engine.OPTIMIZATION_MODE_SHIFT_ARC)
+        self.comboModeLscsl.addItem(self.lan.get("optModeInvertedShift", "4 - Inverted shift (C+S)"), geometry_engine.OPTIMIZATION_MODE_INVERTED_SHIFT)
+        self.setComboCurrentData(self.comboModeLscsl, config.get("modeLscsl", geometry_engine.OPTIMIZATION_MODE_NONE))
+        patternFormLayout.addRow(QLabel(self.lan.get("optPatternLscsl", "Line-Spiral-Curve-Spiral-Line")), self.comboModeLscsl)
+
+        layout.addLayout(patternFormLayout)
+
+        # Buttons for the whole dialog
+        self.buttonBox = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.buttonBox.button(QDialogButtonBox.StandardButton.Ok).setText(self.lan.get("optRun", "Optimize"))
+        self.buttonBox.accepted.connect(self.onAccept)
+        self.buttonBox.rejected.connect(self.reject)
+        layout.addWidget(self.buttonBox)
+
+    # currentData()-based selection helper, mirrors the addItem(text,dataKey) convention used elsewhere
+    def setComboCurrentData(self, combo, dataValue):
+        index = combo.findData(dataValue)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+
+    def validate(self):
+        problems = []
+        try:
+            dMax = float(self.dMaxInput.text())
+            if not (0.05 <= dMax <= 1.50):
+                problems.append("optErrorDMaxRange")
+        except ValueError:
+            problems.append("optErrorDMaxRange")
+        try:
+            lMin = float(self.lMinInput.text())
+            if lMin <= 0:
+                problems.append("optErrorLMinRange")
+        except ValueError:
+            problems.append("optErrorLMinRange")
+        if self.comboModeLcl.currentData() == geometry_engine.OPTIMIZATION_MODE_NONE and \
+           self.comboModeLscsl.currentData() == geometry_engine.OPTIMIZATION_MODE_NONE:
+            problems.append("optErrorNoPatterns")
+        return problems
+
+    def onAccept(self):
+        problems = self.validate()
+        if problems:
+            QMessageBox.warning(self, self.lan.get("error", "Error"),
+                                 "\n".join(self.lan.get(code, code) for code in problems))
+            return
+        self.accept()
+
+    def getOptimizationConfig(self):
+        return {
+            "dMaxM": float(self.dMaxInput.text()),
+            "lMinM": float(self.lMinInput.text()),
+            "modeLcl": self.comboModeLcl.currentData(),
+            "modeLscsl": self.comboModeLscsl.currentData(),
+        }
+
 
 class StopsSettingsDialog(QDialog):
     def __init__(self, settingsData, lan, parent=None):

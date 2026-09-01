@@ -98,6 +98,30 @@ def resampleSeries(stationsKm, values, gridKm):
     return np.interp(gridKm, stationsKm[order], values[order], left=np.nan, right=np.nan)
 
 
+# Slew and radius/spiral-length deltas from the alignment optimizer, all None when no scenario ran
+def computeOptimizationMetrics(lxml):
+    summary = lxml.get("optimizationSummary")
+    if not summary:
+        return {"optimizedGroupCount": None, "skippedGroupCount": None, "maxSlewM": None, "meanSlewM": None,
+                "minRadiusOldM": None, "minRadiusNewM": None, "spiralLengthGainM": None}
+
+    optimizedGroups = [g for g in summary.get("groups", []) if g.get("status") == "optOk"]
+    radiiOld = [g["radiusOldM"] for g in optimizedGroups]
+    radiiNew = [g["radiusNewM"] for g in optimizedGroups]
+    spiralGain = sum((g["spiralLengthsNewM"][0] - g["spiralLengthsOldM"][0]) +
+                      (g["spiralLengthsNewM"][1] - g["spiralLengthsOldM"][1]) for g in optimizedGroups)
+
+    return {
+        "optimizedGroupCount": summary.get("optimizedGroupCount"),
+        "skippedGroupCount": summary.get("skippedGroupCount"),
+        "maxSlewM": summary.get("maxSlewM"),
+        "meanSlewM": summary.get("meanSlewM"),
+        "minRadiusOldM": min(radiiOld) if radiiOld else None,
+        "minRadiusNewM": min(radiiNew) if radiiNew else None,
+        "spiralLengthGainM": spiralGain if optimizedGroups else None,
+    }
+
+
 # Every scalar and table metric the dashboard and the ZIP exporter need for one variant result
 def computeVariantMetrics(dataStorage, vehicleIndex=0, designProfileSuffix="150"):
     lxml = dataStorage.get("LandXML", {}) or {}
@@ -127,7 +151,7 @@ def computeVariantMetrics(dataStorage, vehicleIndex=0, designProfileSuffix="150"
     limitCountD = int(np.sum(limitD)) if hasData(limitD) else None
     limitCountI = int(np.sum(limitI)) if hasData(limitI) else None
 
-    return {
+    metrics = {
         "trackLengthKm": computeTrackLengthKm(dataStorage),
         "maxSpeedDesignKmh": maxSpeedDesignKmh,
         "maxSpeedActualKmh": maxSpeedActualKmh,
@@ -142,3 +166,5 @@ def computeVariantMetrics(dataStorage, vehicleIndex=0, designProfileSuffix="150"
         "limitCountD": limitCountD,
         "limitCountI": limitCountI,
     }
+    metrics.update(computeOptimizationMetrics(lxml))
+    return metrics

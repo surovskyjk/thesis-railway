@@ -62,6 +62,7 @@ ICON_BODIES = {
     "float": "<rect x='4' y='7' width='13' height='13' rx='1'/><path d='M8 7V4h12v12h-3'/>",
     "batch": "<rect x='3' y='4' width='18' height='4' rx='1'/><rect x='3' y='10' width='18' height='4' rx='1'/><rect x='3' y='16' width='18' height='4' rx='1'/>",
     "dashboard": "<path d='M4 20V10'/><path d='M10 20V4'/><path d='M16 20V13'/><path d='M20 20H4'/>",
+    "optimize": "<path d='M4 19c4 0 3-14 8-14'/><path d='M12 5h5'/><path d='M14 2l3 3-3 3'/>",
 }
 
 # Icons whose glyph should always be tinted with the accent colour instead

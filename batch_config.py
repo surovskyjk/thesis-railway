@@ -1,6 +1,8 @@
 # Batch configuration schema, JSON preset persistence and variant cross-product expansion
 import json
 
+import geometry_engine
+
 BATCH_CONFIG_VERSION = 1
 
 # Column selection mirrors GeometryCalculator.getNormLimit exactly, keyed by design approach level
@@ -75,10 +77,21 @@ def buildVariantLabel(spec):
     parts = [spec.get("stopsProfileLabel", ""), spec.get("approachLabel", "")]
     if spec.get("sweepParamKey"):
         parts.append(f"{spec['sweepParamKey']}={spec['sweepValue']}")
+    if spec.get("scenarioLabel"):
+        parts.append(spec["scenarioLabel"])
     return " | ".join(part for part in parts if part)
 
 
-# Expand a batch config into the full cross product of variant specs, stopsProfiles outer, sweep inner
+# Baseline (None) plus every enabled optimization scenario, baseline first unless explicitly excluded
+def enabledOptimizationScenarios(configData):
+    scenarios = [s for s in (configData.get("optimizationScenarios") or []) if s.get("isEnabled", True)]
+    includeBaseline = configData.get("includeBaselineScenario", True)
+    if includeBaseline or not scenarios:
+        return [None] + scenarios
+    return scenarios
+
+
+# Expand a batch config into the full cross product of variant specs, stopsProfiles outer, scenario inner
 def expandVariantSpecs(configData):
     stopsProfiles = configData.get("stopsProfiles") or [{"stopsProfileId": "default", "label": "", "trainStops": []}]
     defaultApproach = {"approachId": "default", "label": "", "approach": {key: "standard" for key in APPROACH_PARAMETERS}}
@@ -87,35 +100,40 @@ def expandVariantSpecs(configData):
     values = sweepValues(sweepConfig)
     sweepParamKey = sweepConfig.get("paramKey") if sweepConfig.get("isEnabled") else None
     valuesOrNone = values if values else [None]
+    scenarios = enabledOptimizationScenarios(configData)
 
     specs = []
     variantIndex = 0
     for stopsProfile in stopsProfiles:
         for designApproach in designApproaches:
             for sweepValue in valuesOrNone:
-                settingsOverrides = {
-                    "trainStops": stopsProfile.get("trainStops", []),
-                    "designApproach": designApproach.get("approach", {}),
-                }
-                spec = {
-                    "variantId": f"v{variantIndex + 1:03d}",
-                    "variantIndex": variantIndex,
-                    "stopsProfileId": stopsProfile.get("stopsProfileId"),
-                    "stopsProfileLabel": stopsProfile.get("label", ""),
-                    "trainStops": stopsProfile.get("trainStops", []),
-                    "approachId": designApproach.get("approachId"),
-                    "approachLabel": designApproach.get("label", ""),
-                    "designApproach": designApproach.get("approach", {}),
-                    "sweepParamKey": sweepParamKey if sweepValue is not None else None,
-                    "sweepValue": sweepValue,
-                    "calculationMode": configData.get("calculationMode", "design"),
-                    "designProfile": configData.get("designProfile", "I150"),
-                    "runVehicles": configData.get("runVehicles", True),
-                    "settingsOverrides": settingsOverrides,
-                }
-                spec["label"] = buildVariantLabel(spec)
-                specs.append(spec)
-                variantIndex += 1
+                for scenario in scenarios:
+                    settingsOverrides = {
+                        "trainStops": stopsProfile.get("trainStops", []),
+                        "designApproach": designApproach.get("approach", {}),
+                    }
+                    spec = {
+                        "variantId": f"v{variantIndex + 1:03d}",
+                        "variantIndex": variantIndex,
+                        "stopsProfileId": stopsProfile.get("stopsProfileId"),
+                        "stopsProfileLabel": stopsProfile.get("label", ""),
+                        "trainStops": stopsProfile.get("trainStops", []),
+                        "approachId": designApproach.get("approachId"),
+                        "approachLabel": designApproach.get("label", ""),
+                        "designApproach": designApproach.get("approach", {}),
+                        "sweepParamKey": sweepParamKey if sweepValue is not None else None,
+                        "sweepValue": sweepValue,
+                        "scenarioId": scenario.get("scenarioId") if scenario else None,
+                        "scenarioLabel": scenario.get("label", "") if scenario else "",
+                        "optimizationScenario": scenario,
+                        "calculationMode": configData.get("calculationMode", "design"),
+                        "designProfile": configData.get("designProfile", "I150"),
+                        "runVehicles": configData.get("runVehicles", True),
+                        "settingsOverrides": settingsOverrides,
+                    }
+                    spec["label"] = buildVariantLabel(spec)
+                    specs.append(spec)
+                    variantIndex += 1
     return specs
 
 
@@ -132,6 +150,8 @@ class BatchConfigStore:
             "stopsProfiles": [],
             "designApproaches": [],
             "sweep": {"isEnabled": False, "paramKey": "", "minValue": 0.0, "maxValue": 0.0, "stepValue": 1.0},
+            "optimizationScenarios": [],
+            "includeBaselineScenario": True,
             "calculationMode": "design",
             "designProfile": "I150",
             "runVehicles": True,
@@ -168,5 +188,22 @@ class BatchConfigStore:
                 problems.append("batchProblemInvalidSweepStep")
             if float(sweepConfig.get("minValue", 0)) > float(sweepConfig.get("maxValue", 0)):
                 problems.append("batchProblemInvalidSweepRange")
+
+        for scenario in configData.get("optimizationScenarios") or []:
+            if not scenario.get("isEnabled", True):
+                continue
+            dMax = scenario.get("dMaxM", 0.0)
+            if not (0.05 <= float(dMax) <= 1.50):
+                problems.append("batchProblemInvalidOptimizationDMax")
+            if float(scenario.get("lMinM", 0.0)) <= 0:
+                problems.append("batchProblemInvalidOptimizationLMin")
+            modeLcl = scenario.get("modeLcl", geometry_engine.OPTIMIZATION_MODE_NONE)
+            modeLscsl = scenario.get("modeLscsl", geometry_engine.OPTIMIZATION_MODE_NONE)
+            validLcl = modeLcl in geometry_engine.LCL_OPTIMIZATION_MODES or modeLcl == geometry_engine.OPTIMIZATION_MODE_NONE
+            validLscsl = modeLscsl in geometry_engine.OPTIMIZATION_MODES or modeLscsl == geometry_engine.OPTIMIZATION_MODE_NONE
+            if not (validLcl and validLscsl):
+                problems.append("batchProblemInvalidOptimizationMode")
+            if modeLcl == geometry_engine.OPTIMIZATION_MODE_NONE and modeLscsl == geometry_engine.OPTIMIZATION_MODE_NONE:
+                problems.append("batchProblemNoOptimizationPatterns")
 
         return problems

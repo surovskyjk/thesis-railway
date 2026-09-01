@@ -32,6 +32,14 @@ defVal = {
 "profileDefault": ["I150"],
 "maxD":     [150],
 "designApproach": "standard",
+"disableGeometryMaxD": False,
+"balanceInflectionCants": False,
+"alignmentOptimization": {
+    "dMaxM": 0.5,
+    "lMinM": 25.0,
+    "modeLcl": "shiftArc",
+    "modeLscsl": "shiftAndExtend"
+    },
 # Matches vehicles/generic_bemu.csv so a fresh install's default already has correct physics
 "trainRes": [["Generic BEMU", 1.6616, 0.00415, 0.00017]],
 "trainTrac": [["Generic BEMU", 0, 53.724, 112.5, 0, 0],

@@ -11,7 +11,7 @@ import vehicle_engine
 
 # LandXML keys the two engines actually read, everything else (coordinates, key points) is dead weight per variant
 LEAN_LANDXML_KEYS = ("stationHorizontal", "geometryType", "curvature", "curvatureSign",
-                       "cant", "stationCant", "stationVertical", "slope")
+                       "cant", "stationCant", "stationVertical", "slope") + geometry_engine.OPTIMIZER_INPUT_KEYS
 
 
 # Strip a dataStorage down to only what GeometryCalculator and VehicleCalculator read, deepcopied once
@@ -71,6 +71,15 @@ def runSingleVariant(leanBaseStorage, spec):
                                          approachDict=settingsData["designApproach"])
 
         variantStorage["defaultProfile"] = spec.get("designProfile", "I150")
+
+        scenario = spec.get("optimizationScenario")
+        if scenario:
+            variantLxml = variantStorage["LandXML"]
+            geometry_engine.AlignmentOptimizer(variantLxml, scenario).run()
+            for baseKey in ("stationHorizontal", "geometryType", "curvature", "curvatureSign"):
+                newKey = baseKey + "New"
+                if newKey in variantLxml:
+                    variantLxml[baseKey] = variantLxml[newKey]
 
         geometryCalc = geometry_engine.GeometryCalculator(variantStorage)
         if spec.get("calculationMode") == "asBuilt":

@@ -15,6 +15,11 @@ GEOMETRY_SERIES = [
     ("cantDef130", "stationCantPossible", "cantDef130", "cant_def_130"),
     ("cantDef150", "stationCantPossible", "cantDef150", "cant_def_150"),
     ("cantDefK", "stationCantPossible", "cantDefK", "cant_def_K"),
+    ("cantPossibleNew", "stationCantPossibleNew", "cantPossibleNew", "cant_possible_new"),
+    ("cDef100New", "stationCantPossibleNew", "cDef100New", "cdef_100_new"),
+    ("cDef130New", "stationCantPossibleNew", "cDef130New", "cdef_130_new"),
+    ("cDef150New", "stationCantPossibleNew", "cDef150New", "cdef_150_new"),
+    ("cDefKNew", "stationCantPossibleNew", "cDefKNew", "cdef_K_new"),
 ]
 
 # Curvature curves drawn on the secondary right axis of the geometry plot
