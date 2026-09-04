@@ -1,5 +1,6 @@
-# Track geometry and speed profile with a linked X axis and a shared crosshair
+# Track geometry, speed and lateral slew profiles with a linked X axis and a shared crosshair
 import numpy as np
+from PySide6.QtCore import Qt
 
 from plot_widgets import CoypuPlotWidget
 
@@ -28,14 +29,31 @@ CURVATURE_SERIES = [
     ("curvatureNew", "stationHorizontalNew", "curvatureNew", "curvature_new"),
 ]
 
-# Speed limit step curves drawn on the lower plot
+# Speed limit step curves drawn on the middle plot, baseline first then the optimized twins
 SPEED_SERIES = [
     ("speedLimits", "stationSpeedLimits", "speedLimits", "speed_lim"),
     ("speedLimits100", "stationSpeed100", "speedLimits100", "speed_lim_100"),
     ("speedLimits130", "stationSpeed130", "speedLimits130", "speed_lim_130"),
     ("speedLimits150", "stationSpeed150", "speedLimits150", "speed_lim_150"),
     ("speedLimitsK", "stationSpeedK", "speedLimitsK", "speed_lim_K"),
+    ("speedLimits100New", "stationSpeed100New", "speedLimits100New", "speed_lim_100_new"),
+    ("speedLimits130New", "stationSpeed130New", "speedLimits130New", "speed_lim_130_new"),
+    ("speedLimits150New", "stationSpeed150New", "speedLimits150New", "speed_lim_150_new"),
+    ("speedLimitsKNew", "stationSpeedKNew", "speedLimitsKNew", "speed_lim_K_new"),
 ]
+
+# Chainage and offset arrays feeding the lateral slew profile plot
+SLEW_STATION_KEY = "slewProfileStationKm"
+SLEW_OFFSET_KEY = "slewProfileOffsetMm"
+
+# Extra headroom around the slew peak so the d_max threshold lines stay inside the view
+SLEW_RANGE_HEADROOM = 1.25
+
+# Grid row the slew plot occupies while it is part of the layout
+SLEW_PLOT_ROW = 2
+
+# Smallest half range of the slew axis in millimetres, keeps a near zero profile readable
+SLEW_MIN_RANGE_MM = 10.0
 
 # Fixed vertical range of the cant axis, matching the previous alignment plot
 CANT_RANGE = 500.0
@@ -53,11 +71,22 @@ class PerformanceGraphsWidget(CoypuPlotWidget):
 
         self.plotGeometry = self.addPlotRow("geometry", 0, rightAxis="fraction")
         self.plotSpeed = self.addPlotRow("speed", 1)
+        self.plotSlew = self.addPlotRow("slew", 2)
 
         self.addRightAxis("geometry")
 
-        # Linking the bottom axis to the top one keeps both plots in step
+        # Linking the lower axes to the top one keeps every plot in step during pan and zoom
         self.plotSpeed.setXLink(self.plotGeometry)
+        self.plotSlew.setXLink(self.plotGeometry)
+
+        # Threshold and zero guides of the slew plot, rebuilt whenever new profile data arrives
+        self.slewGuides = []
+        self.slewStationKm = np.array([], dtype=float)
+        self.slewOffsetMm = np.array([], dtype=float)
+
+        # The slew row stays hidden until an optimization has actually produced a profile
+        self.isSlewPlotVisible = False
+        self.applySlewPlotVisibility()
 
         self.plotGeometry.vb.setYRange(-CANT_RANGE, CANT_RANGE, padding=0)
 
@@ -74,12 +103,15 @@ class PerformanceGraphsWidget(CoypuPlotWidget):
 
         self.plotTitles["geometry"] = lan.get("dockGeometryPlot", "Track geometry")
         self.plotTitles["speed"] = lan.get("dockSpeedPlot", "Speed profile")
+        self.plotTitles["slew"] = lan.get("slewPlotTitle", "Lateral slew profile")
 
         self.plotGeometry.setLabel("left", lan.get("cant", "Cant"))
         self.plotGeometry.setLabel("right", lan.get("curvature", "Curvature"))
         self.plotGeometry.setLabel("bottom", lan.get("station", "Chainage"))
         self.plotSpeed.setLabel("left", lan.get("speed_lim", "Speed"))
         self.plotSpeed.setLabel("bottom", lan.get("station", "Chainage"))
+        self.plotSlew.setLabel("left", lan.get("slewAxisLabel", "Lateral slew [mm]"))
+        self.plotSlew.setLabel("bottom", lan.get("station", "Chainage"))
 
         self.retranslateMenus(lan)
 
@@ -181,6 +213,101 @@ class PerformanceGraphsWidget(CoypuPlotWidget):
 
         self.plotSpeed.vb.setYRange(0.0, peak * SPEED_RANGE_HEADROOM, padding=0)
 
+    # Replace the lateral slew profile from the LandXML dictionary
+    def updateSlewData(self, lxml, dMaxM=None):
+        self.clearSlewGuides()
+        self.clearPlot("slew")
+        self.slewStationKm = np.array([], dtype=float)
+        self.slewOffsetMm = np.array([], dtype=float)
+        if not lxml:
+            return
+
+        stations = lxml.get(SLEW_STATION_KEY)
+        offsets = lxml.get(SLEW_OFFSET_KEY)
+        if not (self.hasData(stations) and self.hasData(offsets)):
+            return
+
+        self.slewStationKm = np.asarray(stations, dtype=float)
+        self.slewOffsetMm = np.asarray(offsets, dtype=float)
+
+        # Splitting on sign keeps the inward and outward halves individually coloured
+        inwardValues = np.where(self.slewOffsetMm >= 0.0, self.slewOffsetMm, np.nan)
+        outwardValues = np.where(self.slewOffsetMm <= 0.0, self.slewOffsetMm, np.nan)
+
+        self.setSeriesData("slew", "slewPositive", self.slewStationKm, inwardValues,
+                           name=self.lan.get("slewInward", "Inward slew"))
+        self.setSeriesData("slew", "slewNegative", self.slewStationKm, outwardValues,
+                           name=self.lan.get("slewOutward", "Outward slew"))
+
+        self.buildSlewGuides(dMaxM)
+        self.applySlewRange(dMaxM)
+
+    # Zero line plus the two configured d_max envelope lines
+    def buildSlewGuides(self, dMaxM):
+        foreground = self.tokens["plotForeground"] if self.tokens else "#666666"
+        self.slewGuides.append(self.buildMarker(self.plotSlew, 0.0, 0, "#8a8a8a", "", foreground,
+                                                penStyle=Qt.PenStyle.SolidLine))
+        if not dMaxM:
+            return
+
+        thresholdMm = float(dMaxM) * 1000.0
+        label = self.lan.get("slewThresholdLabel", "d_max")
+        for position in (thresholdMm, -thresholdMm):
+            self.slewGuides.append(
+                self.buildMarker(self.plotSlew, position, 0, "#d64545", label, foreground))
+
+    # Drop the guide lines so a redraw never stacks them
+    def clearSlewGuides(self):
+        for guide in self.slewGuides:
+            self.plotSlew.removeItem(guide)
+            self.forgetMarker(guide)
+        self.slewGuides = []
+
+    # Symmetric range around zero so the sign of the slew stays readable at a glance
+    def applySlewRange(self, dMaxM):
+        peak = SLEW_MIN_RANGE_MM
+        if self.slewOffsetMm.size:
+            finiteValues = self.slewOffsetMm[np.isfinite(self.slewOffsetMm)]
+            if finiteValues.size:
+                peak = max(peak, float(np.max(np.abs(finiteValues))))
+        if dMaxM:
+            peak = max(peak, float(dMaxM) * 1000.0)
+
+        peak *= SLEW_RANGE_HEADROOM
+        self.plotSlew.vb.setYRange(-peak, peak, padding=0)
+
+    # Show or hide the slew row without disturbing the two plots above it
+    def setSlewPlotVisible(self, isVisible):
+        self.isSlewPlotVisible = bool(isVisible)
+        self.applySlewPlotVisibility()
+
+    # Hiding a plot item would leave an empty grid row, so the row is added and removed instead
+    def applySlewPlotVisibility(self):
+        isInLayout = self.plotSlew in self.ci.items
+        if self.isSlewPlotVisible and not isInLayout:
+            self.ci.addItem(self.plotSlew, row=SLEW_PLOT_ROW, col=0)
+            self.plotSlew.setXLink(self.plotGeometry)
+        elif not self.isSlewPlotVisible and isInLayout:
+            self.ci.removeItem(self.plotSlew)
+
+    # Drop the slew curve entirely, used when an optimization is reverted
+    def clearSlewPlot(self):
+        self.clearSlewGuides()
+        self.clearPlot("slew")
+        self.slewStationKm = np.array([], dtype=float)
+        self.slewOffsetMm = np.array([], dtype=float)
+
+    # The shared readout gains the slew under the cursor once a profile is loaded
+    def updateReadout(self, value):
+        super().updateReadout(value)
+        if self.readoutLabel is None or self.slewStationKm.size < 2:
+            return
+        slewMm = float(np.interp(value, self.slewStationKm, self.slewOffsetMm,
+                                 left=np.nan, right=np.nan))
+        if np.isnan(slewMm):
+            return
+        self.readoutLabel.setText(f"{value:.3f} km | {self.lan.get('slewShort', 'dy')} {slewMm:+.1f} mm")
+
     # Guard used before touching any optional array
     def hasData(self, values):
         return values is not None and len(values) > 0
@@ -189,3 +316,4 @@ class PerformanceGraphsWidget(CoypuPlotWidget):
     def clearAll(self):
         self.clearPlot("geometry")
         self.clearPlot("speed")
+        self.clearSlewPlot()

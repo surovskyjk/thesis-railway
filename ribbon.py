@@ -15,6 +15,9 @@ RIBBON_SCROLL_STEP = 80
 # Dynamic property marking the independently checkable data series buttons
 SERIES_TOGGLE_PROPERTY = "seriesToggle"
 
+# Dynamic property marking a button whose action discards results, tinted by the theme stylesheet
+DESTRUCTIVE_BUTTON_PROPERTY = "destructiveAction"
+
 
 class RibbonGroup(QWidget):
     def __init__(self, title, titleKey=None, parent=None):

@@ -41,10 +41,18 @@ class ShortcutManager:
 
     # Assign every command's shortcut to its QAction on the given main window
     def applyShortcuts(self, mainWindow):
+        boundActionNames = {command.get("action", "") for command in self.commands
+                            if command.get("shortcut", "")}
         for command in self.commands:
-            action = getattr(mainWindow, command.get("action", ""), None)
-            if action is not None:
-                action.setShortcut(QKeySequence(command.get("shortcut", "")))
+            actionName = command.get("action", "")
+            action = getattr(mainWindow, actionName, None)
+            if action is None:
+                continue
+            shortcut = command.get("shortcut", "")
+            # An alias only entry must never wipe a binding another entry gives the same action
+            if not shortcut and actionName in boundActionNames:
+                continue
+            action.setShortcut(QKeySequence(shortcut))
 
     # Find the QAction matching a typed alias or command name, case-insensitively
     def resolveAction(self, mainWindow, typedText):

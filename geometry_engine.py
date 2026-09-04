@@ -1,3 +1,6 @@
+import math
+import time
+
 import numpy as np
 from pyclothoids import Clothoid
 
@@ -944,10 +947,31 @@ MIN_CLOTHOID_LENGTH_M = 0.5
 # Points sampled per element when comparing the candidate axis against the baseline axis
 SLEW_SAMPLE_COUNT = 50
 
+# Segment window half width around each point's proportional index, measured worst case offset is two
+SEGMENT_SEARCH_BAND = 16
+
+# Lateral shift below this is treated as construction noise rather than a real slew
+SLEW_VISIBLE_THRESHOLD_MM = 5.0
+
+# Offsets below this are numerically zero, an exact comparison would count rounding dust as a shift
+SLEW_ZERO_EPSILON_MM = 1e-6
+
 # Bisection stops once the search bracket narrows below this, in meters
 BISECTION_TOLERANCE_M = 1e-4
 
 BISECTION_MAX_ITER = 60
+
+# Newton steps used to invert the apex offset identity, it converges quadratically from a linear seed
+NEWTON_MAX_ITER = 8
+
+# Newton stops once the step falls below this, well under the reporting resolution
+NEWTON_TOLERANCE_M = 1e-9
+
+# Upper bound on halving steps inside a bracket, the tolerance break below normally ends it far sooner
+BRACKET_REFINE_STEPS = 40
+
+# Doublings allowed when the analytic seed turns out to still be feasible, keeps the search bounded
+BRACKET_EXPAND_STEPS = 4
 
 
 class OptimizerGeometryError(Exception):
@@ -967,7 +991,7 @@ def vecScale(a, s):
 
 
 def vecLen(a):
-    return float(np.hypot(a[0], a[1]))
+    return math.hypot(a[0], a[1])
 
 
 def vecNormalize(a):
@@ -996,12 +1020,18 @@ def intersectLines(anchor1, dir1, anchor2, dir2):
     return vecAdd(anchor1, vecScale(dir1, t1))
 
 
+def clampUnit(value):
+    if value < 0.0:
+        return 0.0
+    return 1.0 if value > 1.0 else value
+
+
 def pointToSegmentDistance(p, a, b):
     ab = vecSub(b, a)
     abLen2 = vecDot(ab, ab)
     if abLen2 <= 1e-12:
         return vecLen(vecSub(p, a))
-    t = float(np.clip(vecDot(vecSub(p, a), ab) / abLen2, 0.0, 1.0))
+    t = clampUnit(vecDot(vecSub(p, a), ab) / abLen2)
     proj = vecAdd(a, vecScale(ab, t))
     return vecLen(vecSub(p, proj))
 
@@ -1015,10 +1045,138 @@ def pointToPolylineDistance(p, polyline):
     return best
 
 
+def closestPointOnSegment(p, a, b):
+    ab = vecSub(b, a)
+    abLen2 = vecDot(ab, ab)
+    if abLen2 <= 1e-12:
+        return a
+    t = clampUnit(vecDot(vecSub(p, a), ab) / abLen2)
+    return vecAdd(a, vecScale(ab, t))
+
+
+# Split a polyline into the start, direction and squared length arrays every distance query needs
+def prepareSegments(polyline):
+    vertices = np.asarray(polyline, dtype=float)
+    segmentStart = vertices[:-1]
+    segmentVector = vertices[1:] - vertices[:-1]
+    segmentLengthSq = np.einsum("ij,ij->i", segmentVector, segmentVector)
+    # A degenerate segment collapses to its start point, guarding the division below
+    safeLengthSq = np.where(segmentLengthSq <= 1e-12, 1.0, segmentLengthSq)
+    return segmentStart, segmentVector, safeLengthSq, segmentLengthSq
+
+
+# Perpendicular residual of every point against every segment, the shared kernel of both queries
+def segmentResiduals(points, segments):
+    segmentStart, segmentVector, safeLengthSq, segmentLengthSq = segments
+    offsets = points[:, None, :] - segmentStart[None, :, :]
+    travel = np.einsum("mij,ij->mi", offsets, segmentVector) / safeLengthSq
+    # Degenerate segments must not project, their residual is the raw offset from the start point
+    travel = np.where(segmentLengthSq[None, :] <= 1e-12, 0.0, np.clip(travel, 0.0, 1.0))
+    residual = offsets - travel[:, :, None] * segmentVector[None, :, :]
+    return residual, travel
+
+
+# Segment indices to test per point, a band around the proportional mapping between both polylines
+def bandedSegmentIndices(pointCount, segmentCount):
+    window = 2 * SEGMENT_SEARCH_BAND + 1
+    if pointCount < 1 or segmentCount <= window:
+        return None
+    centre = np.round(np.arange(pointCount) * (segmentCount - 1) / max(1, pointCount - 1))
+    centre = np.clip(centre, SEGMENT_SEARCH_BAND, segmentCount - 1 - SEGMENT_SEARCH_BAND)
+    offsets = np.arange(-SEGMENT_SEARCH_BAND, SEGMENT_SEARCH_BAND + 1)
+    return (centre[:, None] + offsets[None, :]).astype(np.intp)
+
+
+# Residuals restricted to the banded indices, returning None when the band cannot be trusted
+def bandedResiduals(points, segments, indices):
+    segmentStart, segmentVector, safeLengthSq, segmentLengthSq = segments
+    localStart = segmentStart[indices]
+    localVector = segmentVector[indices]
+    offsets = points[:, None, :] - localStart
+    travel = np.einsum("mij,mij->mi", offsets, localVector) / safeLengthSq[indices]
+    travel = np.where(segmentLengthSq[indices] <= 1e-12, 0.0, np.clip(travel, 0.0, 1.0))
+    residual = offsets - travel[:, :, None] * localVector
+    distances = np.sqrt(np.einsum("mij,mij->mi", residual, residual))
+
+    # A winner sitting on an unclipped band edge means the true minimum may lie outside the window
+    localBest = distances.argmin(axis=1)
+    onEdge = (localBest == 0) | (localBest == indices.shape[1] - 1)
+    if np.any(onEdge):
+        interiorEdge = onEdge & (indices[np.arange(indices.shape[0]), localBest] != 0) & \
+                       (indices[np.arange(indices.shape[0]), localBest] != segmentLengthSq.shape[0] - 1)
+        if np.any(interiorEdge):
+            return None
+    return distances, travel, localBest
+
+
+# Largest distance from any candidate point to the baseline polyline, fully vectorized
+def maxDistanceToPolyline(candidatePoints, segments):
+    points = np.asarray(candidatePoints, dtype=float)
+    if points.size == 0:
+        return 0.0
+
+    indices = bandedSegmentIndices(points.shape[0], segments[0].shape[0])
+    if indices is not None:
+        banded = bandedResiduals(points, segments, indices)
+        if banded is not None:
+            return float(banded[0].min(axis=1).max())
+
+    residual, _ = segmentResiduals(points, segments)
+    distances = np.sqrt(np.einsum("mij,mij->mi", residual, residual))
+    return float(distances.min(axis=1).max())
+
+
+# Distance, nearest baseline point and that segment's unit direction for every candidate point
+def nearestOnPolyline(candidatePoints, segments):
+    segmentStart, segmentVector, _, _ = segments
+    points = np.asarray(candidatePoints, dtype=float)
+    rowIndex = np.arange(points.shape[0])
+
+    bestIndex = None
+    indices = bandedSegmentIndices(points.shape[0], segmentStart.shape[0])
+    if indices is not None:
+        banded = bandedResiduals(points, segments, indices)
+        if banded is not None:
+            distances, travel, localBest = banded
+            bestIndex = indices[rowIndex, localBest]
+            bestDistance = distances[rowIndex, localBest]
+            bestTravel = travel[rowIndex, localBest]
+
+    if bestIndex is None:
+        residual, travel = segmentResiduals(points, segments)
+        distances = np.sqrt(np.einsum("mij,mij->mi", residual, residual))
+        bestIndex = distances.argmin(axis=1)
+        bestDistance = distances[rowIndex, bestIndex]
+        bestTravel = travel[rowIndex, bestIndex]
+
+    bestPoint = segmentStart[bestIndex] + bestTravel[:, None] * segmentVector[bestIndex]
+    bestVector = segmentVector[bestIndex]
+    bestNorm = np.sqrt(np.einsum("ij,ij->i", bestVector, bestVector))
+    bestNorm = np.where(bestNorm <= 1e-12, 1.0, bestNorm)
+    return bestDistance, bestPoint, bestVector / bestNorm[:, None]
+
+
+# Distance, the baseline point it was measured to and that segment's direction, used to sign a slew
+def pointToPolylineNearest(p, polyline):
+    best = np.inf
+    bestPoint = polyline[0] if polyline else p
+    bestDirection = (1.0, 0.0)
+    for k in range(1, len(polyline)):
+        candidate = closestPointOnSegment(p, polyline[k-1], polyline[k])
+        d = vecLen(vecSub(p, candidate))
+        if d < best:
+            best = d
+            bestPoint = candidate
+            bestDirection = vecNormalize(vecSub(polyline[k], polyline[k-1]))
+    return best, bestPoint, bestDirection
+
+
 class AlignmentOptimizer:
     # config keys: dMaxM, lMinM, modeLcl, modeLscsl
-    def __init__(self, lxml, config):
+    def __init__(self, lxml, config, progressCallback=None):
         self.lxml = lxml
+        self.progressCallback = progressCallback
+        self.timingMs = {"curveSolvingMs": 0.0, "samplingMs": 0.0}
         self.dMaxM = float(config.get("dMaxM", 0.5))
         self.lMinM = float(config.get("lMinM", 25.0))
         self.modeLcl = config.get("modeLcl", OPTIMIZATION_MODE_NONE)
@@ -1030,12 +1188,23 @@ class AlignmentOptimizer:
         self.newElementData = {}
         self.newLineEndpoints = {}
         self.hasOptimizedAny = False
+        self.slewSamples = []
+        self.baselineSegmentCache = None
 
     def run(self):
         self.buildElementList()
         self.findGroups()
-        for groupRange in self.groups:
+
+        groupCount = len(self.groups)
+        solveStarted = time.perf_counter()
+        for groupIndex, groupRange in enumerate(self.groups):
             self.optimizeGroup(groupRange)
+            if self.progressCallback is not None:
+                self.progressCallback(groupIndex + 1, groupCount)
+        solveElapsedMs = (time.perf_counter() - solveStarted) * 1000.0
+        # Sampling is measured inside recordSlewProfile, so solving is whatever is left over
+        self.timingMs["curveSolvingMs"] = max(0.0, solveElapsedMs - self.timingMs["samplingMs"])
+
         summary = self.buildSummary()
         self.lxml["optimizationSummary"] = summary
         optimizedElements = self.assembleOutputs() if self.hasOptimizedAny else None
@@ -1322,13 +1491,108 @@ class AlignmentOptimizer:
         points += [(lineAfter["startX"], lineAfter["startY"]), (lineAfter["endX"], lineAfter["endY"])]
         return points
 
+    # Segment arrays are fixed for the whole solve of one group, so they are built once and reused
+    def baselineSegmentsFor(self, baselineAxis):
+        cached = self.baselineSegmentCache
+        if cached is not None and cached[0] is baselineAxis:
+            return cached[1]
+        segments = prepareSegments(baselineAxis)
+        self.baselineSegmentCache = (baselineAxis, segments)
+        return segments
+
     def evaluateSlew(self, baselineAxis, candidatePoints):
-        worst = 0.0
-        for p in candidatePoints:
-            d = pointToPolylineDistance(p, baselineAxis)
-            if d > worst:
-                worst = d
-        return worst
+        return maxDistanceToPolyline(candidatePoints, self.baselineSegmentsFor(baselineAxis))
+
+    # --- Lateral slew profile ---
+
+    # Human readable element sequence of one group, used by the slew report table
+    def describeElementPattern(self, patternType):
+        return "L-C-L" if patternType == "lcl" else "L-S-C-S-L"
+
+    # Signed perpendicular offsets of an accepted candidate axis, run once per optimized group
+    def recordSlewProfile(self, groupStartStation, groupEndStation, frame, geometry, baselineAxis):
+        samplingStarted = time.perf_counter()
+        try:
+            return self.recordSlewProfileSamples(groupStartStation, groupEndStation, frame, geometry, baselineAxis)
+        finally:
+            self.timingMs["samplingMs"] += (time.perf_counter() - samplingStarted) * 1000.0
+
+    def recordSlewProfileSamples(self, groupStartStation, groupEndStation, frame, geometry, baselineAxis):
+        samplePoints = geometry["samplePoints"]
+        if len(samplePoints) < 2:
+            return groupStartStation, 0.0
+
+        vertices = np.asarray(samplePoints, dtype=float)
+        steps = np.sqrt(np.einsum("ij,ij->i", np.diff(vertices, axis=0), np.diff(vertices, axis=0)))
+        cumulativeLength = np.concatenate(([0.0], np.cumsum(steps)))
+        totalChordLength = float(cumulativeLength[-1])
+        if totalChordLength <= 1e-9:
+            return groupStartStation, 0.0
+
+        # Chord sampling runs marginally short of the true arc, so lengths are rescaled onto the group span
+        stationSpan = groupEndStation - groupStartStation
+        turnSign = frame["turnSign"]
+
+        points = np.asarray(samplePoints, dtype=float)
+        distances, nearestPoints, baselineDirections = nearestOnPolyline(
+            points, self.baselineSegmentsFor(baselineAxis))
+        offsetDirections = points - nearestPoints
+        # Offsetting towards the arc centre deepens the turn, the opposite side cuts towards the PI apex
+        towardsCentre = (baselineDirections[:, 0] * offsetDirections[:, 1] -
+                         baselineDirections[:, 1] * offsetDirections[:, 0]) * turnSign
+        # Positive slew points inward, towards the intersection apex of the bounding tangents
+        slewSigns = np.where(towardsCentre > 0, -1.0, 1.0)
+        stationsKm = groupStartStation + stationSpan * (
+            np.asarray(cumulativeLength, dtype=float) / totalChordLength)
+        offsetsMm = slewSigns * distances * 1000.0
+
+        groupSamples = list(zip(stationsKm.tolist(), offsetsMm.tolist()))
+        peakSample = max(groupSamples, key=lambda sample: abs(sample[1]))
+        # Zero anchors keep the plotted profile flat between optimized groups
+        self.slewSamples.append((groupStartStation, 0.0))
+        self.slewSamples.extend(groupSamples)
+        self.slewSamples.append((groupEndStation, 0.0))
+        return peakSample[0], peakSample[1]
+
+    # Collapse every recorded sample into the plot ready arrays and the corridor wide aggregates
+    def buildSlewProfile(self):
+        if not self.slewSamples:
+            return {
+                "slewProfileStationKm": np.array([], dtype=float),
+                "slewProfileOffsetMm": np.array([], dtype=float),
+                "shiftedLengthKm": 0.0,
+                "meanSlewCurvedM": 0.0,
+                "maxSlewStationKm": None,
+            }
+
+        ordered = sorted(self.slewSamples, key=lambda sample: sample[0])
+        stationKm = np.array([sample[0] for sample in ordered], dtype=float)
+        offsetMm = np.array([sample[1] for sample in ordered], dtype=float)
+
+        shiftedLengthKm = 0.0
+        for index in range(1, len(stationKm)):
+            spanKm = float(stationKm[index] - stationKm[index-1])
+            # A span counts as shifted only when both of its ends clear the visibility threshold
+            if spanKm > 0 and min(abs(offsetMm[index]), abs(offsetMm[index-1])) > SLEW_VISIBLE_THRESHOLD_MM:
+                shiftedLengthKm += spanKm
+
+        curvedOffsets = np.abs(offsetMm[np.abs(offsetMm) > SLEW_ZERO_EPSILON_MM])
+        peakIndex = int(np.argmax(np.abs(offsetMm)))
+
+        return {
+            "slewProfileStationKm": stationKm,
+            "slewProfileOffsetMm": offsetMm,
+            "shiftedLengthKm": float(shiftedLengthKm),
+            "meanSlewCurvedM": float(np.mean(curvedOffsets) / 1000.0) if curvedOffsets.size else 0.0,
+            "maxSlewStationKm": float(stationKm[peakIndex]),
+        }
+
+    # Full chainage span of the imported alignment, the denominator of the shifted length share
+    def evaluatedLengthKm(self):
+        stations = self.lxml.get("stationHorizontal", [])
+        if len(stations) < 2:
+            return 0.0
+        return float(max(stations) - min(stations))
 
     # --- Shared line budget (lMin-or-zero rule) ---
 
@@ -1359,7 +1623,101 @@ class AlignmentOptimizer:
             return min(desiredConsumption, max(0.0, remainingLength))
         return min(desiredConsumption, remainingLength - lMinM)
 
-    # --- Bisection ---
+    # --- Closed form envelope solving ---
+
+    # Arc length follows directly from the deflection minus the two spiral angles, no geometry build
+    def arcLengthFor(self, frame, radius, entryLength, exitLength):
+        return radius * abs(frame["deflection"]) - 0.5 * (entryLength + exitLength)
+
+    # Smallest radius whose arc still satisfies the minimum element length
+    def minimumRadiusForArcLength(self, frame, entryLength, exitLength, minimumLength):
+        deflection = abs(frame["deflection"])
+        if deflection < 1e-12:
+            return np.inf
+        return (minimumLength + 0.5 * (entryLength + exitLength)) / deflection
+
+    # Longest combined spiral length whose arc still satisfies the minimum element length
+    def maximumSpiralSumForArcLength(self, frame, radius, minimumLength):
+        return 2.0 * (radius * abs(frame["deflection"]) - minimumLength)
+
+    # Mean of the entry and exit clothoid shifts at one radius
+    def meanClothoidShift(self, radius, entryLength, exitLength):
+        return 0.5 * (self.clothoidShiftAndFoot(entryLength, radius)[1] +
+                      self.clothoidShiftAndFoot(exitLength, radius)[1])
+
+    # Derivative of the mean clothoid shift with respect to radius, used by the Newton step
+    def meanClothoidShiftDerivative(self, radius, entryLength, exitLength):
+        if radius <= 0:
+            return 0.0
+        total = 0.0
+        for length in (entryLength, exitLength):
+            if length > 0:
+                total += -(length**2)/(24.0*radius**2) + 3.0*(length**4)/(2688.0*radius**4)
+        return 0.5 * total
+
+    # Lateral offset at the arc apex against the baseline, both inscribed in the same fixed tangents
+    def slewApexFor(self, frame, radius, entryLength, exitLength, radiusOld, entryOld, exitOld):
+        secantHalf = 1.0 / math.cos(0.5 * abs(frame["deflection"]))
+        return ((radius - radiusOld) * (secantHalf - 1.0) +
+                (self.meanClothoidShift(radius, entryLength, exitLength) -
+                 self.meanClothoidShift(radiusOld, entryOld, exitOld)) * secantHalf)
+
+    # Radius whose apex offset exactly reaches the envelope, Newton on the analytic derivative
+    def solveRadiusForEnvelope(self, frame, radiusOld, entryLength, exitLength, targetSlew):
+        secantHalf = 1.0 / math.cos(0.5 * abs(frame["deflection"]))
+        # A near straight deflection makes the apex identity degenerate, no analytic seed exists
+        if secantHalf - 1.0 < 1e-6:
+            return None
+
+        baselineShift = self.meanClothoidShift(radiusOld, entryLength, exitLength)
+        # Linear root ignoring the clothoid shift term, always within centimetres of the answer
+        radius = radiusOld + targetSlew / (secantHalf - 1.0)
+        for _ in range(NEWTON_MAX_ITER):
+            residual = ((radius - radiusOld) * (secantHalf - 1.0) +
+                        (self.meanClothoidShift(radius, entryLength, exitLength) - baselineShift) * secantHalf
+                        - targetSlew)
+            derivative = ((secantHalf - 1.0) +
+                          secantHalf * self.meanClothoidShiftDerivative(radius, entryLength, exitLength))
+            if abs(derivative) < 1e-12:
+                return None
+            step = residual / derivative
+            radius -= step
+            if radius <= 0:
+                return None
+            if abs(step) < NEWTON_TOLERANCE_M:
+                break
+        return radius
+
+    # --- Bracketed search ---
+
+    # Largest feasible value inside an analytically seeded bracket, bounded work unlike bisectMaximize
+    def refineWithinBracket(self, feasibleFn, lowValue, seedValue, expandStep):
+        if not feasibleFn(lowValue):
+            return lowValue, False
+
+        low = lowValue
+        high = seedValue
+        if feasibleFn(high):
+            low = high
+            # The seed was conservative, so step outward a bounded number of times to find the ceiling
+            for _ in range(BRACKET_EXPAND_STEPS):
+                high = low + expandStep
+                if not feasibleFn(high):
+                    break
+                low = high
+                expandStep *= 2.0
+            else:
+                return low, True
+
+        for _ in range(BRACKET_REFINE_STEPS):
+            if high - low < BISECTION_TOLERANCE_M:
+                break
+            mid = 0.5 * (low + high)
+            if feasibleFn(mid):
+                low = mid
+            else:
+                high = mid
+        return low, True
 
     def bisectMaximize(self, feasibleFn, low, initialStep):
         if not feasibleFn(low):
@@ -1387,18 +1745,33 @@ class AlignmentOptimizer:
 
     def solveShiftArc(self, frame, R0, L0entry, L0exit, baselineAxis):
         def isFeasible(R):
+            # The arc length gate is closed form, so an infeasible radius costs no sampled geometry
+            if self.arcLengthFor(frame, R, L0entry, L0exit) < self.lMinM:
+                return False
             geometry = self.buildCandidateGeometry(frame, R, L0entry, L0exit)
-            if geometry is None or geometry["arcLength"] < self.lMinM:
+            if geometry is None:
                 return False
             return self.evaluateSlew(baselineAxis, geometry["samplePoints"]) <= self.dMaxM
 
         if not isFeasible(R0):
             return {"feasible": False, "reason": "optSkipLMinViolated"}
 
-        Rnew, _ = self.bisectMaximize(isFeasible, R0, max(1.0, R0*0.1))
+        analyticRadius = self.solveRadiusForEnvelope(frame, R0, L0entry, L0exit, self.dMaxM)
+        if analyticRadius is None or analyticRadius <= R0:
+            Rnew, _ = self.bisectMaximize(isFeasible, R0, max(1.0, R0*0.1))
+        else:
+            Rnew, _ = self.refineWithinBracket(isFeasible, R0, analyticRadius,
+                                               max(0.05, (analyticRadius - R0) * 0.05))
+
         if Rnew - R0 < 0.01:
             return {"feasible": False, "reason": "optSkipEnvelopeExhausted"}
         return {"feasible": True, "Rnew": Rnew, "Lentry": L0entry, "Lexit": L0exit}
+
+    # Largest spiral length allowed by the shared tangent budget and the minimum arc length
+    def spiralLengthCeiling(self, frame, radius, ownLength, otherLength, budget):
+        byBudget = ownLength + self.resolveSharedLine(budget, np.inf, self.lMinM)
+        byArc = self.maximumSpiralSumForArcLength(frame, radius, self.lMinM) - otherLength
+        return max(ownLength, min(byBudget, byArc))
 
     def solveShiftAndExtend(self, frame, R0, L0entry, L0exit, baselineAxis, entryBudget, exitBudget, allowEntry, allowExit):
         stage1 = self.solveShiftArc(frame, R0, L0entry, L0exit, baselineAxis)
@@ -1409,23 +1782,29 @@ class AlignmentOptimizer:
 
         if allowEntry and L0entry > 0:
             def isFeasibleEntry(L):
-                geometry = self.buildCandidateGeometry(frame, Rnew, L, Lexit)
-                if geometry is None or geometry["arcLength"] < self.lMinM:
+                if self.arcLengthFor(frame, Rnew, L, Lexit) < self.lMinM:
                     return False
                 if self.resolveSharedLine(entryBudget, L - L0entry, self.lMinM) < L - L0entry - 1e-6:
                     return False
+                geometry = self.buildCandidateGeometry(frame, Rnew, L, Lexit)
+                if geometry is None:
+                    return False
                 return self.evaluateSlew(baselineAxis, geometry["samplePoints"]) <= self.dMaxM
-            Lentry, _ = self.bisectMaximize(isFeasibleEntry, L0entry, max(1.0, L0entry*0.2))
+            ceiling = self.spiralLengthCeiling(frame, Rnew, L0entry, Lexit, entryBudget)
+            Lentry, _ = self.refineWithinBracket(isFeasibleEntry, L0entry, ceiling, max(1.0, L0entry*0.2))
 
         if allowExit and L0exit > 0:
             def isFeasibleExit(L):
-                geometry = self.buildCandidateGeometry(frame, Rnew, Lentry, L)
-                if geometry is None or geometry["arcLength"] < self.lMinM:
+                if self.arcLengthFor(frame, Rnew, Lentry, L) < self.lMinM:
                     return False
                 if self.resolveSharedLine(exitBudget, L - L0exit, self.lMinM) < L - L0exit - 1e-6:
                     return False
+                geometry = self.buildCandidateGeometry(frame, Rnew, Lentry, L)
+                if geometry is None:
+                    return False
                 return self.evaluateSlew(baselineAxis, geometry["samplePoints"]) <= self.dMaxM
-            Lexit, _ = self.bisectMaximize(isFeasibleExit, L0exit, max(1.0, L0exit*0.2))
+            ceiling = self.spiralLengthCeiling(frame, Rnew, L0exit, Lentry, exitBudget)
+            Lexit, _ = self.refineWithinBracket(isFeasibleExit, L0exit, ceiling, max(1.0, L0exit*0.2))
 
         return {"feasible": True, "Rnew": Rnew, "Lentry": Lentry, "Lexit": Lexit}
 
@@ -1437,23 +1816,29 @@ class AlignmentOptimizer:
 
         if allowEntry:
             def isFeasibleEntry(L):
-                geometry = self.buildCandidateGeometry(frame, R0, L, Lexit)
-                if geometry is None or geometry["arcLength"] < self.lMinM:
+                if self.arcLengthFor(frame, R0, L, Lexit) < self.lMinM:
                     return False
                 if self.resolveSharedLine(entryBudget, L - L0entry, self.lMinM) < L - L0entry - 1e-6:
                     return False
+                geometry = self.buildCandidateGeometry(frame, R0, L, Lexit)
+                if geometry is None:
+                    return False
                 return self.evaluateSlew(baselineAxis, geometry["samplePoints"]) <= self.dMaxM
-            Lentry, _ = self.bisectMaximize(isFeasibleEntry, L0entry, max(1.0, L0entry*0.2))
+            ceiling = self.spiralLengthCeiling(frame, R0, L0entry, Lexit, entryBudget)
+            Lentry, _ = self.refineWithinBracket(isFeasibleEntry, L0entry, ceiling, max(1.0, L0entry*0.2))
 
         if allowExit:
             def isFeasibleExit(L):
-                geometry = self.buildCandidateGeometry(frame, R0, Lentry, L)
-                if geometry is None or geometry["arcLength"] < self.lMinM:
+                if self.arcLengthFor(frame, R0, Lentry, L) < self.lMinM:
                     return False
                 if self.resolveSharedLine(exitBudget, L - L0exit, self.lMinM) < L - L0exit - 1e-6:
                     return False
+                geometry = self.buildCandidateGeometry(frame, R0, Lentry, L)
+                if geometry is None:
+                    return False
                 return self.evaluateSlew(baselineAxis, geometry["samplePoints"]) <= self.dMaxM
-            Lexit, _ = self.bisectMaximize(isFeasibleExit, L0exit, max(1.0, L0exit*0.2))
+            ceiling = self.spiralLengthCeiling(frame, R0, L0exit, Lentry, exitBudget)
+            Lexit, _ = self.refineWithinBracket(isFeasibleExit, L0exit, ceiling, max(1.0, L0exit*0.2))
 
         if Lentry - L0entry < 0.01 and Lexit - L0exit < 0.01:
             return {"feasible": False, "reason": "optSkipEnvelopeExhausted"}
@@ -1480,12 +1865,15 @@ class AlignmentOptimizer:
 
         def isFeasible(s):
             Rnew, Lentry, Lexit = candidateAt(s)
+            if self.arcLengthFor(frame, Rnew, Lentry, Lexit) < self.lMinM:
+                return False
             geometry = self.buildCandidateGeometry(frame, Rnew, Lentry, Lexit)
-            if geometry is None or geometry["arcLength"] < self.lMinM:
+            if geometry is None:
                 return False
             return self.evaluateSlew(baselineAxis, geometry["samplePoints"]) <= self.dMaxM
 
-        sMax, _ = self.bisectMaximize(isFeasible, 0.0, max(0.05, self.dMaxM*0.2))
+        # The radius floor bounds the shift, so the bracket is known before any sampling
+        sMax, _ = self.refineWithinBracket(isFeasible, 0.0, R0 - Rfloor, max(0.05, self.dMaxM*0.2))
         if sMax < 0.01:
             return {"feasible": False, "reason": "optSkipEnvelopeExhausted"}
 
@@ -1547,7 +1935,8 @@ class AlignmentOptimizer:
             self.consumeLine(lineAfter, max(0.0, Lexit - L0exit))
 
         self.emitGroup(startIdx, endIdx, patternType, mode, lineBefore, lineAfter,
-                        entrySpiral, arcElement, exitSpiral, geometry, R0, Rnew, L0entry, Lentry, L0exit, Lexit, slewMax)
+                        entrySpiral, arcElement, exitSpiral, geometry, R0, Rnew, L0entry, Lentry, L0exit, Lexit, slewMax,
+                        frame, baselineAxis)
         self.hasOptimizedAny = True
 
     def registerNewElement(self, k, staStart, staEnd, kappaStart, kappaEnd, radiusStart, radiusEnd, startXY, endXY, centerXY=None, piXY=None):
@@ -1582,7 +1971,8 @@ class AlignmentOptimizer:
         return direction if other > index else vecScale(direction, -1.0)
 
     def emitGroup(self, startIdx, endIdx, patternType, mode, lineBefore, lineAfter,
-                  entrySpiral, arcElement, exitSpiral, geometry, R0, Rnew, L0entry, Lentry, L0exit, Lexit, slewMax):
+                  entrySpiral, arcElement, exitSpiral, geometry, R0, Rnew, L0entry, Lentry, L0exit, Lexit, slewMax,
+                  frame, baselineAxis):
         groupStartStation = self.elements[startIdx]["staStart"]
         entryEndStation = groupStartStation + Lentry/1000.0
         arcEndStation = entryEndStation + geometry["arcLength"]/1000.0
@@ -1612,34 +2002,48 @@ class AlignmentOptimizer:
         self.updateLineEndpoint(lineAfter, updateStart=True, newPoint=geometry["st"])
 
         lengthDelta = (Lentry - L0entry) + (Lexit - L0exit) + (geometry["arcLength"] - self.arcLengthBaseline(arcElement))
+        slewMaxStationKm, _ = self.recordSlewProfile(groupStartStation, exitEndStation, frame, geometry, baselineAxis)
 
         self.summaryGroups.append({
             "groupIndex": len(self.summaryGroups), "patternType": patternType, "mode": mode,
+            "elementPattern": self.describeElementPattern(patternType),
             "startKm": float(groupStartStation), "endKm": float(exitEndStation), "status": "optOk",
             "radiusOldM": float(R0), "radiusNewM": float(Rnew),
             "spiralLengthsOldM": [float(L0entry), float(L0exit)], "spiralLengthsNewM": [float(Lentry), float(Lexit)],
             "offsetOldM": float(self.clothoidShiftAndFoot(L0entry, R0)[1]), "offsetNewM": float(geometry["deltaREntry"]),
-            "slewMaxM": float(slewMax), "lengthDeltaM": float(lengthDelta),
+            "slewMaxM": float(slewMax), "slewMaxStationKm": float(slewMaxStationKm), "lengthDeltaM": float(lengthDelta),
         })
 
     def recordSkip(self, startIdx, endIdx, patternType, reasonCode):
         self.summaryGroups.append({
             "groupIndex": len(self.summaryGroups), "patternType": patternType or "unknown", "mode": OPTIMIZATION_MODE_NONE,
+            "elementPattern": self.describeElementPattern(patternType),
             "startKm": float(self.elements[startIdx]["staStart"]), "endKm": float(self.elements[endIdx-1]["staEnd"]),
             "status": reasonCode,
             "radiusOldM": None, "radiusNewM": None, "spiralLengthsOldM": None, "spiralLengthsNewM": None,
-            "offsetOldM": None, "offsetNewM": None, "slewMaxM": None, "lengthDeltaM": None,
+            "offsetOldM": None, "offsetNewM": None, "slewMaxM": None, "slewMaxStationKm": None, "lengthDeltaM": None,
         })
 
     def buildSummary(self):
         optimizedGroups = [g for g in self.summaryGroups if g["status"] == "optOk"]
         slews = [g["slewMaxM"] for g in optimizedGroups]
+        profile = self.buildSlewProfile()
+        evaluatedLengthKm = self.evaluatedLengthKm()
+        shiftedLengthKm = profile["shiftedLengthKm"]
         return {
             "modeLcl": self.modeLcl, "modeLscsl": self.modeLscsl, "dMaxM": self.dMaxM, "lMinM": self.lMinM,
             "maxSlewM": float(max(slews)) if slews else 0.0,
             "meanSlewM": float(sum(slews)/len(slews)) if slews else 0.0,
             "optimizedGroupCount": len(optimizedGroups),
             "skippedGroupCount": len(self.summaryGroups) - len(optimizedGroups),
+            "evaluatedLengthKm": evaluatedLengthKm,
+            "shiftedLengthKm": shiftedLengthKm,
+            "shiftedLengthPercent": (100.0 * shiftedLengthKm / evaluatedLengthKm) if evaluatedLengthKm > 0 else 0.0,
+            "maxSlewStationKm": profile["maxSlewStationKm"],
+            "meanSlewCurvedM": profile["meanSlewCurvedM"],
+            "slewProfileStationKm": profile["slewProfileStationKm"],
+            "slewProfileOffsetMm": profile["slewProfileOffsetMm"],
+            "timingMs": dict(self.timingMs),
             "groups": self.summaryGroups,
         }
 

@@ -167,6 +167,24 @@
       "action": "alignmentOptimizationAction",
       "alias": "optimize",
       "shortcut": "Ctrl+Alt+O"
+    },
+    {
+      "commandName": "OptimizeSlew",
+      "action": "alignmentOptimizationAction",
+      "alias": "optslew",
+      "shortcut": ""
+    },
+    {
+      "commandName": "ClearSlew",
+      "action": "clearOptimizationAction",
+      "alias": "clearslew",
+      "shortcut": ""
+    },
+    {
+      "commandName": "ReportSlew",
+      "action": "slewReportAction",
+      "alias": "reportslew",
+      "shortcut": ""
     }
   ],
   "floatingCommandInputEnabled": true

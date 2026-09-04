@@ -28,7 +28,7 @@ import theme_manager
 import icons
 from theme_manager import ThemeManager
 from lazy_dock import LazyDockWidget
-from ribbon import RibbonBar, SERIES_TOGGLE_PROPERTY, COMPACT_ICON_SIZE
+from ribbon import RibbonBar, SERIES_TOGGLE_PROPERTY, DESTRUCTIVE_BUTTON_PROPERTY, COMPACT_ICON_SIZE
 from workflow_dock import WorkflowStepperWidget
 from graphs_dock import PerformanceGraphsWidget
 from profile_dock import ProfilePlotWidget
@@ -38,12 +38,15 @@ from track_stats_dock import TrackStatisticsWidget
 from xml_editor import XmlCodeEditor
 from translation_manager import TranslationManager
 from shortcut_manager import ShortcutManager
+import optimization_runner
+import slew_report
 from settings_dialog import ShortcutSettingsDialog
 from vehicle_dialog import VehicleSettingsDialog, VehicleCatalogDialog
 from purge_dialog import PurgeDataDialog
 from floating_command_input import FloatingCommandInput
 import batch_config
 import batch_results
+import batch_metrics
 import batch_runner
 import landxml_merger
 from batch_dialog import BatchProcessingDialog
@@ -98,6 +101,9 @@ ACTION_ICONS = {
     "designApproachAction": "settings",
     "alignmentOptimizationAction": "optimize",
     "clearOptimizationAction": "cleanPart",
+    "slewReportAction": "report",
+    "toggleSlewPlotAction": "style",
+    "includeSlewSectionAction": "layers",
     "toggleUnitsAction": "units",
     "themeAutoAction": "themeAuto",
     "themeLightAction": "themeLight",
@@ -155,6 +161,9 @@ SERIES_SHORT_KEYS = {
     "toggleKinematicsDistanceTimeAction": "shortSeriesDistTime",
     "toggleKinematicsForcesAction": "shortSeriesForces",
 }
+
+# Design speed profiles the optimizer mirrors into New suffixed result arrays
+OPTIMIZED_PROFILE_SUFFIXES = ("100", "130", "150", "K")
 
 # Short text badges rendered as icons for the data series toggle actions
 SERIES_BADGES = {
@@ -239,6 +248,17 @@ class MainWindow(QMainWindow):
         self.batchController.batchFailed.connect(self.onBatchFailed)
         self.batchProgressDialog = None
         self.batchMergedLandXml = None
+
+        # Alignment optimization: the isolated-thread controller, the revert cache and the report window
+        self.optimizationController = optimization_runner.OptimizationController(self)
+        self.optimizationController.optimizationFinished.connect(self.onOptimizationFinished)
+        self.optimizationController.optimizationFailed.connect(self.onOptimizationFailed)
+        self.optimizationController.progressChanged.connect(self.onOptimizationProgress)
+        self.baselineAlignmentCache = None
+        self.slewReportWindow = None
+
+        # Whichever geometry loop the user last ran, replayed against the optimized geometry
+        self.lastCalculationMode = "design"
 
         # Lines behind the currently displayed geometry report, reused by every export format
         self.lastGeometryReportLines = []
@@ -429,8 +449,25 @@ class MainWindow(QMainWindow):
         self.alignmentOptimizationAction = QAction(lan.get("alignmentOptimization", "Alignment Optimization"), self)
         self.alignmentOptimizationAction.triggered.connect(self.openAlignmentOptimization)
 
+        # triggered carries a checked flag, so the revert slot deliberately takes no arguments
         self.clearOptimizationAction = QAction(lan.get("clearOptimization", "Clear Optimization"), self)
-        self.clearOptimizationAction.triggered.connect(self.clearOptimizationResults)
+        self.clearOptimizationAction.triggered.connect(self.revertToBaselineAlignment)
+        self.clearOptimizationAction.setEnabled(False)
+
+        self.slewReportAction = QAction(lan.get("slewReport", "Slew Report"), self)
+        self.slewReportAction.triggered.connect(self.openSlewReport)
+        self.slewReportAction.setEnabled(False)
+
+        self.toggleSlewPlotAction = QAction(lan.get("toggleSlewPlot", "Toggle Slew Plot"), self)
+        self.toggleSlewPlotAction.setCheckable(True)
+        self.toggleSlewPlotAction.setProperty(SERIES_TOGGLE_PROPERTY, True)
+        self.toggleSlewPlotAction.toggled.connect(self.onSlewPlotToggled)
+        self.toggleSlewPlotAction.setEnabled(False)
+
+        self.includeSlewSectionAction = QAction(lan.get("includeSlewSection", "Append Slew Summary"), self)
+        self.includeSlewSectionAction.setCheckable(True)
+        self.includeSlewSectionAction.setChecked(True)
+        self.includeSlewSectionAction.setProperty(SERIES_TOGGLE_PROPERTY, True)
 
         self.toggleUnitsAction = QAction(self)
         self.toggleUnitsAction.setCheckable(True)
@@ -818,11 +855,18 @@ class MainWindow(QMainWindow):
 
         optimizeGroup = geometryPage.addGroup(lan.get("groupOptimize", "Optimization"), "groupOptimize")
         optimizeGroup.addAction(self.alignmentOptimizationAction, shortKey="shortOptimize")
-        optimizeGroup.addAction(self.clearOptimizationAction, shortKey="shortClearOptimize")
+        self.clearOptimizationButton = optimizeGroup.addAction(self.clearOptimizationAction,
+                                                               shortKey="shortClearOptimize")
+        # Marks the button for the soft red tint the ribbon stylesheet applies while it is enabled
+        self.clearOptimizationButton.setProperty(DESTRUCTIVE_BUTTON_PROPERTY, True)
+        optimizeGroup.addAction(self.slewReportAction, shortKey="shortSlewReport")
+        optimizeGroup.addAction(self.toggleSlewPlotAction, shortKey="shortToggleSlewPlot")
 
         geometryReportGroup = geometryPage.addGroup(lan.get("groupReport", "Report"), "groupReport")
         geometryReportGroup.addAction(self.reportGeometryAction, shortKey="shortReport")
         geometryReportGroup.addAction(self.exportGeometryReportAction, shortKey="shortExport")
+        geometryReportGroup.addAction(self.includeSlewSectionAction, isLarge=False,
+                                      shortKey="shortIncludeSlew")
 
         simulationPage = self.ribbonBar.addPage("simulation", lan.get("ribbonSimulation", "Simulation"),
                                                 "ribbonSimulation")
@@ -1110,10 +1154,16 @@ class MainWindow(QMainWindow):
 
     # Push the current data into the linked track geometry and speed graphs
     def refreshGraphsDock(self):
+        lxml = self.dataStorage.get("LandXML", {})
         self.graphsWidget.setStations(self.collectStations())
-        self.graphsWidget.updateGeometryData(self.dataStorage.get("LandXML", {}),
-                                             self.seriesVisibility())
+        self.graphsWidget.updateGeometryData(lxml, self.seriesVisibility())
         self.graphsWidget.updateSpeedData(self.dataStorage, self.seriesVisibility())
+        self.graphsWidget.updateSlewData(lxml, self.optimizationEnvelopeM())
+
+    # Configured d_max of the applied optimization, drives the slew plot threshold lines
+    def optimizationEnvelopeM(self):
+        summary = self.dataStorage.get("LandXML", {}).get("optimizationSummary") or {}
+        return summary.get("dMaxM")
 
     # Recompute the Track Statistics dock from the current data storage
     def refreshTrackStatsDock(self):
@@ -1145,6 +1195,10 @@ class MainWindow(QMainWindow):
             "speedLimits130": self.toggleSpeed130Action,
             "speedLimits150": self.toggleSpeed150Action,
             "speedLimitsK": self.toggleSpeedKAction,
+            "speedLimits100New": self.toggleSpeed100Action,
+            "speedLimits130New": self.toggleSpeed130Action,
+            "speedLimits150New": self.toggleSpeed150Action,
+            "speedLimitsKNew": self.toggleSpeedKAction,
             "kinematicsSpeedLimitTrack": self.toggleKinematicsSpeedLimitTrackAction,
             "kinematicsSpeedLimitTime": self.toggleKinematicsSpeedLimitTimeAction,
             "kinematicsDistanceTime": self.toggleKinematicsDistanceTimeAction,
@@ -1407,6 +1461,9 @@ class MainWindow(QMainWindow):
         self.rebuildVehicleReportMenus()
         self.rebuildRecentProjectsMenu()
         self.refreshStations()
+        self.updateOptimizationActionState()
+        self.toggleSlewPlotAction.setChecked(bool(lxml.get("slewProfileOffsetMm") is not None
+                                                  and len(lxml.get("slewProfileOffsetMm", [])) > 0))
         self.plotCant()
         self.plotCurvature()
         self.plotProfile()
@@ -1595,6 +1652,8 @@ class MainWindow(QMainWindow):
         if self.batchController.isRunning():
             self.batchController.cancelBatch()
             self.batchController.waitForFinish()
+        if self.optimizationController.isRunning():
+            self.optimizationController.waitForFinish()
         self.autoSaveTimer.stop()
         self.discardRecoverySnapshot()
         self.saveSession()
@@ -1670,6 +1729,11 @@ class MainWindow(QMainWindow):
         self.designApproachAction.setText(lan["designApproach"])
         self.alignmentOptimizationAction.setText(lan.get("alignmentOptimization", "Alignment Optimization"))
         self.clearOptimizationAction.setText(lan.get("clearOptimization", "Clear Optimization"))
+        self.slewReportAction.setText(lan.get("slewReport", "Slew Report"))
+        self.toggleSlewPlotAction.setText(lan.get("toggleSlewPlot", "Toggle Slew Plot"))
+        self.includeSlewSectionAction.setText(lan.get("includeSlewSection", "Append Slew Summary"))
+        if self.slewReportWindow is not None:
+            self.slewReportWindow.updateTexts(lan)
         self.updateUnitsActionLabel()
         self.exportPresetsAction.setText(lan.get("exportPresets", "Export Presets..."))
         self.importPresetsAction.setText(lan.get("importPresets", "Import Presets..."))
@@ -2886,6 +2950,10 @@ class MainWindow(QMainWindow):
             if key not in keep:
                 del self.dataStorage[key]
 
+        self.baselineAlignmentCache = None
+        self.graphsWidget.clearSlewPlot()
+        self.updateOptimizationActionState()
+
         # Reset the workflow guide and every plot along with the data
         self.workflowWidget.resetAll()
         self.graphsWidget.clearAll()
@@ -3679,6 +3747,10 @@ class MainWindow(QMainWindow):
             reportLines.append(f"  {lan.get('stat_max_deltaI', 'Max deltaI [mm]')}: {pStats['max_deltaI']:.0f}")
             reportLines.append("")
 
+        if self.includeSlewSectionAction.isChecked() and lxml.get("optimizationSummary"):
+            reportLines.append("")
+            reportLines.extend(slew_report.buildSlewReportLines(self.dataStorage, lan))
+
         self.lastGeometryReportLines = reportLines
         self.reportGeometryWidget.setPlainText("\n".join(reportLines))
         self.showReportView()
@@ -4039,6 +4111,7 @@ class MainWindow(QMainWindow):
         if "alignmentCoordinates" not in self.dataStorage.get("LandXML",{}):
             return
         
+        self.lastCalculationMode = "design"
         calculate = geometry_engine.GeometryCalculator(self.dataStorage)
         calculate.runCalculationLoop()
 
@@ -4056,6 +4129,7 @@ class MainWindow(QMainWindow):
         if "alignmentCoordinates" not in self.dataStorage.get("LandXML",{}):
             return
         
+        self.lastCalculationMode = "asBuilt"
         calculate = geometry_engine.GeometryCalculator(self.dataStorage)
         calculate.runCalculationLoopI()
 
@@ -4068,53 +4142,218 @@ class MainWindow(QMainWindow):
         self.setEngineStatus(self.translationManager.getLanguage(self.currentLanguage).get("statusGeometryDone", "Geometry calculated"))
         self.markProjectModified()
 
-    # Runs the parametric slew/spiral optimizer on the imported baseline geometry, additive to it
+    # Launches the parametric slew/spiral optimizer on a worker thread, additive to the baseline
     def runAlignmentOptimization(self):
         lxml = self.dataStorage.get("LandXML", {})
         if "alignmentCoordinates" not in lxml:
             return
+        if self.optimizationController.isRunning():
+            return
 
         lan = self.translationManager.getLanguage(self.currentLanguage)
+        self.captureBaselineAlignment()
         self.clearOptimizationResults(refresh=False)
 
         config = self.dataStorage.get("settingsData", {}).get("alignmentOptimization", {})
-        optimizer = geometry_engine.AlignmentOptimizer(lxml, config)
-        summary, optimizedElements = optimizer.run()
+        self.alignmentOptimizationAction.setEnabled(False)
+        self.setEngineStatus(lan.get("statusOptimizationRunning", "Optimizing alignment..."))
+        self.optimizationController.startOptimization(self.dataStorage, config,
+                                                      self.lastCalculationMode, self.epsgInput)
 
-        if optimizedElements is None:
-            self.setEngineStatus(lan.get("optNoGroups", "No optimizable element groups found"))
+    # One immutable deepcopy of the untouched baseline, taken before the first optimization run
+    def captureBaselineAlignment(self):
+        if self.baselineAlignmentCache is not None:
+            return
+        cache = {"LandXML": copy.deepcopy(self.dataStorage.get("LandXML", {}))}
+        for profileSuffix in OPTIMIZED_PROFILE_SUFFIXES:
+            for storageKey in (f"speedLimits{profileSuffix}", f"stationSpeed{profileSuffix}"):
+                if self.dataStorage.get(storageKey) is not None:
+                    cache[storageKey] = copy.deepcopy(self.dataStorage[storageKey])
+        self.baselineAlignmentCache = cache
+
+    # Worker finished: mirror every optimized result into its New suffixed twin and refresh the views
+    def onOptimizationFinished(self, payload):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        self.alignmentOptimizationAction.setEnabled(True)
+
+        summary = payload.get("summary") or {}
+        lxml = self.dataStorage.setdefault("LandXML", {})
+        lxml["optimizationSummary"] = summary
+        lxml["slewProfileStationKm"] = summary.get("slewProfileStationKm", [])
+        lxml["slewProfileOffsetMm"] = summary.get("slewProfileOffsetMm", [])
+
+        if not payload.get("hasOptimizedGeometry"):
             self.updateMapWithSpeeds()
             self.plotCant()
+            self.updateOptimizationActionState()
             self.markProjectModified()
+            self.setEngineStatus(lan.get("optNoGroups", "No optimizable element groups found"))
+            self.showOptimizationOutcome(summary, lan)
             return
 
-        # Harvest lat/lon polylines for the map overlay the same way the baseline import does
-        readfile.ReadFile().alignmentCoordinates(optimizedElements, self.epsgInput, "EPSG:4326")
-        lxml["alignmentCoordinatesNew"] = optimizedElements.get("alignmentCoordinates", [])
-        lxml["denseAlignmentNew"] = optimizedElements.get("denseAlignment", [])
+        self.harvestOptimizedResults(payload)
+        self.annotateGroupSpeedImpact(summary)
+        summary["travelTimeDeltaS"] = self.computeTravelTimeDelta()
 
-        # Cant re-run on an isolated clone, never touching the baseline cant arrays
-        cantStorage = {
-            "settingsData": self.dataStorage.get("settingsData", {}),
-            "defaultProfile": self.dataStorage.get("defaultProfile", "I150"),
-            "LandXML": {
-                "stationHorizontal": lxml["stationHorizontalNew"],
-                "geometryType": lxml["geometryTypeNew"],
-                "curvature": lxml["curvatureNew"],
-                "curvatureSign": lxml["curvatureSignNew"],
-            },
-        }
-        geometry_engine.GeometryCalculator(cantStorage).runCalculationLoop()
-        cantLxml = cantStorage["LandXML"]
-        lxml["stationCantPossibleNew"] = cantLxml.get("stationCantPossible", [])
-        lxml["cantPossibleNew"] = cantLxml.get("cantPossible", [])
-        for profileSuffix in ("100", "130", "150", "K"):
-            lxml[f"cDef{profileSuffix}New"] = cantLxml.get(f"cDef{profileSuffix}", [])
+        self.toggleSlewPlotAction.setChecked(True)
+        self.updateMapWithSpeeds()
+        self.plotCant()
+        self.plotSpeedLimits()
+        self.plotKinematics()
+        self.updateOptimizationActionState()
+        self.refreshSlewReportWindow()
+        self.markProjectModified()
+
+        timingText = self.buildOptimizationTimingText(summary, lan)
+        self.setEngineStatus(f"{self.buildOptimizationSummaryText(summary, lan)} | {timingText}")
+        print(timingText)
+        self.showOptimizationOutcome(summary, lan)
+
+    # Worker reports one finished curve group at a time, keeping the status bar alive on long corridors
+    def onOptimizationProgress(self, completedGroups, totalGroups):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        template = lan.get("statusOptimizationProgress", "Optimizing alignment... {done}/{total} curve groups")
+        self.setEngineStatus(template.format(done=completedGroups, total=totalGroups))
+
+    # Micro benchmark line naming where the run actually spent its time
+    def buildOptimizationTimingText(self, summary, lan):
+        timing = summary.get("timingMs") or {}
+        template = lan.get("optTimingSummary",
+                           "Alignment optimization completed in {total} ms "
+                           "(Curve solving: {solve} ms | Sampling: {sample} ms | Speed evaluation: {speed} ms)")
+        return template.format(
+            total=f"{timing.get('totalMs', 0.0):.2f}",
+            solve=f"{timing.get('curveSolvingMs', 0.0):.2f}",
+            sample=f"{timing.get('samplingMs', 0.0):.2f}",
+            speed=f"{timing.get('speedEvaluationMs', 0.0):.2f}")
+
+    def onOptimizationFailed(self, message):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        self.alignmentOptimizationAction.setEnabled(True)
+        self.setEngineStatus(lan.get("optFailed", "Alignment optimization failed"))
+        QMessageBox.critical(self, lan.get("error", "Error"), f"{message}")
+
+    # Copy the worker's geometry, cant, speed and kinematics output into the New suffixed keys
+    def harvestOptimizedResults(self, payload):
+        lxml = self.dataStorage.setdefault("LandXML", {})
+        for geometryKey in ("stationHorizontalNew", "geometryTypeNew", "curvatureNew",
+                            "curvatureSignNew", "radiusNew", "alignmentCoordinatesNew",
+                            "denseAlignmentNew"):
+            if payload.get(geometryKey) is not None:
+                lxml[geometryKey] = payload[geometryKey]
+
+        results = payload.get("results") or {}
+        lxml["stationCantPossibleNew"] = results.get("stationCantPossible", [])
+        lxml["cantPossibleNew"] = results.get("cantPossible", [])
+        for profileSuffix in OPTIMIZED_PROFILE_SUFFIXES:
+            lxml[f"cDef{profileSuffix}New"] = results.get(f"cDef{profileSuffix}", [])
+            speedProfile = results.get("speedProfiles", {}).get(profileSuffix, {})
+            self.dataStorage[f"stationSpeed{profileSuffix}New"] = speedProfile.get("stationSpeed", [])
+            self.dataStorage[f"speedLimits{profileSuffix}New"] = speedProfile.get("speedLimits", [])
+
+        for vehicleIndex, vehicleResults in (results.get("kinematics") or {}).items():
+            for resultKey, values in vehicleResults.items():
+                if values is not None:
+                    self.dataStorage[f"{resultKey}_{vehicleIndex}New"] = values
+
+    # Per curve group speed impact, sampled from the baseline and optimized limits of the design profile
+    def annotateGroupSpeedImpact(self, summary):
+        profileSuffix = batch_runner.resolveProfileSuffix(self.dataStorage.get("defaultProfile", "I150"))
+        baselineStations = self.dataStorage.get(f"stationSpeed{profileSuffix}")
+        baselineSpeeds = self.dataStorage.get(f"speedLimits{profileSuffix}")
+        optimizedStations = self.dataStorage.get(f"stationSpeed{profileSuffix}New")
+        optimizedSpeeds = self.dataStorage.get(f"speedLimits{profileSuffix}New")
+
+        for group in summary.get("groups", []):
+            group["speedOldKmh"] = self.minimumSpeedOverRange(baselineStations, baselineSpeeds,
+                                                              group.get("startKm"), group.get("endKm"))
+            group["speedNewKmh"] = self.minimumSpeedOverRange(optimizedStations, optimizedSpeeds,
+                                                              group.get("startKm"), group.get("endKm"))
+            if group["speedOldKmh"] is None or group["speedNewKmh"] is None:
+                group["speedDeltaKmh"] = None
+            else:
+                group["speedDeltaKmh"] = group["speedNewKmh"] - group["speedOldKmh"]
+
+    # Governing speed limit of one curve group, the slowest sample inside its chainage range
+    def minimumSpeedOverRange(self, stations, speeds, startKm, endKm):
+        if stations is None or speeds is None or startKm is None or endKm is None:
+            return None
+        stations = np.asarray(stations, dtype=float)
+        speeds = np.asarray(speeds, dtype=float)
+        if stations.size == 0 or stations.size != speeds.size:
+            return None
+        inRange = (stations >= startKm) & (stations <= endKm) & np.isfinite(speeds) & (speeds > 0)
+        if not np.any(inRange):
+            return None
+        return float(np.min(speeds[inRange]))
+
+    # Optimized minus baseline total run time of the first vehicle, in seconds
+    def computeTravelTimeDelta(self):
+        baselineTime, _, _ = batch_metrics.computeTravelTimeSections(self.dataStorage, 0)
+        optimizedView = {}
+        for resultKey in optimization_runner.KINEMATICS_RESULT_KEYS:
+            optimizedValues = self.dataStorage.get(f"{resultKey}_0New")
+            if optimizedValues is not None:
+                optimizedView[f"{resultKey}_0"] = optimizedValues
+        optimizedView["settingsData"] = self.dataStorage.get("settingsData", {})
+        optimizedTime, _, _ = batch_metrics.computeTravelTimeSections(optimizedView, 0)
+        if baselineTime is None or optimizedTime is None:
+            return None
+        return float(optimizedTime - baselineTime)
+
+    # Status bar caption naming what the optimizer actually changed
+    def buildOptimizationSummaryText(self, summary, lan):
+        template = lan.get("optSummaryApplied",
+                           "Optimization applied: {count} elements modified | "
+                           "Max slew: {maxSlew} mm at km {station} | Average slew: {meanSlew} mm")
+        return template.format(
+            count=summary.get("optimizedGroupCount", 0),
+            maxSlew=f"{(summary.get('maxSlewM') or 0.0) * 1000.0:.1f}",
+            station=f"{summary.get('maxSlewStationKm') or 0.0:.3f}",
+            meanSlew=f"{(summary.get('meanSlewCurvedM') or 0.0) * 1000.0:.1f}")
+
+    # A dialog either confirming the run or naming the constraints that blocked every group
+    def showOptimizationOutcome(self, summary, lan):
+        if summary.get("optimizedGroupCount", 0) > 0:
+            QMessageBox.information(self, lan.get("alignmentOptimization", "Alignment Optimization"),
+                                    self.buildOptimizationSummaryText(summary, lan))
+            return
+
+        reasonCounts = {}
+        for group in summary.get("groups", []):
+            reasonCounts[group.get("status", "")] = reasonCounts.get(group.get("status", ""), 0) + 1
+
+        messageLines = [lan.get("optSummaryNoChange", "No element was modified.")]
+        for reasonCode, count in sorted(reasonCounts.items(), key=lambda item: -item[1]):
+            messageLines.append(f"  {count}x  {lan.get(reasonCode, reasonCode)}")
+        QMessageBox.warning(self, lan.get("alignmentOptimization", "Alignment Optimization"),
+                            "\n".join(messageLines))
+
+    # Restores the cached baseline and drops every optimizer output, wired to the Clear action
+    def revertToBaselineAlignment(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+
+        if self.baselineAlignmentCache is not None:
+            self.dataStorage["LandXML"] = copy.deepcopy(self.baselineAlignmentCache["LandXML"])
+            for storageKey, values in self.baselineAlignmentCache.items():
+                if storageKey != "LandXML":
+                    self.dataStorage[storageKey] = copy.deepcopy(values)
+
+        self.clearOptimizationResults(refresh=False)
+        self.graphsWidget.clearSlewPlot()
+        self.toggleSlewPlotAction.setChecked(False)
+        if self.slewReportWindow is not None:
+            self.slewReportWindow.close()
+            self.slewReportWindow = None
 
         self.updateMapWithSpeeds()
         self.plotCant()
-        self.setEngineStatus(lan.get("statusOptimizationDone", "Alignment optimized"))
+        self.plotSpeedLimits()
+        self.plotKinematics()
+        self.updateOptimizationActionState()
         self.markProjectModified()
+        self.setEngineStatus(lan.get("statusOptimizationCleared",
+                                     "Alignment optimization cleared - baseline restored"))
 
     # Drops every optimizer output, reverting the map/plots to the baseline-only view
     def clearOptimizationResults(self, refresh=True):
@@ -4122,12 +4361,52 @@ class MainWindow(QMainWindow):
         for key in ("stationHorizontalNew", "geometryTypeNew", "curvatureNew", "curvatureSignNew", "radiusNew",
                     "alignmentCoordinatesNew", "denseAlignmentNew", "optimizationSummary",
                     "stationCantPossibleNew", "cantPossibleNew",
-                    "cDef100New", "cDef130New", "cDef150New", "cDefKNew"):
+                    "cDef100New", "cDef130New", "cDef150New", "cDefKNew",
+                    "slewProfileStationKm", "slewProfileOffsetMm"):
             lxml.pop(key, None)
+
+        for profileSuffix in OPTIMIZED_PROFILE_SUFFIXES:
+            self.dataStorage.pop(f"speedLimits{profileSuffix}New", None)
+            self.dataStorage.pop(f"stationSpeed{profileSuffix}New", None)
+
+        for storageKey in [key for key in self.dataStorage
+                           if key.startswith("kinematics") and key.endswith("New")]:
+            self.dataStorage.pop(storageKey, None)
+
         if refresh:
             self.updateMapWithSpeeds()
             self.plotCant()
+            self.updateOptimizationActionState()
             self.markProjectModified()
+
+    # Optimization dependent commands stay disabled until a summary actually exists
+    def updateOptimizationActionState(self):
+        hasOptimization = bool(self.dataStorage.get("LandXML", {}).get("optimizationSummary"))
+        self.clearOptimizationAction.setEnabled(hasOptimization)
+        self.slewReportAction.setEnabled(hasOptimization)
+        self.toggleSlewPlotAction.setEnabled(hasOptimization)
+        if not hasOptimization:
+            self.toggleSlewPlotAction.setChecked(False)
+
+    # Opens the non-modal lateral slew analysis table, reusing the window if it already exists
+    def openSlewReport(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        if self.slewReportWindow is None:
+            self.slewReportWindow = slew_report.SlewReportWindow(self.dataStorage, lan, self)
+        else:
+            self.slewReportWindow.updateData(self.dataStorage)
+        self.slewReportWindow.show()
+        self.slewReportWindow.raise_()
+
+    def refreshSlewReportWindow(self):
+        if self.slewReportWindow is not None:
+            self.slewReportWindow.updateData(self.dataStorage)
+
+    def onSlewPlotToggled(self, isChecked):
+        self.graphsWidget.setSlewPlotVisible(isChecked)
+        if isChecked:
+            self.dockGraphs.show()
+            self.dockGraphs.raise_()
 
     def calculateTrainSpeed(self):
         vehicle = vehicle_engine.VehicleCalculator(self.dataStorage)

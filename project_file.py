@@ -42,7 +42,7 @@ CALCULATED_LANDXML_PREFIXES = ("stationCantPossible", "cantPossible", "cDef", "c
                                "limitReachedI_", "speedLimits", "stationSpeed",
                                "stationHorizontalNew", "geometryTypeNew", "curvatureNew",
                                "curvatureSignNew", "radiusNew", "alignmentCoordinatesNew",
-                               "denseAlignmentNew", "optimizationSummary")
+                               "denseAlignmentNew", "optimizationSummary", "slewProfile")
 
 # How many recently opened projects the File menu keeps
 MAX_RECENT_PROJECTS = 5

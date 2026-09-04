@@ -13,10 +13,15 @@ import numpy as np
 import branca.colormap as bcm
 
 import icons
+from geometry_engine import SLEW_VISIBLE_THRESHOLD_MM
 from ribbon import SERIES_TOGGLE_PROPERTY
 
 # Maximum number of alignment samples handed to the page for nearest point lookup
 MAX_LOOKUP_POINTS = 2000
+
+# Width and opacity of the heat line marking the sections that actually moved
+SLEW_INDICATOR_WEIGHT = 7
+SLEW_INDICATOR_OPACITY = 0.55
 
 # Base maps offered by the overlay selector, the value is stored in currentBaseMap
 BASEMAP_CHOICES = [
@@ -49,7 +54,44 @@ CURSOR_SCRIPT_TEMPLATE = """
 window.coypuCursorMarker = null;
 window.coypuBridge = null;
 window.coypuPoints = {lookupPoints};
+window.coypuLabels = {slewLabels};
+window.coypuTooltip = null;
 window.coypuLastSent = 0;
+
+// Railway style chainage caption, 12.345 km becomes km 12+345
+window.coypuFormatChainage = function (stationKm) {{
+    var whole = Math.floor(stationKm);
+    var metres = (stationKm - whole) * 1000.0;
+    return 'km ' + whole + '+' + ('00' + metres.toFixed(0)).slice(-3);
+}};
+
+window.coypuHideTooltip = function () {{
+    if (window.coypuTooltip !== null) {{ window.coypuTooltip.style.display = 'none'; }}
+}};
+
+// Show chainage, lateral slew and the radius change of the curve group under the cursor
+window.coypuUpdateTooltip = function (event, point) {{
+    if (point.length < 4 || point[3] === null) {{ window.coypuHideTooltip(); return; }}
+
+    if (window.coypuTooltip === null) {{
+        window.coypuTooltip = document.createElement('div');
+        window.coypuTooltip.style.cssText = 'position:fixed;z-index:10000;pointer-events:none;' +
+            'padding:3px 7px;border-radius:3px;font:11px sans-serif;white-space:nowrap;' +
+            'background:rgba(30,30,30,0.88);color:#ffffff;';
+        document.body.appendChild(window.coypuTooltip);
+    }}
+
+    var text = window.coypuFormatChainage(point[0]) +
+               ' | ' + window.coypuLabels.slew + ': ' + point[3].toFixed(0) + ' mm';
+    if (point.length > 5 && point[4] !== null && point[5] !== null) {{
+        text += ' | R ' + point[4].toFixed(0) + ' \u2192 ' + point[5].toFixed(0) + ' m';
+    }}
+
+    window.coypuTooltip.textContent = text;
+    window.coypuTooltip.style.display = 'block';
+    window.coypuTooltip.style.left = (event.originalEvent.clientX + 14) + 'px';
+    window.coypuTooltip.style.top = (event.originalEvent.clientY + 14) + 'px';
+}};
 
 window.setTrackCursor = function (lat, lon) {{
     var mapObject = {mapName};
@@ -65,12 +107,13 @@ window.setTrackCursor = function (lat, lon) {{
 }};
 
 // Report the chainage of the alignment point nearest to the mouse back to Qt
-window.coypuReportNearest = function (latlng) {{
-    if (!window.coypuBridge || window.coypuPoints.length === 0) {{ return; }}
+window.coypuReportNearest = function (event) {{
+    if (window.coypuPoints.length === 0) {{ return; }}
     var now = Date.now();
     if (now - window.coypuLastSent < 50) {{ return; }}
     window.coypuLastSent = now;
 
+    var latlng = event.latlng;
     var scale = Math.cos(latlng.lat * Math.PI / 180.0);
     var bestIndex = -1;
     var bestDistance = Infinity;
@@ -80,9 +123,12 @@ window.coypuReportNearest = function (latlng) {{
         var distance = dLat * dLat + dLon * dLon;
         if (distance < bestDistance) {{ bestDistance = distance; bestIndex = i; }}
     }}
-    if (bestIndex >= 0) {{
+    if (bestIndex < 0) {{ return; }}
+
+    if (window.coypuBridge) {{
         window.coypuBridge.reportChainage(window.coypuPoints[bestIndex][0]);
     }}
+    window.coypuUpdateTooltip(event, window.coypuPoints[bestIndex]);
 }};
 
 if (typeof qt !== 'undefined' && qt.webChannelTransport) {{
@@ -91,7 +137,8 @@ if (typeof qt !== 'undefined' && qt.webChannelTransport) {{
     }});
 }}
 
-{mapName}.on('mousemove', function (event) {{ window.coypuReportNearest(event.latlng); }});
+{mapName}.on('mousemove', function (event) {{ window.coypuReportNearest(event); }});
+{mapName}.on('mouseout', function () {{ window.coypuHideTooltip(); }});
 
 // Report the camera back to Qt so the viewport survives a project save and reload
 {mapName}.on('moveend', function () {{
@@ -520,12 +567,13 @@ class MapWidget(QWidget):
                 color = "#888888" if optimizedAlignment else typeColors.get(segmentType, "gray")
                 folium.PolyLine(segmentCoords, color=color, weight=2.5, opacity=1, tooltip=segmentType).add_to(m)
         elif self.drawMode == "speed" and lxml:
-            self.drawSpeedColoredAlignment(m, lxml)
+            self.drawSpeedColoredAlignment(m, lxml, isDimmed=bool(optimizedAlignment))
         else:
             allCoords = [segmentData[0] for segmentData in alignment]
             folium.PolyLine(allCoords, color="red", weight=2.5, opacity=1, tooltip="Alignment").add_to(m)
 
         if optimizedAlignment:
+            self.drawSlewIndicators(m, lxml or {})
             self.drawOptimizedOverlay(m, optimizedAlignment)
 
         self.addStationMarkers(m)
@@ -536,9 +584,52 @@ class MapWidget(QWidget):
         accentColor = (self.themeTokens or {}).get("highlight", "#2f6fb5")
         tooltip = self.lan.get("mapNewAlignment", "New Alignment")
         newCoords = [segmentData[0] for segmentData in optimizedAlignment]
-        folium.PolyLine(newCoords, color=accentColor, weight=3, opacity=1, tooltip=tooltip).add_to(m)
+        folium.PolyLine(newCoords, color=accentColor, weight=3.5, opacity=1, tooltip=tooltip).add_to(m)
 
-    def drawSpeedColoredAlignment(self, m, lxml):
+    # Heat line over every stretch whose lateral shift clears the visibility threshold
+    def drawSlewIndicators(self, m, lxml):
+        denseOptimized = lxml.get("denseAlignmentNew") or []
+        stations = lxml.get("slewProfileStationKm")
+        offsets = lxml.get("slewProfileOffsetMm")
+        if len(denseOptimized) < 2 or stations is None or offsets is None or len(stations) < 2:
+            return
+
+        stations = np.asarray(stations, dtype=float)
+        offsets = np.asarray(offsets, dtype=float)
+        order = np.argsort(stations)
+        stations, offsets = stations[order], offsets[order]
+
+        peakMm = float(np.max(np.abs(offsets)))
+        if peakMm <= SLEW_VISIBLE_THRESHOLD_MM:
+            return
+
+        colorMap = bcm.LinearColormap(
+            ['#ffd166', '#ef7d3b', '#c1121f'],
+            vmin=SLEW_VISIBLE_THRESHOLD_MM, vmax=peakMm,
+            caption=self.lan.get("mapSlewLegend", "Lateral slew [mm]"))
+        colorMap.add_to(m)
+
+        # Contiguous runs are drawn one polyline at a time so unshifted stretches stay clean
+        runCoords = []
+        runPeakMm = 0.0
+        for point in denseOptimized:
+            slewMm = abs(float(np.interp(point[0], stations, offsets)))
+            if slewMm > SLEW_VISIBLE_THRESHOLD_MM:
+                runCoords.append((point[1], point[2]))
+                runPeakMm = max(runPeakMm, slewMm)
+            elif runCoords:
+                self.addSlewRun(m, runCoords, runPeakMm, colorMap)
+                runCoords, runPeakMm = [], 0.0
+        self.addSlewRun(m, runCoords, runPeakMm, colorMap)
+
+    def addSlewRun(self, m, runCoords, runPeakMm, colorMap):
+        if len(runCoords) < 2:
+            return
+        tooltip = f"{self.lan.get('mapSlewSection', 'Slew section')}: {runPeakMm:.0f} mm"
+        folium.PolyLine(runCoords, color=colorMap(runPeakMm), weight=SLEW_INDICATOR_WEIGHT,
+                        opacity=SLEW_INDICATOR_OPACITY, tooltip=tooltip).add_to(m)
+
+    def drawSpeedColoredAlignment(self, m, lxml, isDimmed=False):
         denseAlignment = lxml.get("denseAlignment")
         if not denseAlignment or len(denseAlignment) < 2:
             return
@@ -605,7 +696,9 @@ class MapWidget(QWidget):
             spdValues.append(float(sortedSp[idx]))
 
         if points and spdValues:
-            ColorLine(points, colors=spdValues, colormap=cmapBc, weight=3).add_to(m)
+            # An optimized overlay takes visual priority, so the speed coloured baseline steps back
+            ColorLine(points, colors=spdValues, colormap=cmapBc, weight=3,
+                      opacity=0.45 if isDimmed else 1.0).add_to(m)
 
     def renderMap(self, m):
         # Expose the JavaScript hooks that drive the crosshair in both directions
@@ -613,6 +706,7 @@ class MapWidget(QWidget):
             mapName=m.get_name(),
             webChannelSource=self.webChannelSource,
             lookupPoints=json.dumps(self.buildLookupPoints()),
+            slewLabels=json.dumps({"slew": self.lan.get("mapSlewTooltip", "Slew")}),
         )
         m.get_root().html.add_child(folium.Element(cursorScript))
 
@@ -626,8 +720,53 @@ class MapWidget(QWidget):
         if len(self.denseAlignment) < 2:
             return []
         step = max(1, len(self.denseAlignment) // MAX_LOOKUP_POINTS)
-        return [[float(p[0]), float(p[1]), float(p[2])]
-                for p in self.denseAlignment[::step]]
+        sampledPoints = self.denseAlignment[::step]
+
+        slewByStation = self.buildSlewLookup()
+        radiusByStation = self.buildRadiusLookup()
+        lookupPoints = []
+        for point in sampledPoints:
+            stationKm = float(point[0])
+            row = [stationKm, float(point[1]), float(point[2])]
+            row.append(slewByStation(stationKm))
+            row.extend(radiusByStation(stationKm))
+            lookupPoints.append(row)
+        return lookupPoints
+
+    # Interpolator over the optimizer's slew profile, returns None wherever no profile exists
+    def buildSlewLookup(self):
+        lxml = self.lxml or {}
+        stations = lxml.get("slewProfileStationKm")
+        offsets = lxml.get("slewProfileOffsetMm")
+        if stations is None or offsets is None or len(stations) < 2:
+            return lambda stationKm: None
+
+        stations = np.asarray(stations, dtype=float)
+        offsets = np.asarray(offsets, dtype=float)
+        order = np.argsort(stations)
+        stations, offsets = stations[order], offsets[order]
+
+        def lookup(stationKm):
+            if stationKm < stations[0] or stationKm > stations[-1]:
+                return None
+            return round(float(np.interp(stationKm, stations, offsets)), 1)
+        return lookup
+
+    # Original and optimized radius of the curve group covering a chainage, None outside every group
+    def buildRadiusLookup(self):
+        summary = (self.lxml or {}).get("optimizationSummary") or {}
+        groupRanges = [(g["startKm"], g["endKm"], g["radiusOldM"], g["radiusNewM"])
+                       for g in summary.get("groups", [])
+                       if g.get("radiusOldM") is not None and g.get("radiusNewM") is not None]
+        if not groupRanges:
+            return lambda stationKm: [None, None]
+
+        def lookup(stationKm):
+            for startKm, endKm, radiusOld, radiusNew in groupRanges:
+                if startKm <= stationKm <= endKm:
+                    return [round(float(radiusOld), 1), round(float(radiusNew), 1)]
+            return [None, None]
+        return lookup
 
     # The JavaScript hook only exists once the page has finished loading
     def onMapLoadFinished(self, isOk):

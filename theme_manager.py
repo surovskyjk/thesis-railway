@@ -42,6 +42,8 @@ LIGHT_TOKENS = {
     "accentDone": "#2e9e4f",
     "accentDoneBackground": "#dff3e4",
     "error": "#c0392b",
+    "destructiveBackground": "#fbe3e0",
+    "destructiveBorder": "#e0a49c",
 }
 
 # Colour tokens for the dark theme
@@ -61,6 +63,8 @@ DARK_TOKENS = {
     "accentDone": "#4cc46e",
     "accentDoneBackground": "#264d33",
     "error": "#e57373",
+    "destructiveBackground": "#4a2b28",
+    "destructiveBorder": "#7d4740",
 }
 
 
@@ -293,6 +297,14 @@ QToolButton[seriesToggle="true"]:!checked {{
 QToolButton[seriesToggle="true"]:!checked:hover {{
     background: {TOGGLE_OFF_HOVER};
     border: 1px solid {TOGGLE_OFF_BORDER};
+}}
+QToolButton[destructiveAction="true"]:enabled {{
+    background: {tokens['destructiveBackground']};
+    border: 1px solid {tokens['destructiveBorder']};
+}}
+QToolButton[destructiveAction="true"]:disabled {{
+    background: transparent;
+    border: 1px solid transparent;
 }}
 QPushButton[seriesToggle="true"]:checked {{
     background: {TOGGLE_ON_BACKGROUND};

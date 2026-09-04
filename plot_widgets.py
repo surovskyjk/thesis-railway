@@ -20,8 +20,8 @@ SERIES_STYLES = {
     "cantDef130": {"color": "#35b6c4", "width": 2, "dash": True},
     "cantDef150": {"color": "#b06fe0", "width": 2, "dash": True},
     "cantDefK": {"color": "#5b8ede", "width": 2, "dash": True},
-    "curvature": {"color": "#8a8a8a", "width": 2},
-    "curvatureNew": {"color": "#e09b3d", "width": 2},
+    "curvature": {"color": "#888888", "width": 2, "dash": True},
+    "curvatureNew": {"color": "#00b4d8", "width": 3},
     "cantPossibleNew": {"color": "#2e9e4f", "width": 2, "dash": True},
     "cDef100New": {"color": "#d64545", "width": 2, "dash": True},
     "cDef130New": {"color": "#0f8b8d", "width": 2, "dash": True},
@@ -32,6 +32,13 @@ SERIES_STYLES = {
     "speedLimits130": {"color": "#0f8b8d", "width": 2},
     "speedLimits150": {"color": "#8a4fd3", "width": 2},
     "speedLimitsK": {"color": "#4a7fd4", "width": 2},
+    "speedLimits100New": {"color": "#d64545", "width": 2, "dash": True},
+    "speedLimits130New": {"color": "#0f8b8d", "width": 2, "dash": True},
+    "speedLimits150New": {"color": "#8a4fd3", "width": 2, "dash": True},
+    "speedLimitsKNew": {"color": "#4a7fd4", "width": 2, "dash": True},
+    "slewPositive": {"color": "#e0703d", "width": 2},
+    "slewNegative": {"color": "#3d8fe0", "width": 2},
+    "slewThreshold": {"color": "#d64545", "width": 1, "dash": True},
     "profile": {"color": "#8a8a8a", "width": 2},
     "simulated": {"color": "#d19a66", "width": 2},
 }
@@ -554,6 +561,9 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
         position = event[0]
 
         for plotKey, plotItem in self.plotItems.items():
+            # A row currently taken out of the layout has no scene and must be skipped
+            if plotItem.scene() is None:
+                continue
             if not plotItem.sceneBoundingRect().contains(position):
                 continue
 
