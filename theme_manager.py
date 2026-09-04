@@ -31,6 +31,7 @@ LIGHT_TOKENS = {
     "base": "#ffffff",
     "alternateBase": "#e9e9ec",
     "text": "#1c1c1c",
+    "mutedText": "#5a5a5a",
     "disabledText": "#9a9a9a",
     "button": "#ececec",
     "highlight": "#2f6fb5",
@@ -52,6 +53,7 @@ DARK_TOKENS = {
     "base": "#1e1e1e",
     "alternateBase": "#333333",
     "text": "#e6e6e6",
+    "mutedText": "#b0b0b0",
     "disabledText": "#7a7a7a",
     "button": "#3a3a3a",
     "highlight": "#4a90d9",
@@ -200,6 +202,13 @@ class ThemeManager(QObject):
         palette.setColor(QPalette.ColorRole.Highlight, QColor(tokens["highlight"]))
         palette.setColor(QPalette.ColorRole.HighlightedText, QColor(tokens["highlightText"]))
         palette.setColor(QPalette.ColorRole.Link, QColor(tokens["highlight"]))
+
+        # Muted captions across the app are styled color: palette(mid), which Qt would otherwise
+        # leave at a near black default and render invisible on a dark card
+        palette.setColor(QPalette.ColorRole.Mid, QColor(tokens["mutedText"]))
+        palette.setColor(QPalette.ColorRole.Midlight, QColor(tokens["mutedText"]))
+        palette.setColor(QPalette.ColorRole.Dark, QColor(tokens["mutedText"]))
+        palette.setColor(QPalette.ColorRole.PlaceholderText, QColor(tokens["mutedText"]))
 
         disabled = QPalette.ColorGroup.Disabled
         palette.setColor(disabled, QPalette.ColorRole.Text, QColor(tokens["disabledText"]))
@@ -374,12 +383,34 @@ QListWidget, QTreeWidget, QTableWidget {{
     border: 1px solid {tokens['border']};
     gridline-color: {tokens['border']};
 }}
-QListWidget::item, QTreeWidget::item, QTreeView::item {{
+QListWidget::item, QTreeWidget::item, QTreeView::item,
+QTableWidget::item, QTableView::item {{
     padding: 2px;
     color: {tokens['text']};
 }}
+QGroupBox {{
+    color: {tokens['text']};
+    border: 1px solid {tokens['border']};
+    border-radius: 3px;
+    margin-top: 8px;
+    padding-top: 6px;
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    left: 8px;
+    padding: 0px 3px;
+    color: {tokens['text']};
+}}
+QCheckBox, QRadioButton {{
+    color: {tokens['text']};
+}}
+QTextBrowser, QPlainTextEdit, QTextEdit {{
+    background: {tokens['base']};
+    color: {tokens['text']};
+    border: 1px solid {tokens['border']};
+}}
 QListWidget::item:selected, QTreeWidget::item:selected, QTreeView::item:selected,
-QTableWidget::item:selected {{
+QTableWidget::item:selected, QTableView::item:selected {{
     background: {tokens['highlight']};
     color: {tokens['highlightText']};
 }}

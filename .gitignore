@@ -9,3 +9,9 @@ tests/
 # PyInstaller build artifacts
 build/
 dist/
+
+# Backup, autosave and recovery snapshots written at runtime
+*.bak
+*.coypu.bak
+*.autosave
+*.tmp

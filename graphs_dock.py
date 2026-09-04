@@ -16,30 +16,21 @@ GEOMETRY_SERIES = [
     ("cantDef130", "stationCantPossible", "cantDef130", "cant_def_130"),
     ("cantDef150", "stationCantPossible", "cantDef150", "cant_def_150"),
     ("cantDefK", "stationCantPossible", "cantDefK", "cant_def_K"),
-    ("cantPossibleNew", "stationCantPossibleNew", "cantPossibleNew", "cant_possible_new"),
-    ("cDef100New", "stationCantPossibleNew", "cDef100New", "cdef_100_new"),
-    ("cDef130New", "stationCantPossibleNew", "cDef130New", "cdef_130_new"),
-    ("cDef150New", "stationCantPossibleNew", "cDef150New", "cdef_150_new"),
-    ("cDefKNew", "stationCantPossibleNew", "cDefKNew", "cdef_K_new"),
 ]
 
-# Curvature curves drawn on the secondary right axis of the geometry plot
+# Curvature curves drawn on the secondary right axis, the muted baseline first then the active one
 CURVATURE_SERIES = [
+    ("curvatureBaseline", "stationHorizontalBaseline", "curvatureBaseline", "curvature_baseline"),
     ("curvature", "stationHorizontal", "curvature", "curvature"),
-    ("curvatureNew", "stationHorizontalNew", "curvatureNew", "curvature_new"),
 ]
 
-# Speed limit step curves drawn on the middle plot, baseline first then the optimized twins
+# Speed limit step curves drawn on the middle plot, always the active alignment only
 SPEED_SERIES = [
     ("speedLimits", "stationSpeedLimits", "speedLimits", "speed_lim"),
     ("speedLimits100", "stationSpeed100", "speedLimits100", "speed_lim_100"),
     ("speedLimits130", "stationSpeed130", "speedLimits130", "speed_lim_130"),
     ("speedLimits150", "stationSpeed150", "speedLimits150", "speed_lim_150"),
     ("speedLimitsK", "stationSpeedK", "speedLimitsK", "speed_lim_K"),
-    ("speedLimits100New", "stationSpeed100New", "speedLimits100New", "speed_lim_100_new"),
-    ("speedLimits130New", "stationSpeed130New", "speedLimits130New", "speed_lim_130_new"),
-    ("speedLimits150New", "stationSpeed150New", "speedLimits150New", "speed_lim_150_new"),
-    ("speedLimitsKNew", "stationSpeedKNew", "speedLimitsKNew", "speed_lim_K_new"),
 ]
 
 # Chainage and offset arrays feeding the lateral slew profile plot
@@ -108,12 +99,23 @@ class PerformanceGraphsWidget(CoypuPlotWidget):
         self.plotGeometry.setLabel("left", lan.get("cant", "Cant"))
         self.plotGeometry.setLabel("right", lan.get("curvature", "Curvature"))
         self.plotGeometry.setLabel("bottom", lan.get("station", "Chainage"))
-        self.plotSpeed.setLabel("left", lan.get("speed_lim", "Speed"))
+        self.plotSpeed.setLabel("left", self.speedAxisLabel())
         self.plotSpeed.setLabel("bottom", lan.get("station", "Chainage"))
         self.plotSlew.setLabel("left", lan.get("slewAxisLabel", "Lateral slew [mm]"))
         self.plotSlew.setLabel("bottom", lan.get("station", "Chainage"))
 
         self.retranslateMenus(lan)
+
+    # Speed axis caption in whichever unit system is active
+    def speedAxisLabel(self):
+        base = self.lan.get("speedLimBase", "Speed limit")
+        return f"{base} [{self.speedUnitLabel()}]"
+
+    # Re-label the axes and redraw the speed curves after the unit toggle flipped
+    def applyUnitSystem(self, useKmh, dataStorage, visibility=None):
+        self.setUnitSystem(useKmh)
+        self.plotSpeed.setLabel("left", self.speedAxisLabel())
+        self.updateSpeedData(dataStorage, visibility)
 
     # Replace the geometry curves from the LandXML dictionary
     def updateGeometryData(self, lxml, visibility=None):
@@ -169,13 +171,15 @@ class PerformanceGraphsWidget(CoypuPlotWidget):
 
         visibility = visibility or {}
 
-        # Speed profile chainage arrays are already stored in kilometres
+        # Speed profile chainage arrays are already stored in kilometres, the limits in km/h
+        limitFactor = 1.0 if self.useKmh else 1.0 / 3.6
         for seriesKey, stationKey, valueKey, labelKey in SPEED_SERIES:
             stations = dataStorage.get(stationKey)
             speeds = dataStorage.get(valueKey)
             if not (self.hasData(stations) and self.hasData(speeds)):
                 continue
-            self.setSeriesData("speed", seriesKey, stations, speeds,
+            self.setSeriesData("speed", seriesKey, stations,
+                               np.asarray(speeds, dtype=float) * limitFactor,
                                name=self.lan.get(labelKey, labelKey), step=True, symbol="s",
                                isVisible=visibility.get(seriesKey, True))
 
@@ -191,9 +195,9 @@ class PerformanceGraphsWidget(CoypuPlotWidget):
             self.setSeriesData(
                 "speed", f"simulated{vehicleIndex}",
                 np.asarray(simulatedStations, dtype=float) / 1000.0,
-                np.asarray(simulatedSpeeds, dtype=float) * 3.6,
+                np.asarray(simulatedSpeeds, dtype=float) * self.displaySpeedFactor(),
                 styleKey="simulated",
-                name=f"{self.lan.get('speedKmh', 'Speed')} V{vehicleIndex + 1}")
+                name=f"{self.lan.get('speedBase', 'Speed')} V{vehicleIndex + 1}")
 
         self.applyFullSpeedRange()
 
@@ -306,7 +310,8 @@ class PerformanceGraphsWidget(CoypuPlotWidget):
                                  left=np.nan, right=np.nan))
         if np.isnan(slewMm):
             return
-        self.readoutLabel.setText(f"{value:.3f} km | {self.lan.get('slewShort', 'dy')} {slewMm:+.1f} mm")
+        self.readoutLabel.setText(
+            f"{self.formatChainage(value)} | {self.lan.get('slewShort', 'dy')} {slewMm:+.1f} mm")
 
     # Guard used before touching any optional array
     def hasData(self, values):

@@ -1,5 +1,8 @@
 import io
 import json
+import os
+from urllib.parse import quote
+
 import folium
 from folium import DivIcon
 from folium.features import ColorLine
@@ -19,17 +22,51 @@ from ribbon import SERIES_TOGGLE_PROPERTY
 # Maximum number of alignment samples handed to the page for nearest point lookup
 MAX_LOOKUP_POINTS = 2000
 
+# The imported axis is kept only as a faint reference under the active one
+BASELINE_ALIGNMENT_COLOR = "#888888"
+BASELINE_ALIGNMENT_OPACITY = 0.6
+BASELINE_ALIGNMENT_DASH = "6,6"
+
 # Width and opacity of the heat line marking the sections that actually moved
 SLEW_INDICATOR_WEIGHT = 7
 SLEW_INDICATOR_OPACITY = 0.55
 
 # Base maps offered by the overlay selector, the value is stored in currentBaseMap
 BASEMAP_CHOICES = [
-    ("positron", "mapPositron", "CartoDB Positron"),
+    ("positron", "mapPositron", "CartoDB Voyager"),
     ("osm", "mapOSM", "OpenStreetMap"),
     ("cuzk", "mapCUZK", "CUZK orthophoto"),
     ("cartodbDark", "mapCartoDark", "CartoDB Dark"),
 ]
+
+# Explicit public raster endpoints, folium's friendly names resolve to the watermarked hosts
+CARTO_ATTRIBUTION = ('&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> '
+                     'contributors &copy; <a href="https://carto.com/attributions">CARTO</a>')
+OSM_ATTRIBUTION = ('&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> '
+                   'contributors')
+
+# Tile template, attribution and the deepest zoom the provider actually ships, per base map
+BASEMAP_TILE_SOURCES = {
+    "positron": ("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
+                 CARTO_ATTRIBUTION, 20),
+    "cartodbDark": ("https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}{r}.png",
+                    CARTO_ATTRIBUTION, 20),
+    "osm": ("https://tile.openstreetmap.org/{z}/{x}/{y}.png", OSM_ATTRIBUTION, 19),
+}
+
+# Base map used when a chosen one has no tile definition
+FALLBACK_BASEMAP = "osm"
+
+# Zoom bounds of the viewport, deeper than any provider ships so slews stay inspectable
+MAP_MAX_ZOOM = 22
+MAP_MIN_ZOOM = 3
+
+# Deepest zoom the OpenRailwayMap overlay renders natively
+RAIL_OVERLAY_NATIVE_ZOOM = 19
+
+# Optional user supplied basemap key, read from the settings first and the environment second
+BASEMAP_API_KEY_SETTING = "mapBasemapApiKey"
+BASEMAP_API_KEY_ENVIRONMENT = "COYPU_MAP_API_KEY"
 
 # Alignment rendering styles offered by the style selector
 DRAW_MODE_SINGLE = "single"
@@ -54,7 +91,7 @@ CURSOR_SCRIPT_TEMPLATE = """
 window.coypuCursorMarker = null;
 window.coypuBridge = null;
 window.coypuPoints = {lookupPoints};
-window.coypuLabels = {slewLabels};
+window.coypuLabels = {tooltipLabels};
 window.coypuTooltip = null;
 window.coypuLastSent = 0;
 
@@ -69,10 +106,8 @@ window.coypuHideTooltip = function () {{
     if (window.coypuTooltip !== null) {{ window.coypuTooltip.style.display = 'none'; }}
 }};
 
-// Show chainage, lateral slew and the radius change of the curve group under the cursor
+// Show element type, radius, length, chainage and any lateral slew under the cursor
 window.coypuUpdateTooltip = function (event, point) {{
-    if (point.length < 4 || point[3] === null) {{ window.coypuHideTooltip(); return; }}
-
     if (window.coypuTooltip === null) {{
         window.coypuTooltip = document.createElement('div');
         window.coypuTooltip.style.cssText = 'position:fixed;z-index:10000;pointer-events:none;' +
@@ -81,13 +116,27 @@ window.coypuUpdateTooltip = function (event, point) {{
         document.body.appendChild(window.coypuTooltip);
     }}
 
-    var text = window.coypuFormatChainage(point[0]) +
-               ' | ' + window.coypuLabels.slew + ': ' + point[3].toFixed(0) + ' mm';
-    if (point.length > 5 && point[4] !== null && point[5] !== null) {{
-        text += ' | R ' + point[4].toFixed(0) + ' \u2192 ' + point[5].toFixed(0) + ' m';
+    var parts = [];
+    if (point.length > 6 && point[6]) {{
+        parts.push(window.coypuLabels.type + ': ' + point[6]);
+    }}
+    if (point.length > 4 && point[4] !== null && isFinite(point[4])) {{
+        var radiusText = point[4].toFixed(0);
+        if (point.length > 5 && point[5] !== null && isFinite(point[5]) &&
+            Math.abs(point[5] - point[4]) > 0.5) {{
+            radiusText += ' \u2192 ' + point[5].toFixed(0);
+        }}
+        parts.push(window.coypuLabels.radius + ' ' + radiusText + ' m');
+    }}
+    if (point.length > 7 && point[7] !== null) {{
+        parts.push(window.coypuLabels.length + ' ' + point[7].toFixed(1) + ' m');
+    }}
+    parts.push(window.coypuLabels.chainage + ' ' + window.coypuFormatChainage(point[0]));
+    if (point.length > 3 && point[3] !== null && Math.abs(point[3]) >= 1.0) {{
+        parts.push(window.coypuLabels.slew + ': ' + point[3].toFixed(0) + ' mm');
     }}
 
-    window.coypuTooltip.textContent = text;
+    window.coypuTooltip.textContent = parts.join(' | ');
     window.coypuTooltip.style.display = 'block';
     window.coypuTooltip.style.left = (event.originalEvent.clientX + 14) + 'px';
     window.coypuTooltip.style.top = (event.originalEvent.clientY + 14) + 'px';
@@ -140,12 +189,32 @@ if (typeof qt !== 'undefined' && qt.webChannelTransport) {{
 {mapName}.on('mousemove', function (event) {{ window.coypuReportNearest(event); }});
 {mapName}.on('mouseout', function () {{ window.coypuHideTooltip(); }});
 
-// Report the camera back to Qt so the viewport survives a project save and reload
-{mapName}.on('moveend', function () {{
+// Report the camera back to Qt so the viewport survives a rebuild, a save and a reload
+window.coypuReportView = function () {{
     if (!window.coypuBridge) {{ return; }}
     var center = {mapName}.getCenter();
     window.coypuBridge.reportViewState(center.lat, center.lng, {mapName}.getZoom());
-}});
+}};
+
+{mapName}.on('moveend', window.coypuReportView);
+
+// moveend never fires for the initial programmatic view, so the first toggle would otherwise
+// find no stored camera and silently recentre the map
+{mapName}.whenReady(function () {{ window.setTimeout(window.coypuReportView, 0); }});
+
+// Frame the whole alignment without rebuilding the page
+window.coypuFitBounds = function (south, west, north, east) {{
+    {mapName}.fitBounds([[south, west], [north, east]], {{padding: [24, 24]}});
+}};
+
+// Opacity and visibility of the railway overlay, changed in place instead of by a full redraw
+window.coypuSetRailOpacity = function (opacity) {{
+    {mapName}.eachLayer(function (layer) {{
+        if (layer.options && layer.options.className === 'coypuRailOverlay') {{
+            layer.setOpacity(opacity);
+        }}
+    }});
+}};
 </script>
 """
 
@@ -162,6 +231,9 @@ class MapControlsPanel(QFrame):
 
     # Emitted when the station marker toggle is switched
     stationsToggled = Signal(bool)
+
+    # Emitted when the user asks to frame the whole alignment
+    fitTrackRequested = Signal()
 
     def __init__(self, lan, parent=None):
         super().__init__(parent)
@@ -215,6 +287,11 @@ class MapControlsPanel(QFrame):
         self.stationsButton.setProperty(SERIES_TOGGLE_PROPERTY, True)
         self.stationsButton.toggled.connect(self.stationsToggled)
         panelLayout.addWidget(self.stationsButton)
+
+        self.fitTrackButton = QPushButton()
+        self.fitTrackButton.setIcon(icons.makeIcon("resetView"))
+        self.fitTrackButton.clicked.connect(self.fitTrackRequested)
+        panelLayout.addWidget(self.fitTrackButton)
 
         self.currentDrawMode = DRAW_MODE_SPEED
         self.updateTexts(self.lan)
@@ -283,11 +360,14 @@ class MapControlsPanel(QFrame):
         self.railOpacitySlider.setToolTip(self.lan.get("mapRailOpacity", "Overlay transparency"))
         self.stationsButton.setText(self.lan.get("mapShowStations", "Stations"))
         self.alignmentStyleCombo.setToolTip(self.lan.get("mapAlignmentStyle", "Alignment style"))
+        self.fitTrackButton.setText(self.lan.get("mapFitTrack", "Fit"))
+        self.fitTrackButton.setToolTip(self.lan.get("mapFitTrackTip", "Zoom to track extent"))
 
     # Rebuild the icons so they follow the active theme colours
     def applyTheme(self, isDark, tokens=None):
         self.railOverlayButton.setIcon(icons.makeIcon("railway"))
         self.stationsButton.setIcon(icons.makeIcon("station"))
+        self.fitTrackButton.setIcon(icons.makeIcon("resetView"))
 
         background = "rgba(43, 43, 43, 235)" if isDark else "rgba(255, 255, 255, 235)"
         border = tokens["border"] if tokens else "#999999"
@@ -337,6 +417,12 @@ class MapWidget(QWidget):
         self.wasDarkTheme = False
         self.lan = lan or {}
         self.themeTokens = None
+        # Only read for the optional basemap key, never written back
+        self.settingsData = {}
+        # Active unit system, km/h when true and m/s when false
+        self.useKmh = False
+        # Bounding box of the drawn alignment, the target of the fit view control
+        self.trackBounds = None
         # Live Leaflet camera, restored from a project file or reported back by the page
         self.viewCenterLat = None
         self.viewCenterLon = None
@@ -349,6 +435,7 @@ class MapWidget(QWidget):
         self.controlsPanel.railOverlayChanged.connect(self.setRailOverlay)
         self.controlsPanel.drawModeChanged.connect(self.setDrawMode)
         self.controlsPanel.stationsToggled.connect(self.setStationsVisible)
+        self.controlsPanel.fitTrackRequested.connect(self.fitToTrackExtent)
         self.controlsPanel.applyTheme(False)
 
         # The bridge lets the page report the chainage under the mouse back to Qt
@@ -394,9 +481,18 @@ class MapWidget(QWidget):
 
     # Enable or disable the OpenRailwayMap overlay and set its transparency
     def setRailOverlay(self, isEnabled, opacity=None):
+        wasEnabled = self.railOverlayEnabled
         self.railOverlayEnabled = bool(isEnabled)
+        isOpacityOnly = wasEnabled and self.railOverlayEnabled and opacity is not None
         if opacity is not None:
             self.railOverlayOpacity = float(opacity)
+
+        # Dragging the opacity slider must not cost a full page rebuild and a tile refetch
+        if isOpacityOnly and self.isMapReady:
+            self.mapBrowser.page().runJavaScript(
+                f"if (window.coypuSetRailOpacity) {{ window.coypuSetRailOpacity({self.railOverlayOpacity}); }}")
+            return
+
         self.redraw()
 
     # Show or hide the station and stop markers on the map
@@ -431,9 +527,40 @@ class MapWidget(QWidget):
     # Build the folium map on the saved camera when there is one, otherwise on the computed view
     def buildMap(self, centerLat, centerLon, zoomStart):
         if self.viewCenterLat is not None and self.viewZoom is not None:
-            return folium.Map(location=[self.viewCenterLat, self.viewCenterLon],
-                              zoom_start=self.viewZoom, tiles=None)
-        return folium.Map(location=[centerLat, centerLon], zoom_start=zoomStart, tiles=None)
+            centerLat, centerLon, zoomStart = self.viewCenterLat, self.viewCenterLon, self.viewZoom
+        builtMap = folium.Map(location=[centerLat, centerLon], zoom_start=zoomStart, tiles=None)
+        # With tiles=None folium drops its own zoom arguments, so Leaflet is configured directly
+        builtMap.options["maxZoom"] = MAP_MAX_ZOOM
+        builtMap.options["minZoom"] = MAP_MIN_ZOOM
+        return builtMap
+
+    # Frame the whole alignment, driven from the floating toolbar without rebuilding the page
+    def fitToTrackExtent(self):
+        if not self.trackBounds:
+            return
+        south, west, north, east = self.trackBounds
+        if not self.isMapReady:
+            return
+        self.mapBrowser.page().runJavaScript(
+            f"if (window.coypuFitBounds) {{ window.coypuFitBounds({south}, {west}, {north}, {east}); }}")
+
+    # Bounding box of everything drawn, refreshed whenever the alignment is redrawn
+    def rememberTrackBounds(self, allPoints):
+        if len(allPoints) < 2:
+            self.trackBounds = None
+            return
+        latitudes = [point[0] for point in allPoints]
+        longitudes = [point[1] for point in allPoints]
+        self.trackBounds = (min(latitudes), min(longitudes), max(latitudes), max(longitudes))
+
+    # Follow the ribbon units toggle, the colour scale and its legend both carry a unit.
+    # The caller redraws, so a unit switch never costs two page rebuilds in a row
+    def setUnitSystem(self, useKmh):
+        self.useKmh = bool(useKmh)
+
+    # Hand the widget the live settings so an optional basemap key can be picked up
+    def setSettingsData(self, settingsData):
+        self.settingsData = settingsData or {}
 
     # Store the scheduled stops so they can be placed along the alignment
     def setStations(self, stations):
@@ -474,6 +601,20 @@ class MapWidget(QWidget):
         self.themeTokens = tokens
         self.controlsPanel.applyTheme(isDark, tokens)
 
+    # Optional tile key, never stored in source, taken from the project settings or the environment
+    def resolveBasemapApiKey(self):
+        settingsKey = (self.settingsData or {}).get(BASEMAP_API_KEY_SETTING, "")
+        return str(settingsKey or os.environ.get(BASEMAP_API_KEY_ENVIRONMENT, "")).strip()
+
+    # Tile template for the active base map, with an optional user key appended as a query parameter
+    def basemapTileUrl(self, baseMapKey):
+        tileUrl, attribution, nativeZoom = BASEMAP_TILE_SOURCES.get(
+            baseMapKey, BASEMAP_TILE_SOURCES[FALLBACK_BASEMAP])
+        apiKey = self.resolveBasemapApiKey()
+        if apiKey:
+            tileUrl = f"{tileUrl}{'&' if '?' in tileUrl else '?'}api_key={quote(apiKey, safe='')}"
+        return tileUrl, attribution, nativeZoom
+
     def addTiles(self, m):
         if self.currentBaseMap == "cuzk":
             folium.WmsTileLayer(
@@ -485,12 +626,19 @@ class MapWidget(QWidget):
                 attr="© ČÚZK",
                 overlay=False
             ).add_to(m)
-        elif self.currentBaseMap == "osm":
-            folium.TileLayer("OpenStreetMap").add_to(m)
-        elif self.currentBaseMap == "cartodbDark":
-            folium.TileLayer("CartoDB dark_matter").add_to(m)
         else:
-            folium.TileLayer("CartoDB Positron").add_to(m)
+            # Explicit endpoints, so no basemap ever falls back to a key gated host
+            tileUrl, attribution, nativeZoom = self.basemapTileUrl(self.currentBaseMap)
+            folium.TileLayer(
+                tiles=tileUrl,
+                attr=attribution,
+                name=self.currentBaseMap,
+                subdomains="abcd",
+                overlay=False,
+                control=False,
+                max_zoom=MAP_MAX_ZOOM,
+                max_native_zoom=nativeZoom
+            ).add_to(m)
 
         # The railway overlay is independent of the chosen base map
         if self.railOverlayEnabled:
@@ -498,15 +646,23 @@ class MapWidget(QWidget):
                 tiles='https://{s}.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png',
                 attr='Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> | Style: &copy; <a href="https://www.openrailwaymap.org/">OpenRailwayMap</a>',
                 name='OpenRailwayMap',
+                className='coypuRailOverlay',
                 subdomains='abc',
                 overlay=True,
                 transparent=True,
                 opacity=self.railOverlayOpacity,
-                max_zoom=19,
+                max_zoom=MAP_MAX_ZOOM,
+                max_native_zoom=RAIL_OVERLAY_NATIVE_ZOOM,
                 show=True
             ).add_to(m)
 
     # Place one interactive marker per imported station or stop
+    # Speed colour scale caption, translated and following the active unit system
+    def speedLegendCaption(self):
+        base = self.lan.get("mapSpeedLegendBase", "Speed")
+        unit = self.lan.get("unitKmh", "km/h") if self.useKmh else self.lan.get("unitMs", "m/s")
+        return f"{base} [{unit}]"
+
     def addStationMarkers(self, m):
         if not self.showStations or not self.stationList or len(self.denseAlignment) < 2:
             return
@@ -540,15 +696,16 @@ class MapWidget(QWidget):
         if len(alignment) < 2:
             self.resetMap()
             return
-        
-        # Bounds
-        optimizedAlignment = (lxml or {}).get("alignmentCoordinatesNew") or []
+
+        # The argument is always the active axis, the imported one survives only for comparison
+        baselineAlignment = (lxml or {}).get("alignmentCoordinatesBaseline") or []
         allPoints = [pt for segmentData in alignment for pt in segmentData[0]]
-        allPoints += [pt for segmentData in optimizedAlignment for pt in segmentData[0]]
+        allPoints += [pt for segmentData in baselineAlignment for pt in segmentData[0]]
         if not allPoints:
             self.resetMap()
             return
 
+        self.rememberTrackBounds(allPoints)
         lats = [pt[0] for pt in allPoints]
         lons = [pt[1] for pt in allPoints]
         centerLat = (min(lats) + max(lats)) / 2
@@ -556,39 +713,43 @@ class MapWidget(QWidget):
         m = self.buildMap(centerLat, centerLon, 11)
         self.addTiles(m)
 
-        if self.drawMode == "single":
-            allCoords = [segmentData[0] for segmentData in alignment]
-            baselineColor = "#888888" if optimizedAlignment else "red"
-            baselineTooltip = self.lan.get("mapBaselineAlignment", "Baseline alignment") if optimizedAlignment else "Alignment"
-            folium.PolyLine(allCoords, color=baselineColor, weight=2.5, opacity=1, tooltip=baselineTooltip).add_to(m)
-        elif self.drawMode == "type":
-            typeColors = {"Line": "blue", "Spiral": "orange", "Curve": "purple"}
-            for segmentCoords, segmentType in alignment:
-                color = "#888888" if optimizedAlignment else typeColors.get(segmentType, "gray")
-                folium.PolyLine(segmentCoords, color=color, weight=2.5, opacity=1, tooltip=segmentType).add_to(m)
-        elif self.drawMode == "speed" and lxml:
-            self.drawSpeedColoredAlignment(m, lxml, isDimmed=bool(optimizedAlignment))
-        else:
-            allCoords = [segmentData[0] for segmentData in alignment]
-            folium.PolyLine(allCoords, color="red", weight=2.5, opacity=1, tooltip="Alignment").add_to(m)
-
-        if optimizedAlignment:
+        # The dashed baseline goes down first so the styled active axis always reads on top
+        if baselineAlignment:
+            self.drawBaselineOverlay(m, baselineAlignment)
             self.drawSlewIndicators(m, lxml or {})
-            self.drawOptimizedOverlay(m, optimizedAlignment)
+
+        self.drawStyledAlignment(m, alignment, lxml)
 
         self.addStationMarkers(m)
         self.renderMap(m)
 
-    # Draws the optimizer's revised axis in the theme accent colour on top of the baseline
-    def drawOptimizedOverlay(self, m, optimizedAlignment):
-        accentColor = (self.themeTokens or {}).get("highlight", "#2f6fb5")
-        tooltip = self.lan.get("mapNewAlignment", "New Alignment")
-        newCoords = [segmentData[0] for segmentData in optimizedAlignment]
-        folium.PolyLine(newCoords, color=accentColor, weight=3.5, opacity=1, tooltip=tooltip).add_to(m)
+    # The active axis keeps every rendering style, whether or not it has been optimized
+    def drawStyledAlignment(self, m, alignment, lxml):
+        if self.drawMode == DRAW_MODE_TYPE:
+            typeColors = {"Line": "blue", "Spiral": "orange", "Curve": "purple"}
+            for segmentCoords, segmentType in alignment:
+                folium.PolyLine(segmentCoords, color=typeColors.get(segmentType, "gray"),
+                                weight=3, opacity=1, tooltip=segmentType).add_to(m)
+            return
+
+        if self.drawMode == DRAW_MODE_SPEED and lxml:
+            self.drawSpeedColoredAlignment(m, lxml)
+            return
+
+        allCoords = [segmentData[0] for segmentData in alignment]
+        folium.PolyLine(allCoords, color="red", weight=3, opacity=1,
+                        tooltip=self.lan.get("mapNewAlignment", "Alignment")).add_to(m)
+
+    # The imported axis, a subtle dashed guide the active one is compared against
+    def drawBaselineOverlay(self, m, baselineAlignment):
+        baselineCoords = [segmentData[0] for segmentData in baselineAlignment]
+        folium.PolyLine(baselineCoords, color=BASELINE_ALIGNMENT_COLOR, weight=2,
+                        opacity=BASELINE_ALIGNMENT_OPACITY, dash_array=BASELINE_ALIGNMENT_DASH,
+                        tooltip=self.lan.get("mapBaselineAlignment", "Baseline alignment")).add_to(m)
 
     # Heat line over every stretch whose lateral shift clears the visibility threshold
     def drawSlewIndicators(self, m, lxml):
-        denseOptimized = lxml.get("denseAlignmentNew") or []
+        denseOptimized = lxml.get("denseAlignment") or []
         stations = lxml.get("slewProfileStationKm")
         offsets = lxml.get("slewProfileOffsetMm")
         if len(denseOptimized) < 2 or stations is None or offsets is None or len(stations) < 2:
@@ -629,7 +790,7 @@ class MapWidget(QWidget):
         folium.PolyLine(runCoords, color=colorMap(runPeakMm), weight=SLEW_INDICATOR_WEIGHT,
                         opacity=SLEW_INDICATOR_OPACITY, tooltip=tooltip).add_to(m)
 
-    def drawSpeedColoredAlignment(self, m, lxml, isDimmed=False):
+    def drawSpeedColoredAlignment(self, m, lxml):
         denseAlignment = lxml.get("denseAlignment")
         if not denseAlignment or len(denseAlignment) < 2:
             return
@@ -659,6 +820,10 @@ class MapWidget(QWidget):
         # Drop NaN / zero entries (geometry engine initialises arrays to 0)
         valid = np.isfinite(speeds) & np.isfinite(stations) & (speeds > 0)
         speeds, stations = speeds[valid], stations[valid]
+
+        # Stored limits are km/h, the scale and its legend show whichever unit is active
+        if not self.useKmh:
+            speeds = speeds / 3.6
         if len(speeds) == 0:
             allCoords = [seg[0] for seg in self.alignment]
             folium.PolyLine(allCoords, color="gray", weight=2.5, opacity=0.6,
@@ -676,7 +841,7 @@ class MapWidget(QWidget):
             ['#d73027', '#fee08b', '#1a9850'],
             vmin=minSpd,
             vmax=maxSpd,
-            caption='Speed [km/h]',
+            caption=self.speedLegendCaption(),
         )
         cmapBc.add_to(m)
 
@@ -698,7 +863,7 @@ class MapWidget(QWidget):
         if points and spdValues:
             # An optimized overlay takes visual priority, so the speed coloured baseline steps back
             ColorLine(points, colors=spdValues, colormap=cmapBc, weight=3,
-                      opacity=0.45 if isDimmed else 1.0).add_to(m)
+                      opacity=1.0).add_to(m)
 
     def renderMap(self, m):
         # Expose the JavaScript hooks that drive the crosshair in both directions
@@ -706,7 +871,13 @@ class MapWidget(QWidget):
             mapName=m.get_name(),
             webChannelSource=self.webChannelSource,
             lookupPoints=json.dumps(self.buildLookupPoints()),
-            slewLabels=json.dumps({"slew": self.lan.get("mapSlewTooltip", "Slew")}),
+            tooltipLabels=json.dumps({
+                "slew": self.lan.get("mapSlewTooltip", "Slew"),
+                "type": self.lan.get("mapTipType", "Element"),
+                "radius": self.lan.get("mapTipRadius", "R"),
+                "length": self.lan.get("mapTipLength", "L"),
+                "chainage": self.lan.get("mapTipChainage", "at"),
+            }),
         )
         m.get_root().html.add_child(folium.Element(cursorScript))
 
@@ -724,14 +895,42 @@ class MapWidget(QWidget):
 
         slewByStation = self.buildSlewLookup()
         radiusByStation = self.buildRadiusLookup()
+        elementByStation = self.buildElementLookup()
         lookupPoints = []
         for point in sampledPoints:
             stationKm = float(point[0])
             row = [stationKm, float(point[1]), float(point[2])]
             row.append(slewByStation(stationKm))
             row.extend(radiusByStation(stationKm))
+            row.extend(elementByStation(stationKm))
             lookupPoints.append(row)
         return lookupPoints
+
+    # Element type caption and length at a chainage, for the hover inspector
+    def buildElementLookup(self):
+        lxml = self.lxml or {}
+        stations = np.asarray(lxml.get("stationHorizontal", []), dtype=float)
+        elementTypes = list(lxml.get("geometryType", []))
+        if stations.size < 2 or len(elementTypes) != stations.size:
+            return lambda stationKm: [None, None]
+
+        typeCaptions = {"Line": self.lan.get("elemLine", "Straight"),
+                        "Spiral": self.lan.get("elemSpiral", "Spiral"),
+                        "Curve": self.lan.get("elemCurve", "Curve")}
+
+        # Elements are stored as start and end pairs, so one element spans two array entries
+        starts = stations[::2]
+        ends = stations[1::2]
+        captions = [typeCaptions.get(str(elementTypes[index * 2]), str(elementTypes[index * 2]))
+                    for index in range(len(starts))]
+
+        def lookup(stationKm):
+            index = int(np.searchsorted(starts, stationKm, side="right") - 1)
+            if index < 0 or index >= len(starts):
+                return [None, None]
+            return [captions[index], float((ends[index] - starts[index]) * 1000.0)]
+
+        return lookup
 
     # Interpolator over the optimizer's slew profile, returns None wherever no profile exists
     def buildSlewLookup(self):

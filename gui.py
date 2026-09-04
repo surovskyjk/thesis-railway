@@ -1,5 +1,5 @@
 # PySide6 imports
-from PySide6.QtCore import QSettings, QSize, Qt, QTimer, QUrl, QEvent
+from PySide6.QtCore import QSettings, QSize, Qt, QTimer, QUrl, QEvent, Signal
 from PySide6.QtWidgets import (QTabWidget, QApplication, QMainWindow, QPushButton, QWidget,
                                 QHBoxLayout, QVBoxLayout, QLabel, QPlainTextEdit, QFileDialog,
                                 QSplitter, QMessageBox, QStyle, QToolBar, QMenu, QStackedWidget,
@@ -144,12 +144,7 @@ SERIES_SHORT_KEYS = {
     "toggleCantDef150Action": "shortSeriesCantDef150",
     "toggleCantDefKAction": "shortSeriesCantDefK",
     "toggleCurvatureAction": "shortSeriesCurvature",
-    "toggleCurvatureNewAction": "shortSeriesCurvatureNew",
-    "toggleCantPossibleNewAction": "shortSeriesCantPossibleNew",
-    "toggleCDef100NewAction": "shortSeriesCDef100New",
-    "toggleCDef130NewAction": "shortSeriesCDef130New",
-    "toggleCDef150NewAction": "shortSeriesCDef150New",
-    "toggleCDefKNewAction": "shortSeriesCDefKNew",
+    "toggleCurvatureBaselineAction": "shortSeriesCurvatureBaseline",
     "toggleSpeedAction": "shortSeriesSpeed",
     "toggleSpeed100Action": "shortSeriesSpeed100",
     "toggleSpeed130Action": "shortSeriesSpeed130",
@@ -162,7 +157,17 @@ SERIES_SHORT_KEYS = {
     "toggleKinematicsForcesAction": "shortSeriesForces",
 }
 
-# Design speed profiles the optimizer mirrors into New suffixed result arrays
+# Geometry arrays kept as a muted baseline once an optimization moves the active alignment
+BASELINE_COMPARISON_KEYS = ("stationHorizontal", "curvature", "alignmentCoordinates")
+
+# Suffix marking a baseline copy, never cleared by a recalculation
+BASELINE_KEY_SUFFIX = "Baseline"
+
+# Optimizer provenance describing the geometry change itself, not a cant or speed result
+OPTIMIZATION_STATE_KEYS = ("optimizationSummary", "slewProfileStationKm", "slewProfileOffsetMm",
+                           "chainageMapBaselineKm", "chainageMapActiveKm")
+
+# Design speed profiles the geometry engine derives, cleared whenever the active geometry moves
 OPTIMIZED_PROFILE_SUFFIXES = ("100", "130", "150", "K")
 
 # Short text badges rendered as icons for the data series toggle actions
@@ -178,12 +183,7 @@ SERIES_BADGES = {
     "toggleCantDef150Action": "D+I150",
     "toggleCantDefKAction": "D+IK",
     "toggleCurvatureAction": "1/R",
-    "toggleCurvatureNewAction": "1/Rn",
-    "toggleCantPossibleNewAction": "Dn",
-    "toggleCDef100NewAction": "In100",
-    "toggleCDef130NewAction": "In130",
-    "toggleCDef150NewAction": "In150",
-    "toggleCDefKNewAction": "InK",
+    "toggleCurvatureBaselineAction": "1/Rb",
     "toggleSpeedAction": "v_lim",
     "toggleSpeed100Action": "V100",
     "toggleSpeed130Action": "V130",
@@ -198,6 +198,12 @@ SERIES_BADGES = {
 
 
 class MainWindow(QMainWindow):
+    # Emitted once a cant and speed design finished, whichever loop produced it
+    geometryCalculationFinished = Signal()
+
+    # Emitted once a vehicle kinematics run finished
+    vehicleCalculationFinished = Signal()
+
     def __init__(self):
         super().__init__()
 
@@ -257,11 +263,24 @@ class MainWindow(QMainWindow):
         self.baselineAlignmentCache = None
         self.slewReportWindow = None
 
+        # Reports and the statistics dock follow every calculation instead of waiting to be reopened
+        self.geometryCalculationFinished.connect(self.onCalculationFinished)
+        self.vehicleCalculationFinished.connect(self.onCalculationFinished)
+
+        # Set while a report is rebuilt in the background, so the central view is left alone
+        self.isReportRefreshSilent = False
+
         # Whichever geometry loop the user last ran, replayed against the optimized geometry
         self.lastCalculationMode = "design"
 
         # Lines behind the currently displayed geometry report, reused by every export format
         self.lastGeometryReportLines = []
+
+        # Vehicle whose report is on screen, so a recalculation can refresh the same one
+        self.lastVehicleReportIndex = None
+
+        # Batch variant currently pulled into the viewport, cleared by a revert or a new project
+        self.loadedBatchVariantId = None
 
         # Provenance for imported files and the folder based vehicle library
         self.sourceStack = source_stack.SourceStack()
@@ -524,6 +543,14 @@ class MainWindow(QMainWindow):
             lan.get("viewDashboard", "Variant comparison"), self)
         self.showDashboardAction.setCheckable(True)
         self.showDashboardAction.triggered.connect(self.showDashboardView)
+
+        # Pulls one finished batch variant back into the standard viewport tabs
+        self.batchVariantCombo = QComboBox()
+        self.batchVariantCombo.setMinimumWidth(180)
+        self.batchVariantCombo.setToolTip(lan.get("batchVariantSelector", "Batch variant"))
+        self.loadBatchVariantAction = QAction(lan.get("batchLoadVariant", "Load variant into viewport"), self)
+        self.loadBatchVariantAction.triggered.connect(self.loadSelectedBatchVariant)
+        self.refreshBatchVariantSelector()
         self.viewGroup.addAction(self.showDashboardAction)
 
         # Layout action, the tooltip spells out what the short caption hides
@@ -578,12 +605,7 @@ class MainWindow(QMainWindow):
             ("toggleCantDef150Action", "cant_def_150", self.toggleCantDef150Visibility),
             ("toggleCantDefKAction", "cant_def_K", self.toggleCantDefKVisibility),
             ("toggleCurvatureAction", "curvature", self.toggleCurvatureVisibility),
-            ("toggleCurvatureNewAction", "curvature_new", self.toggleCurvatureNewVisibility),
-            ("toggleCantPossibleNewAction", "cant_possible_new", self.toggleCantPossibleNewVisibility),
-            ("toggleCDef100NewAction", "cdef_100_new", self.toggleCDef100NewVisibility),
-            ("toggleCDef130NewAction", "cdef_130_new", self.toggleCDef130NewVisibility),
-            ("toggleCDef150NewAction", "cdef_150_new", self.toggleCDef150NewVisibility),
-            ("toggleCDefKNewAction", "cdef_K_new", self.toggleCDefKNewVisibility),
+            ("toggleCurvatureBaselineAction", "curvature_baseline", self.toggleCurvatureBaselineVisibility),
             ("toggleSpeedAction", "speed_lim", self.toggleSpeedVisibility),
             ("toggleSpeed100Action", "speed_lim_100", self.toggleSpeed100Visibility),
             ("toggleSpeed130Action", "speed_lim_130", self.toggleSpeed130Visibility),
@@ -638,15 +660,51 @@ class MainWindow(QMainWindow):
             self.toggleUnitsButton.setText(caption)
             self.toggleUnitsButton.setToolTip(tooltip)
 
-    # Refresh the button label and every plot that displays speed or distance whenever units change
+    # Refresh the button label and every view that displays a speed or a distance
     def onUnitsToggled(self, checked):
         self.updateUnitsActionLabel()
-        self.plotKinematics()
+        self.refreshUnitDependentViews()
+        self.markProjectModified()
         if getattr(self, "statusBarWidget", None) is not None:
             lan = self.translationManager.getLanguage(self.currentLanguage)
             stateText = lan.get("unitsKmhTip", "Units: km/h, km") if checked \
                 else lan.get("unitsMsTip", "Units: m/s, m")
             self.statusBarWidget.showMessage(stateText, SERIES_STATUS_TIMEOUT)
+
+    # True while the km/h and km unit system is selected
+    def isKmhUnits(self):
+        return self.toggleUnitsAction.isChecked()
+
+    # Caption of the active speed unit, shared by the reports and the map legend
+    def speedUnitLabel(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        return lan.get("unitKmh", "km/h") if self.isKmhUnits() else lan.get("unitMs", "m/s")
+
+    # Caption of the active distance unit
+    def distanceUnitLabel(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        return lan.get("unitKm", "km") if self.isKmhUnits() else lan.get("unitM", "m")
+
+    # Turn an internal km/h speed into the displayed unit
+    def convertSpeedForDisplay(self, speedKmh):
+        return float(speedKmh) if self.isKmhUnits() else float(speedKmh) / 3.6
+
+    # Every plot axis, table column, readout and report that carries a unit
+    def refreshUnitDependentViews(self):
+        useKmh = self.isKmhUnits()
+        self.graphsWidget.setUnitSystem(useKmh)
+        self.profileWidget.setUnitSystem(useKmh)
+        self.kinematicsWidget.setUnitSystem(useKmh)
+        self.graphsWidget.updateLabels(self.translationManager.getLanguage(self.currentLanguage))
+
+        self.plotKinematics()
+        self.plotCant()
+        self.plotSpeedLimits()
+        self.mapWidget.setUnitSystem(useKmh)
+        self.updateMapWithSpeeds()
+        self.refreshGeometryReport()
+        self.refreshVehicleReport()
+        self.refreshSlewReportWindow()
 
     # Give every ribbon action a generated vector icon or a short text badge
     def applyActionIcons(self):
@@ -676,6 +734,7 @@ class MainWindow(QMainWindow):
 
         # View 1 is the interactive alignment map
         self.mapWidget = MapWidget(self, self.translationManager.getLanguage(self.currentLanguage))
+        self.mapWidget.setSettingsData(self.dataStorage.get("settingsData", {}))
         self.centralStack.addWidget(self.mapWidget)
 
         # View 2 is the generated calculation report
@@ -900,6 +959,11 @@ class MainWindow(QMainWindow):
         centralGroup.addAction(self.showReportAction, shortKey="viewReport")
         centralGroup.addAction(self.showDashboardAction, shortKey="viewDashboard")
 
+        batchInspectorGroup = viewPage.addGroup(lan.get("batchVariantSelector", "Batch variant"),
+                                                "batchVariantSelector")
+        batchInspectorGroup.addWidget(self.batchVariantCombo)
+        batchInspectorGroup.addAction(self.loadBatchVariantAction, shortKey="batchLoadVariant")
+
         panelsGroup = viewPage.addGroup(lan.get("groupPanels", "Panels"), "groupPanels")
         panelShortKeys = ("shortPanelWorkflow", "shortPanelGraphs", "shortPanelProfile",
                           "shortPanelKinematics", "shortPanelTrackStats", "shortPanelLandxmlRaw",
@@ -920,9 +984,7 @@ class MainWindow(QMainWindow):
                               "toggleCDef130Action", "toggleCDef150Action", "toggleCDefKAction",
                               "toggleCantDef100Action", "toggleCantDef130Action",
                               "toggleCantDef150Action", "toggleCantDefKAction",
-                              "toggleCurvatureAction", "toggleCurvatureNewAction",
-                              "toggleCantPossibleNewAction", "toggleCDef100NewAction",
-                              "toggleCDef130NewAction", "toggleCDef150NewAction", "toggleCDefKNewAction"):
+                              "toggleCurvatureAction", "toggleCurvatureBaselineAction"):
             cantSeriesGroup.addAction(getattr(self, attributeName), isLarge=False,
                                       shortKey=SERIES_SHORT_KEYS[attributeName])
 
@@ -1030,8 +1092,13 @@ class MainWindow(QMainWindow):
         label = lan.get("statusChainage", "Chainage")
         if stationKm is None:
             self.statusChainageLabel.setText(f"{label}: -")
+            return
+
+        if self.isKmhUnits():
+            self.statusChainageLabel.setText(f"{label}: {stationKm:.3f} {self.distanceUnitLabel()}")
         else:
-            self.statusChainageLabel.setText(f"{label}: {stationKm:.3f} km")
+            self.statusChainageLabel.setText(
+                f"{label}: {stationKm * 1000.0:.1f} {self.distanceUnitLabel()}")
 
     # Render the core engine state in the status bar
     def setEngineStatus(self, text):
@@ -1134,6 +1201,9 @@ class MainWindow(QMainWindow):
 
     # Switch the central viewport to the report page
     def showReportView(self):
+        # A background refresh rebuilds the text without pulling the user away from their current view
+        if self.isReportRefreshSilent:
+            return
         self.centralStack.setCurrentIndex(VIEW_REPORT)
         self.showReportAction.setChecked(True)
 
@@ -1155,6 +1225,7 @@ class MainWindow(QMainWindow):
     # Push the current data into the linked track geometry and speed graphs
     def refreshGraphsDock(self):
         lxml = self.dataStorage.get("LandXML", {})
+        self.graphsWidget.setUnitSystem(self.isKmhUnits())
         self.graphsWidget.setStations(self.collectStations())
         self.graphsWidget.updateGeometryData(lxml, self.seriesVisibility())
         self.graphsWidget.updateSpeedData(self.dataStorage, self.seriesVisibility())
@@ -1165,10 +1236,37 @@ class MainWindow(QMainWindow):
         summary = self.dataStorage.get("LandXML", {}).get("optimizationSummary") or {}
         return summary.get("dMaxM")
 
+    # Everything that must follow a finished calculation, wired to both calculation signals
+    def onCalculationFinished(self):
+        self.refreshOptimizationImpact()
+        self.refreshGeometryReport()
+        self.refreshVehicleReport()
+        self.refreshTrackStatsDock()
+
+    # Rebuild the geometry report in place, but only once the user has actually opened it
+    def refreshGeometryReport(self):
+        if not self.lastGeometryReportLines:
+            return
+        self.isReportRefreshSilent = True
+        try:
+            self.generateGeometryReport()
+        finally:
+            self.isReportRefreshSilent = False
+
+    # Rebuild the vehicle report in place for whichever vehicle was last shown
+    def refreshVehicleReport(self):
+        if self.lastVehicleReportIndex is None:
+            return
+        self.isReportRefreshSilent = True
+        try:
+            self.generateVehicleReport(self.lastVehicleReportIndex)
+        finally:
+            self.isReportRefreshSilent = False
+
     # Recompute the Track Statistics dock from the current data storage
     def refreshTrackStatsDock(self):
         self.trackStatsWidget.updateStatistics(self.dataStorage, self.getVehicleName,
-                                               self.toggleUnitsAction.isChecked())
+                                               self.isKmhUnits())
 
     # Map every series toggle action onto the series key used by the plots
     def seriesVisibility(self):
@@ -1184,21 +1282,12 @@ class MainWindow(QMainWindow):
             "cantDef150": self.toggleCantDef150Action,
             "cantDefK": self.toggleCantDefKAction,
             "curvature": self.toggleCurvatureAction,
-            "curvatureNew": self.toggleCurvatureNewAction,
-            "cantPossibleNew": self.toggleCantPossibleNewAction,
-            "cDef100New": self.toggleCDef100NewAction,
-            "cDef130New": self.toggleCDef130NewAction,
-            "cDef150New": self.toggleCDef150NewAction,
-            "cDefKNew": self.toggleCDefKNewAction,
+            "curvatureBaseline": self.toggleCurvatureBaselineAction,
             "speedLimits": self.toggleSpeedAction,
             "speedLimits100": self.toggleSpeed100Action,
             "speedLimits130": self.toggleSpeed130Action,
             "speedLimits150": self.toggleSpeed150Action,
             "speedLimitsK": self.toggleSpeedKAction,
-            "speedLimits100New": self.toggleSpeed100Action,
-            "speedLimits130New": self.toggleSpeed130Action,
-            "speedLimits150New": self.toggleSpeed150Action,
-            "speedLimitsKNew": self.toggleSpeedKAction,
             "kinematicsSpeedLimitTrack": self.toggleKinematicsSpeedLimitTrackAction,
             "kinematicsSpeedLimitTime": self.toggleKinematicsSpeedLimitTimeAction,
             "kinematicsDistanceTime": self.toggleKinematicsDistanceTimeAction,
@@ -1206,10 +1295,23 @@ class MainWindow(QMainWindow):
         }
         return {seriesKey: action.isChecked() for seriesKey, action in visibilityKeys.items()}
 
-    # Build the chainage and name pairs of every scheduled stop
+    # Scheduled stops are entered against the imported chainage, so they follow the active alignment
+    def projectedTrainStops(self):
+        lxml = self.dataStorage.get("LandXML", {})
+        projectedStops = []
+        for stop in self.dataStorage.get("settingsData", {}).get("trainStops", []):
+            projectedStop = list(stop)
+            try:
+                projectedStop[0] = geometry_engine.projectChainageKm(lxml, float(stop[0]))
+            except (IndexError, ValueError, TypeError):
+                continue
+            projectedStops.append(projectedStop)
+        return projectedStops
+
+    # Build the chainage and name pairs of every scheduled stop, on the active stationing
     def collectStations(self):
         stations = []
-        for stop in self.dataStorage.get("settingsData", {}).get("trainStops", []):
+        for stop in self.projectedTrainStops():
             try:
                 stationKm = float(stop[0])
             except (IndexError, ValueError, TypeError):
@@ -1239,11 +1341,13 @@ class MainWindow(QMainWindow):
 
     # Run the action belonging to a workflow step and mark it as completed
     def onWorkflowStep(self, stepIndex):
+        # Phase 2 sits between the imports and the cant design, and is skippable
         stepHandlers = [
             self.openLandXML,
             self.openXMLTTP,
             self.openStopsSettings,
             self.openVehicleSettings,
+            self.openAlignmentOptimization,
             self.calculateGeometry,
             self.calculateTrainSpeed,
             self.exportGeometryReport,
@@ -1745,6 +1849,8 @@ class MainWindow(QMainWindow):
         self.showMapAction.setText(lan.get("viewMap", "Map"))
         self.showReportAction.setText(lan.get("viewReport", "Report"))
         self.showDashboardAction.setText(lan.get("viewDashboard", "Variant comparison"))
+        self.loadBatchVariantAction.setText(lan.get("batchLoadVariant", "Load variant into viewport"))
+        self.batchVariantCombo.setToolTip(lan.get("batchVariantSelector", "Batch variant"))
         self.resetLayoutAction.setText(lan.get("resetLayout", "Reset Layout"))
         self.resetLayoutAction.setToolTip(
             lan.get("resetLayoutTip", "Restore Default Window Layout"))
@@ -2696,11 +2802,6 @@ class MainWindow(QMainWindow):
                 ("stationCantPossible", "cantDef130", lan.get("cant_def_130"), 'aqua'),
                 ("stationCantPossible", "cantDef150", lan.get("cant_def_150"), 'mediumorchid'),
                 ("stationCantPossible", "cantDefK",   lan.get("cant_def_K"),   'royalblue'),
-                ("stationCantPossibleNew", "cantPossibleNew", lan.get("cant_possible_new"), 'darkgreen'),
-                ("stationCantPossibleNew", "cDef100New",      lan.get("cdef_100_new"),      'darkred'),
-                ("stationCantPossibleNew", "cDef130New",      lan.get("cdef_130_new"),      'darkcyan'),
-                ("stationCantPossibleNew", "cDef150New",      lan.get("cdef_150_new"),      'indigo'),
-                ("stationCantPossibleNew", "cDefKNew",        lan.get("cdef_K_new"),        'navy'),
             ]
             for sk, dk, lbl, col in cantSeries:
                 x = lxml.get(sk)
@@ -2711,7 +2812,7 @@ class MainWindow(QMainWindow):
 
             for sk, ck, lbl, col in [
                 ("stationHorizontal",    "curvature",    lan.get("curvature"),     'tab:gray'),
-                ("stationHorizontalNew", "curvatureNew", lan.get("curvature_new"), 'tab:orange'),
+                ("stationHorizontalBaseline", "curvatureBaseline", lan.get("curvature_baseline"), '#888888'),
             ]:
                 x = lxml.get(sk)
                 y = lxml.get(ck)
@@ -3074,23 +3175,8 @@ class MainWindow(QMainWindow):
     def toggleCurvatureVisibility(self, isChecked):
         self.graphsWidget.setSeriesVisible("geometry", "curvature", isChecked)
 
-    def toggleCurvatureNewVisibility(self, isChecked):
-        self.graphsWidget.setSeriesVisible("geometry", "curvatureNew", isChecked)
-
-    def toggleCantPossibleNewVisibility(self, isChecked):
-        self.graphsWidget.setSeriesVisible("geometry", "cantPossibleNew", isChecked)
-
-    def toggleCDef100NewVisibility(self, isChecked):
-        self.graphsWidget.setSeriesVisible("geometry", "cDef100New", isChecked)
-
-    def toggleCDef130NewVisibility(self, isChecked):
-        self.graphsWidget.setSeriesVisible("geometry", "cDef130New", isChecked)
-
-    def toggleCDef150NewVisibility(self, isChecked):
-        self.graphsWidget.setSeriesVisible("geometry", "cDef150New", isChecked)
-
-    def toggleCDefKNewVisibility(self, isChecked):
-        self.graphsWidget.setSeriesVisible("geometry", "cDefKNew", isChecked)
+    def toggleCurvatureBaselineVisibility(self, isChecked):
+        self.graphsWidget.setSeriesVisible("geometry", "curvatureBaseline", isChecked)
 
     def toggleSpeedVisibility(self, isChecked):
         self.graphsWidget.setSeriesVisible("speed", "speedLimits", isChecked)
@@ -3125,9 +3211,14 @@ class MainWindow(QMainWindow):
     # Map settings
     def openMapSettings(self):
         lan = self.translationManager.getLanguage(self.currentLanguage)
-        dialog = gui_overlay.MapSettingsDialog(self.epsgInput, self.mapWidget.currentBaseMap, self.mapWidget.drawMode, self.mapWidget.speedProfile, lan, self)
+        settingsData = self.dataStorage.setdefault("settingsData", {})
+        dialog = gui_overlay.MapSettingsDialog(self.epsgInput, self.mapWidget.currentBaseMap,
+                                               self.mapWidget.drawMode, self.mapWidget.speedProfile,
+                                               lan, self, settingsData.get("mapBasemapApiKey", ""))
         if dialog.exec():
             self.epsgInput, selectedMap, drawMode, speedProfile = dialog.getMapSettings()
+            settingsData["mapBasemapApiKey"] = dialog.getBasemapApiKey()
+            self.mapWidget.setSettingsData(settingsData)
             self.mapWidget.setBaseMap(selectedMap)
             self.mapWidget.setDrawOptions(drawMode, speedProfile)
 
@@ -3363,6 +3454,7 @@ class MainWindow(QMainWindow):
         lan = self.translationManager.getLanguage(self.currentLanguage)
         self.batchResults.setResults(results)
         self.variantDashboardWidget.setResults(self.batchResults)
+        self.refreshBatchVariantSelector()
         self.setBatchActionsEnabled(True)
 
         failedCount = sum(1 for result in results if result["status"] == "failed")
@@ -3473,10 +3565,15 @@ class MainWindow(QMainWindow):
         lan = self.translationManager.getLanguage(self.currentLanguage)
 
         dialog = gui_overlay.AlignmentOptimizationDialog(self.dataStorage.get("settingsData", {}), lan, self)
-        if dialog.exec():
-            self.dataStorage["settingsData"]["alignmentOptimization"] = dialog.getOptimizationConfig()
-            self.markProjectModified()
-            self.runAlignmentOptimization()
+        if not dialog.exec():
+            return
+        if dialog.isRevertRequested:
+            self.revertToBaselineAlignment()
+            return
+
+        self.dataStorage["settingsData"]["alignmentOptimization"] = dialog.getOptimizationConfig()
+        self.markProjectModified()
+        self.runAlignmentOptimization()
 
     # Help, reveals the documentation dock instead of opening a modal dialog
     def openHelp(self):
@@ -3940,6 +4037,7 @@ class MainWindow(QMainWindow):
 
     def generateVehicleReport(self, vIdx=0):
         lan = self.translationManager.getLanguage(self.currentLanguage)
+        self.lastVehicleReportIndex = vIdx
         metrics = self.computeVehicleRunMetrics(vIdx)
         if not metrics["hasData"]:
             self.reportVehicleTable.setData([{"Info": lan.get("no_data", "No data available. Calculate values first.")}])
@@ -4118,9 +4216,10 @@ class MainWindow(QMainWindow):
         self.updateMapWithSpeeds()
         self.plotCant()
         self.plotSpeedLimits()
+        self.geometryCalculationFinished.emit()
 
-        # Step 5 of the workflow guide covers the GPK calculation
-        self.workflowWidget.markCompleted(4)
+        # Step 6 of the workflow guide covers the cant design
+        self.workflowWidget.markCompleted(5)
         self.setEngineStatus(self.translationManager.getLanguage(self.currentLanguage).get("statusGeometryDone", "Geometry calculated"))
         self.markProjectModified()
 
@@ -4136,9 +4235,10 @@ class MainWindow(QMainWindow):
         self.updateMapWithSpeeds()
         self.plotCant()
         self.plotSpeedLimits()
+        self.geometryCalculationFinished.emit()
 
-        # Step 5 of the workflow guide covers the GPK calculation
-        self.workflowWidget.markCompleted(4)
+        # Step 6 of the workflow guide covers the cant design
+        self.workflowWidget.markCompleted(5)
         self.setEngineStatus(self.translationManager.getLanguage(self.currentLanguage).get("statusGeometryDone", "Geometry calculated"))
         self.markProjectModified()
 
@@ -4152,13 +4252,18 @@ class MainWindow(QMainWindow):
 
         lan = self.translationManager.getLanguage(self.currentLanguage)
         self.captureBaselineAlignment()
+        # Every run is measured against the imported alignment, never against a previous optimization
+        self.restoreBaselineAlignmentData()
         self.clearOptimizationResults(refresh=False)
+        self.publishBaselineComparison()
 
         config = self.dataStorage.get("settingsData", {}).get("alignmentOptimization", {})
         self.alignmentOptimizationAction.setEnabled(False)
         self.setEngineStatus(lan.get("statusOptimizationRunning", "Optimizing alignment..."))
+        # Phase 2 reshapes geometry only, the cant and speed design stays an explicit separate step
         self.optimizationController.startOptimization(self.dataStorage, config,
-                                                      self.lastCalculationMode, self.epsgInput)
+                                                      self.lastCalculationMode, self.epsgInput,
+                                                      isGeometryOnly=True)
 
     # One immutable deepcopy of the untouched baseline, taken before the first optimization run
     def captureBaselineAlignment(self):
@@ -4169,9 +4274,53 @@ class MainWindow(QMainWindow):
             for storageKey in (f"speedLimits{profileSuffix}", f"stationSpeed{profileSuffix}"):
                 if self.dataStorage.get(storageKey) is not None:
                     cache[storageKey] = copy.deepcopy(self.dataStorage[storageKey])
+
+        # The travel time delta needs the run the baseline geometry produced, not just its limits
+        for resultKey in optimization_runner.KINEMATICS_RESULT_KEYS:
+            baselineValues = self.dataStorage.get(f"{resultKey}_0")
+            if baselineValues is not None:
+                cache[f"{resultKey}_0"] = copy.deepcopy(baselineValues)
+
         self.baselineAlignmentCache = cache
 
-    # Worker finished: mirror every optimized result into its New suffixed twin and refresh the views
+    # Puts the imported geometry back into the active keys, leaving every view refresh to the caller
+    def restoreBaselineAlignmentData(self):
+        if self.baselineAlignmentCache is None:
+            return
+        self.dataStorage["LandXML"] = copy.deepcopy(self.baselineAlignmentCache["LandXML"])
+        for storageKey, values in self.baselineAlignmentCache.items():
+            if storageKey != "LandXML":
+                self.dataStorage[storageKey] = copy.deepcopy(values)
+
+    # The curvature plot and the map keep a muted baseline to compare the active geometry against
+    def publishBaselineComparison(self):
+        baselineLxml = (self.baselineAlignmentCache or {}).get("LandXML", {})
+        lxml = self.dataStorage.setdefault("LandXML", {})
+        for baseKey in BASELINE_COMPARISON_KEYS:
+            values = baselineLxml.get(baseKey)
+            if values is not None:
+                lxml[baseKey + BASELINE_KEY_SUFFIX] = copy.deepcopy(values)
+
+    # A geometry change invalidates every cant, speed and kinematics result computed before it
+    def clearCalculatedResults(self):
+        lxml = self.dataStorage.setdefault("LandXML", {})
+        # The optimizer's own output describes the geometry, so a cant rerun must not erase it
+        for storageKey in [key for key in lxml
+                           if project_file.isCalculatedLandXmlKey(key)
+                           and not key.endswith(BASELINE_KEY_SUFFIX)
+                           and key not in OPTIMIZATION_STATE_KEYS]:
+            lxml.pop(storageKey, None)
+
+        for profileSuffix in OPTIMIZED_PROFILE_SUFFIXES:
+            self.dataStorage.pop(f"speedLimits{profileSuffix}", None)
+            self.dataStorage.pop(f"stationSpeed{profileSuffix}", None)
+
+        for storageKey in [key for key in self.dataStorage if key.startswith("kinematics")]:
+            self.dataStorage.pop(storageKey, None)
+
+        self.lastGeometryReportLines = []
+
+    # Worker finished: promote the optimized geometry and refresh the views, no speeds are touched
     def onOptimizationFinished(self, payload):
         lan = self.translationManager.getLanguage(self.currentLanguage)
         self.alignmentOptimizationAction.setEnabled(True)
@@ -4192,21 +4341,23 @@ class MainWindow(QMainWindow):
             return
 
         self.harvestOptimizedResults(payload)
-        self.annotateGroupSpeedImpact(summary)
-        summary["travelTimeDeltaS"] = self.computeTravelTimeDelta()
 
         self.toggleSlewPlotAction.setChecked(True)
         self.updateMapWithSpeeds()
         self.plotCant()
         self.plotSpeedLimits()
         self.plotKinematics()
+        self.refreshStations()
         self.updateOptimizationActionState()
         self.refreshSlewReportWindow()
         self.markProjectModified()
 
+        # The cant design is a separate phase, so the run ends by naming the next step rather than
+        # silently recomputing speeds on geometry the user has not accepted yet
         timingText = self.buildOptimizationTimingText(summary, lan)
-        self.setEngineStatus(f"{self.buildOptimizationSummaryText(summary, lan)} | {timingText}")
-        print(timingText)
+        nextStepText = lan.get("statusOptimizationNeedsCantRun",
+                               "Alignment optimized - run the cant design to update speeds")
+        self.setEngineStatus(f"{self.buildOptimizationSummaryText(summary, lan)} | {nextStepText} | {timingText}")
         self.showOptimizationOutcome(summary, lan)
 
     # Worker reports one finished curve group at a time, keeping the status bar alive on long corridors
@@ -4233,36 +4384,43 @@ class MainWindow(QMainWindow):
         self.setEngineStatus(lan.get("optFailed", "Alignment optimization failed"))
         QMessageBox.critical(self, lan.get("error", "Error"), f"{message}")
 
-    # Copy the worker's geometry, cant, speed and kinematics output into the New suffixed keys
+    # Promote the worker's geometry onto the active keys, the baseline survives in its own copies
     def harvestOptimizedResults(self, payload):
         lxml = self.dataStorage.setdefault("LandXML", {})
-        for geometryKey in ("stationHorizontalNew", "geometryTypeNew", "curvatureNew",
-                            "curvatureSignNew", "radiusNew", "alignmentCoordinatesNew",
-                            "denseAlignmentNew"):
-            if payload.get(geometryKey) is not None:
-                lxml[geometryKey] = payload[geometryKey]
+        for activeKey, payloadKey in (("stationHorizontal", "stationHorizontalNew"),
+                                      ("geometryType", "geometryTypeNew"),
+                                      ("curvature", "curvatureNew"),
+                                      ("curvatureSign", "curvatureSignNew"),
+                                      ("radius", "radiusNew"),
+                                      ("alignmentCoordinates", "alignmentCoordinatesNew"),
+                                      ("denseAlignment", "denseAlignmentNew")):
+            if payload.get(payloadKey) is not None:
+                lxml[activeKey] = payload[payloadKey]
 
-        results = payload.get("results") or {}
-        lxml["stationCantPossibleNew"] = results.get("stationCantPossible", [])
-        lxml["cantPossibleNew"] = results.get("cantPossible", [])
-        for profileSuffix in OPTIMIZED_PROFILE_SUFFIXES:
-            lxml[f"cDef{profileSuffix}New"] = results.get(f"cDef{profileSuffix}", [])
-            speedProfile = results.get("speedProfiles", {}).get(profileSuffix, {})
-            self.dataStorage[f"stationSpeed{profileSuffix}New"] = speedProfile.get("stationSpeed", [])
-            self.dataStorage[f"speedLimits{profileSuffix}New"] = speedProfile.get("speedLimits", [])
+        for chainageKey in optimization_runner.CHAINAGE_MAP_KEYS:
+            if payload.get(chainageKey) is not None:
+                lxml[chainageKey] = payload[chainageKey]
 
-        for vehicleIndex, vehicleResults in (results.get("kinematics") or {}).items():
-            for resultKey, values in vehicleResults.items():
-                if values is not None:
-                    self.dataStorage[f"{resultKey}_{vehicleIndex}New"] = values
+        # Cant was designed for the old geometry, so it cannot describe the new one
+        self.clearCalculatedResults()
 
-    # Per curve group speed impact, sampled from the baseline and optimized limits of the design profile
+    # Speeds only exist once phase 3 has run, so the slew report gains its impact columns then
+    def refreshOptimizationImpact(self):
+        summary = self.dataStorage.get("LandXML", {}).get("optimizationSummary")
+        if not summary:
+            return
+        self.annotateGroupSpeedImpact(summary)
+        summary["travelTimeDeltaS"] = self.computeTravelTimeDelta()
+        self.refreshSlewReportWindow()
+
+    # Per curve group speed impact, the cached baseline profile against the active one
     def annotateGroupSpeedImpact(self, summary):
         profileSuffix = batch_runner.resolveProfileSuffix(self.dataStorage.get("defaultProfile", "I150"))
-        baselineStations = self.dataStorage.get(f"stationSpeed{profileSuffix}")
-        baselineSpeeds = self.dataStorage.get(f"speedLimits{profileSuffix}")
-        optimizedStations = self.dataStorage.get(f"stationSpeed{profileSuffix}New")
-        optimizedSpeeds = self.dataStorage.get(f"speedLimits{profileSuffix}New")
+        baselineCache = self.baselineAlignmentCache or {}
+        baselineStations = baselineCache.get(f"stationSpeed{profileSuffix}")
+        baselineSpeeds = baselineCache.get(f"speedLimits{profileSuffix}")
+        optimizedStations = self.dataStorage.get(f"stationSpeed{profileSuffix}")
+        optimizedSpeeds = self.dataStorage.get(f"speedLimits{profileSuffix}")
 
         for group in summary.get("groups", []):
             group["speedOldKmh"] = self.minimumSpeedOverRange(baselineStations, baselineSpeeds,
@@ -4287,19 +4445,19 @@ class MainWindow(QMainWindow):
             return None
         return float(np.min(speeds[inRange]))
 
-    # Optimized minus baseline total run time of the first vehicle, in seconds
+    # Active minus baseline total run time of the first vehicle, in seconds
     def computeTravelTimeDelta(self):
-        baselineTime, _, _ = batch_metrics.computeTravelTimeSections(self.dataStorage, 0)
-        optimizedView = {}
+        baselineView = {"settingsData": self.dataStorage.get("settingsData", {})}
         for resultKey in optimization_runner.KINEMATICS_RESULT_KEYS:
-            optimizedValues = self.dataStorage.get(f"{resultKey}_0New")
-            if optimizedValues is not None:
-                optimizedView[f"{resultKey}_0"] = optimizedValues
-        optimizedView["settingsData"] = self.dataStorage.get("settingsData", {})
-        optimizedTime, _, _ = batch_metrics.computeTravelTimeSections(optimizedView, 0)
-        if baselineTime is None or optimizedTime is None:
+            baselineValues = (self.baselineAlignmentCache or {}).get(f"{resultKey}_0")
+            if baselineValues is not None:
+                baselineView[f"{resultKey}_0"] = baselineValues
+
+        baselineTime, _, _ = batch_metrics.computeTravelTimeSections(baselineView, 0)
+        activeTime, _, _ = batch_metrics.computeTravelTimeSections(self.dataStorage, 0)
+        if baselineTime is None or activeTime is None:
             return None
-        return float(optimizedTime - baselineTime)
+        return float(activeTime - baselineTime)
 
     # Status bar caption naming what the optimizer actually changed
     def buildOptimizationSummaryText(self, summary, lan):
@@ -4333,12 +4491,7 @@ class MainWindow(QMainWindow):
     def revertToBaselineAlignment(self):
         lan = self.translationManager.getLanguage(self.currentLanguage)
 
-        if self.baselineAlignmentCache is not None:
-            self.dataStorage["LandXML"] = copy.deepcopy(self.baselineAlignmentCache["LandXML"])
-            for storageKey, values in self.baselineAlignmentCache.items():
-                if storageKey != "LandXML":
-                    self.dataStorage[storageKey] = copy.deepcopy(values)
-
+        self.restoreBaselineAlignmentData()
         self.clearOptimizationResults(refresh=False)
         self.graphsWidget.clearSlewPlot()
         self.toggleSlewPlotAction.setChecked(False)
@@ -4350,6 +4503,7 @@ class MainWindow(QMainWindow):
         self.plotCant()
         self.plotSpeedLimits()
         self.plotKinematics()
+        self.refreshStations()
         self.updateOptimizationActionState()
         self.markProjectModified()
         self.setEngineStatus(lan.get("statusOptimizationCleared",
@@ -4358,20 +4512,11 @@ class MainWindow(QMainWindow):
     # Drops every optimizer output, reverting the map/plots to the baseline-only view
     def clearOptimizationResults(self, refresh=True):
         lxml = self.dataStorage.setdefault("LandXML", {})
-        for key in ("stationHorizontalNew", "geometryTypeNew", "curvatureNew", "curvatureSignNew", "radiusNew",
-                    "alignmentCoordinatesNew", "denseAlignmentNew", "optimizationSummary",
-                    "stationCantPossibleNew", "cantPossibleNew",
-                    "cDef100New", "cDef130New", "cDef150New", "cDefKNew",
-                    "slewProfileStationKm", "slewProfileOffsetMm"):
+        for key in OPTIMIZATION_STATE_KEYS:
             lxml.pop(key, None)
 
-        for profileSuffix in OPTIMIZED_PROFILE_SUFFIXES:
-            self.dataStorage.pop(f"speedLimits{profileSuffix}New", None)
-            self.dataStorage.pop(f"stationSpeed{profileSuffix}New", None)
-
-        for storageKey in [key for key in self.dataStorage
-                           if key.startswith("kinematics") and key.endswith("New")]:
-            self.dataStorage.pop(storageKey, None)
+        for baseKey in BASELINE_COMPARISON_KEYS:
+            lxml.pop(baseKey + BASELINE_KEY_SUFFIX, None)
 
         if refresh:
             self.updateMapWithSpeeds()
@@ -4379,14 +4524,85 @@ class MainWindow(QMainWindow):
             self.updateOptimizationActionState()
             self.markProjectModified()
 
+    # Rebuild the variant list from the most recent batch, disabling it while there is nothing to show
+    def refreshBatchVariantSelector(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        successfulResults = self.batchResults.successfulResults() if self.batchResults else []
+
+        self.batchVariantCombo.blockSignals(True)
+        self.batchVariantCombo.clear()
+        if not successfulResults:
+            self.batchVariantCombo.addItem(lan.get("batchNoVariantLoaded", "No batch variant loaded"), None)
+        for result in successfulResults:
+            self.batchVariantCombo.addItem(result["spec"].get("label", result["variantId"]),
+                                           result["variantId"])
+        self.batchVariantCombo.blockSignals(False)
+
+        self.batchVariantCombo.setEnabled(bool(successfulResults))
+        self.loadBatchVariantAction.setEnabled(bool(successfulResults))
+
+    def loadSelectedBatchVariant(self):
+        variantId = self.batchVariantCombo.currentData()
+        if variantId:
+            self.loadBatchVariantIntoViewport(variantId)
+
+    # Copy one batch variant into the live data storage so every standard view can inspect it
+    def loadBatchVariantIntoViewport(self, variantId):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
+        result = self.batchResults.resultById(variantId)
+        if result is None or result.get("status") != "ok":
+            return
+
+        # The live project is the baseline the user returns to, reusing the optimizer's own cache
+        self.captureBaselineAlignment()
+
+        variantStorage = copy.deepcopy(result["dataStorage"])
+        variantLxml = variantStorage.get("LandXML", {})
+
+        # Batch variants are stored lean, so the map polylines are derived here rather than per run
+        if "alignmentCoordinates" not in variantLxml:
+            try:
+                readfile.ReadFile().alignmentCoordinates(variantLxml, self.epsgInput, "EPSG:4326")
+            except (KeyError, IndexError, ValueError):
+                variantLxml["alignmentCoordinates"] = []
+                variantLxml["denseAlignment"] = []
+
+        self.dataStorage["LandXML"] = variantLxml
+        for storageKey, values in variantStorage.items():
+            if storageKey not in ("LandXML", "settingsData"):
+                self.dataStorage[storageKey] = values
+
+        self.loadedBatchVariantId = variantId
+        self.updateMapWithSpeeds()
+        self.plotCant()
+        self.plotSpeedLimits()
+        self.plotKinematics()
+        self.refreshStations()
+        self.updateOptimizationActionState()
+        self.geometryCalculationFinished.emit()
+        self.showMapView()
+
+        label = result["spec"].get("label", variantId)
+        template = lan.get("statusBatchVariantLoaded", "Batch variant loaded: {label}")
+        self.setEngineStatus(template.format(label=label))
+
     # Optimization dependent commands stay disabled until a summary actually exists
     def updateOptimizationActionState(self):
+        lan = self.translationManager.getLanguage(self.currentLanguage)
         hasOptimization = bool(self.dataStorage.get("LandXML", {}).get("optimizationSummary"))
         self.clearOptimizationAction.setEnabled(hasOptimization)
         self.slewReportAction.setEnabled(hasOptimization)
         self.toggleSlewPlotAction.setEnabled(hasOptimization)
         if not hasOptimization:
             self.toggleSlewPlotAction.setChecked(False)
+
+        # Measured cant belongs to the imported geometry, so as-built has no meaning on a moved axis
+        self.calculateGeometryIAction.setEnabled(not hasOptimization)
+        self.calculateGeometryIAction.setToolTip(
+            lan.get("asBuiltUnavailableOnOptimized",
+                    "As-built mode is unavailable on modified alignment geometry because installed "
+                    "cant is physically invalidated.")
+            if hasOptimization else lan.get("calculate_geometry_I", "Calculate I and respective speeds"))
 
     # Opens the non-modal lateral slew analysis table, reusing the window if it already exists
     def openSlewReport(self):
@@ -4409,6 +4625,19 @@ class MainWindow(QMainWindow):
             self.dockGraphs.raise_()
 
     def calculateTrainSpeed(self):
+        # The engine matches stops by absolute chainage, so it must see them on the active alignment
+        settings = self.dataStorage.setdefault("settingsData", {})
+        enteredStops = settings.get("trainStops")
+        settings["trainStops"] = self.projectedTrainStops()
+        try:
+            self.runVehicleSimulation()
+        finally:
+            if enteredStops is None:
+                settings.pop("trainStops", None)
+            else:
+                settings["trainStops"] = enteredStops
+
+    def runVehicleSimulation(self):
         vehicle = vehicle_engine.VehicleCalculator(self.dataStorage)
         vehicle.calculateKinematics()
         
@@ -4426,9 +4655,10 @@ class MainWindow(QMainWindow):
 
         self.plotKinematics()
         self.rebuildVehicleReportMenus()
+        self.vehicleCalculationFinished.emit()
 
-        # Step 6 of the workflow guide covers the running simulation
-        self.workflowWidget.markCompleted(5)
+        # Step 7 of the workflow guide covers the running simulation
+        self.workflowWidget.markCompleted(6)
         self.setEngineStatus(self.translationManager.getLanguage(self.currentLanguage).get("statusSimulationDone", "Simulation finished"))
         self.markProjectModified()
 

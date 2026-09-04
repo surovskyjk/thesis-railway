@@ -3,6 +3,13 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QFrame, QLabel, QToolButton, QVBoxLayout, QWidget
 
 
+# Colours used only when a card is themed before the theme manager has handed over its tokens
+LIGHT_CARD_TOKENS = {"border": "#c4c4c4", "alternateBase": "#e9e9ec",
+                     "text": "#1c1c1c", "mutedText": "#5a5a5a"}
+DARK_CARD_TOKENS = {"border": "#4d4d4d", "alternateBase": "#333333",
+                    "text": "#e6e6e6", "mutedText": "#b0b0b0"}
+
+
 # Compact KPI tile showing a bold value, a muted caption and an optional sub caption
 class MetricCard(QFrame):
     def __init__(self, captionText="", parent=None):
@@ -40,18 +47,22 @@ class MetricCard(QFrame):
         self.subLabel.setText(subText)
         self.subLabel.setVisible(bool(subText))
 
-    # Restyle the card border and background with the active theme's tokens
+    # Restyle the card border, background and captions with the active theme's tokens
     def applyTheme(self, isDark, tokens=None):
-        if tokens:
-            borderColor = tokens.get("border", "#c4c4c4")
-            backgroundColor = tokens.get("alternateBase", "#ffffff")
-        else:
-            borderColor = "#4d4d4d" if isDark else "#c4c4c4"
-            backgroundColor = "#333333" if isDark else "#e9e9ec"
+        tokens = tokens or (DARK_CARD_TOKENS if isDark else LIGHT_CARD_TOKENS)
+        borderColor = tokens.get("border", "#c4c4c4")
+        backgroundColor = tokens.get("alternateBase", "#ffffff")
+        textColor = tokens.get("text", "#1c1c1c")
+        mutedColor = tokens.get("mutedText", "#5a5a5a")
 
         self.setStyleSheet(
             f"MetricCard {{ border: 1px solid {borderColor}; border-radius: 4px;"
             f" background: {backgroundColor}; }}")
+
+        # Captions carry their own colour so they never fall back to an unreadable palette default
+        for label in (self.captionLabel, self.subLabel):
+            label.setStyleSheet(f"font-size: 9px; color: {mutedColor};")
+        self.valueLabel.setStyleSheet(f"font-size: 15px; font-weight: 600; color: {textColor};")
 
 
 # Checkable header that shows or hides a content widget built lazily on first expand

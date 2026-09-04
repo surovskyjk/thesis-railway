@@ -107,7 +107,8 @@ class AlignmentSelectDialog(QDialog):
         return 0
 
 class MapSettingsDialog(QDialog):
-    def __init__(self, currentEPSG, currentMap, currentDrawMode, currentSpeedProfile, lan, parent=None):
+    def __init__(self, currentEPSG, currentMap, currentDrawMode, currentSpeedProfile, lan,
+                 parent=None, basemapApiKey=""):
         super().__init__(parent)
         self.lan = lan
         self.setWindowTitle(lan["mapSettings"])
@@ -149,6 +150,14 @@ class MapSettingsDialog(QDialog):
         if index >= 0: self.comboSpeedProfile.setCurrentIndex(index)
         formLayout.addRow(self.labelSpeedProfile, self.comboSpeedProfile)
         
+        # Optional and stored with the project, no key is ever compiled into the application
+        self.apiKeyInput = QLineEdit(str(basemapApiKey or ""))
+        self.apiKeyInput.setToolTip(lan.get(
+            "mapApiKeyTip",
+            "Only needed for a keyed tile provider, leave empty for the public endpoints"))
+        formLayout.addRow(QLabel(lan.get("mapApiKeyLabel", "Basemap API key (optional):")),
+                          self.apiKeyInput)
+
         self.comboDrawMode.currentTextChanged.connect(self.updateSpeedProfileVisibility)
         self.updateSpeedProfileVisibility()
 
@@ -165,6 +174,10 @@ class MapSettingsDialog(QDialog):
         isSpeedMode = self.comboDrawMode.currentData() == "speed"
         self.labelSpeedProfile.setVisible(isSpeedMode)
         self.comboSpeedProfile.setVisible(isSpeedMode)
+
+    # Whatever the user typed into the optional key field, stripped
+    def getBasemapApiKey(self):
+        return self.apiKeyInput.text().strip()
 
     def getMapSettings(self):
         epsg = self.inputEPSG.text().strip().upper()
@@ -598,14 +611,19 @@ class AlignmentOptimizationDialog(QDialog):
         self.lMinInput = QLineEdit(str(config.get("lMinM", 25.0)))
         formLayout.addRow(QLabel(self.lan.get("optLMinLabel", "Minimum element length L_min [m]:")), self.lMinInput)
 
+        self.lkMaxInput = QLineEdit(str(config.get("lkMaxM", geometry_engine.DEFAULT_LK_MAX_M)))
+        formLayout.addRow(QLabel(self.lan.get("optLkMaxLabel", "Maximum transition length L_k,max [m]:")), self.lkMaxInput)
+
         layout.addLayout(formLayout)
         layout.addWidget(QLabel(self.lan.get("optPatternsLabel", "Pattern optimization modes")))
 
         patternFormLayout = QFormLayout()
+        # An L-C-L group carries no transitions, so only the arc shift is offered for it
         self.comboModeLcl = QComboBox(self)
         self.comboModeLcl.addItem(self.lan.get("optModeNone", "Do not optimize"), geometry_engine.OPTIMIZATION_MODE_NONE)
-        self.comboModeLcl.addItem(self.lan.get("optModeShiftAndExtend", "1 - Shift arc and extend transitions (C+S)"), geometry_engine.OPTIMIZATION_MODE_SHIFT_AND_EXTEND)
         self.comboModeLcl.addItem(self.lan.get("optModeShiftArc", "3 - Enlarge radius only (C)"), geometry_engine.OPTIMIZATION_MODE_SHIFT_ARC)
+        self.comboModeLcl.setToolTip(self.lan.get("optPatternLclTip",
+                                                  "Line-Curve-Line has no transition curves, so only the radius can be enlarged"))
         self.setComboCurrentData(self.comboModeLcl, config.get("modeLcl", geometry_engine.OPTIMIZATION_MODE_NONE))
         patternFormLayout.addRow(QLabel(self.lan.get("optPatternLcl", "Line-Curve-Line")), self.comboModeLcl)
 
@@ -625,6 +643,13 @@ class AlignmentOptimizationDialog(QDialog):
         self.buttonBox.button(QDialogButtonBox.StandardButton.Ok).setText(self.lan.get("optRun", "Optimize"))
         self.buttonBox.accepted.connect(self.onAccept)
         self.buttonBox.rejected.connect(self.reject)
+
+        # Leaving phase 2 without an optimization is an explicit choice, not just a cancel
+        self.isRevertRequested = False
+        self.revertButton = self.buttonBox.addButton(
+            self.lan.get("optRevertToBaseline", "Revert to Baseline"),
+            QDialogButtonBox.ButtonRole.ResetRole)
+        self.revertButton.clicked.connect(self.onRevertRequested)
         layout.addWidget(self.buttonBox)
 
     # currentData()-based selection helper, mirrors the addItem(text,dataKey) convention used elsewhere
@@ -640,16 +665,28 @@ class AlignmentOptimizationDialog(QDialog):
                 problems.append("optErrorDMaxRange")
         except ValueError:
             problems.append("optErrorDMaxRange")
+        lMin = None
         try:
             lMin = float(self.lMinInput.text())
             if lMin <= 0:
                 problems.append("optErrorLMinRange")
         except ValueError:
             problems.append("optErrorLMinRange")
+        try:
+            lkMax = float(self.lkMaxInput.text())
+            if lkMax <= 0 or (lMin is not None and lkMax < lMin):
+                problems.append("optErrorLkMaxRange")
+        except ValueError:
+            problems.append("optErrorLkMaxRange")
         if self.comboModeLcl.currentData() == geometry_engine.OPTIMIZATION_MODE_NONE and \
            self.comboModeLscsl.currentData() == geometry_engine.OPTIMIZATION_MODE_NONE:
             problems.append("optErrorNoPatterns")
         return problems
+
+    # Closes the dialog asking the caller to drop the optimization instead of running a new one
+    def onRevertRequested(self):
+        self.isRevertRequested = True
+        self.accept()
 
     def onAccept(self):
         problems = self.validate()
@@ -663,6 +700,7 @@ class AlignmentOptimizationDialog(QDialog):
         return {
             "dMaxM": float(self.dMaxInput.text()),
             "lMinM": float(self.lMinInput.text()),
+            "lkMaxM": float(self.lkMaxInput.text()),
             "modeLcl": self.comboModeLcl.currentData(),
             "modeLscsl": self.comboModeLscsl.currentData(),
         }

@@ -14,6 +14,9 @@ DISPLAY_LANDXML_KEYS = ("alignmentCoordinates", "alignmentCoordsOriginal", "dens
 # Baseline geometry keys the optimizer mirrors into a New suffixed twin
 PROMOTED_GEOMETRY_KEYS = ("stationHorizontal", "geometryType", "curvature", "curvatureSign")
 
+# Baseline to active chainage mapping the optimizer emits, used to reproject stops and markers
+CHAINAGE_MAP_KEYS = ("chainageMapBaselineKm", "chainageMapActiveKm")
+
 # Design speed profiles the geometry engine derives on every run
 SPEED_PROFILE_SUFFIXES = ("100", "130", "150", "K")
 
@@ -73,7 +76,8 @@ def collectPipelineResults(workerStorage):
 
 
 # Optimizer, geometry engine and kinematics chained on one isolated storage, safe to call off the GUI thread
-def runOptimizedPipeline(workerStorage, config, calculationMode, epsgInput, progressCallback=None):
+def runOptimizedPipeline(workerStorage, config, calculationMode, epsgInput, progressCallback=None,
+                         isGeometryOnly=False):
     pipelineStarted = time.perf_counter()
     workerLandXml = workerStorage["LandXML"]
     optimizer = geometry_engine.AlignmentOptimizer(workerLandXml, config, progressCallback)
@@ -92,6 +96,14 @@ def runOptimizedPipeline(workerStorage, config, calculationMode, epsgInput, prog
     payload["radiusNew"] = workerLandXml.get("radiusNew")
     for geometryKey in PROMOTED_GEOMETRY_KEYS:
         payload[geometryKey + "New"] = workerLandXml.get(geometryKey + "New")
+    for chainageKey in CHAINAGE_MAP_KEYS:
+        payload[chainageKey] = workerLandXml.get(chainageKey)
+
+    # Phase 2 of the workflow only reshapes geometry, the cant and speed design stays a separate step
+    if isGeometryOnly:
+        summary["timingMs"]["speedEvaluationMs"] = 0.0
+        summary["timingMs"]["totalMs"] = (time.perf_counter() - pipelineStarted) * 1000.0
+        return payload
 
     # Both engines run untouched against the optimized geometry of the isolated copy
     speedStarted = time.perf_counter()
@@ -118,12 +130,13 @@ class OptimizationWorker(QObject):
     optimizationFailed = Signal(str)
     progressChanged = Signal(int, int)
 
-    def __init__(self, workerStorage, config, calculationMode, epsgInput):
+    def __init__(self, workerStorage, config, calculationMode, epsgInput, isGeometryOnly=False):
         super().__init__()
         self.workerStorage = workerStorage
         self.config = config
         self.calculationMode = calculationMode
         self.epsgInput = epsgInput
+        self.isGeometryOnly = isGeometryOnly
 
     # Slot invoked once the owning QThread starts
     def runOptimization(self):
@@ -131,7 +144,7 @@ class OptimizationWorker(QObject):
             # No explicit yielding here, an interpreter switch interval already interleaves the threads
             payload = runOptimizedPipeline(self.workerStorage, self.config,
                                            self.calculationMode, self.epsgInput,
-                                           self.progressChanged.emit)
+                                           self.progressChanged.emit, self.isGeometryOnly)
             self.optimizationFinished.emit(payload)
         except Exception as exc:
             self.optimizationFailed.emit(str(exc))
@@ -154,14 +167,14 @@ class OptimizationController(QObject):
         return self.isOptimizationActive
 
     # Build the isolated copy on the GUI thread, then hand the worker sole ownership of it
-    def startOptimization(self, dataStorage, config, calculationMode, epsgInput):
+    def startOptimization(self, dataStorage, config, calculationMode, epsgInput, isGeometryOnly=False):
         if self.isOptimizationActive:
             raise RuntimeError("an optimization is already running")
 
         self.isOptimizationActive = True
         workerStorage = buildOptimizationStorage(dataStorage)
         self.thread = QThread()
-        self.worker = OptimizationWorker(workerStorage, config, calculationMode, epsgInput)
+        self.worker = OptimizationWorker(workerStorage, config, calculationMode, epsgInput, isGeometryOnly)
         self.worker.moveToThread(self.thread)
 
         # Forwarding is wired before the thread starts, so the controller's own signals never miss an emit

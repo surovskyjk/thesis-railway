@@ -37,6 +37,7 @@ defVal = {
 "alignmentOptimization": {
     "dMaxM": 0.5,
     "lMinM": 25.0,
+    "lkMaxM": 250.0,
     "modeLcl": "shiftArc",
     "modeLscsl": "shiftAndExtend"
     },

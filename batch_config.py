@@ -197,6 +197,10 @@ class BatchConfigStore:
                 problems.append("batchProblemInvalidOptimizationDMax")
             if float(scenario.get("lMinM", 0.0)) <= 0:
                 problems.append("batchProblemInvalidOptimizationLMin")
+            # An absent ceiling is the engine default, only an explicitly bad one is a problem
+            lkMax = float(scenario.get("lkMaxM", geometry_engine.DEFAULT_LK_MAX_M))
+            if lkMax <= 0 or lkMax < float(scenario.get("lMinM", 0.0)):
+                problems.append("batchProblemInvalidOptimizationLkMax")
             modeLcl = scenario.get("modeLcl", geometry_engine.OPTIMIZATION_MODE_NONE)
             modeLscsl = scenario.get("modeLscsl", geometry_engine.OPTIMIZATION_MODE_NONE)
             validLcl = modeLcl in geometry_engine.LCL_OPTIMIZATION_MODES or modeLcl == geometry_engine.OPTIMIZATION_MODE_NONE

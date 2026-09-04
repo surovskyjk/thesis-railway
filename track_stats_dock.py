@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout, QHeaderView,
                                QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 import numpy as np
 
-from ui_kit import CollapsibleSection, MetricCard
+from ui_kit import CollapsibleSection, DARK_CARD_TOKENS, LIGHT_CARD_TOKENS, MetricCard
 from vehicle_catalog import MAX_VEHICLES
 import batch_metrics
 
@@ -175,10 +175,33 @@ class TrackStatisticsWidget(QWidget):
 
     # Unit suffix and value formatter for the achieved-speed section, following the active toggle
     def actualSpeedUnitLabel(self):
-        return "km/h" if self.useKmh else "m/s"
+        return self.lan.get("unitKmh", "km/h") if self.useKmh else self.lan.get("unitMs", "m/s")
 
     def actualDistanceUnitLabel(self):
-        return "km" if self.useKmh else "m"
+        return self.lan.get("unitKm", "km") if self.useKmh else self.lan.get("unitM", "m")
+
+    # Design values are held in km/h and km, these turn them into whatever the toggle selected
+    def designSpeedForDisplay(self, speedKmh):
+        return float(speedKmh) if self.useKmh else float(speedKmh) / 3.6
+
+    def designDistanceForDisplay(self, stationKm):
+        return float(stationKm) if self.useKmh else float(stationKm) * 1000.0
+
+    def formatDesignSpeed(self, speedKmh):
+        return f"{self.designSpeedForDisplay(speedKmh):.0f}" if self.useKmh \
+            else f"{self.designSpeedForDisplay(speedKmh):.1f}"
+
+    def formatDesignDistance(self, stationKm):
+        return f"{self.designDistanceForDisplay(stationKm):.3f}" if self.useKmh \
+            else f"{self.designDistanceForDisplay(stationKm):.1f}"
+
+    # Header labels for the design table, tracking whichever unit system is active
+    def designSegmentHeaders(self):
+        return [
+            self.lan.get("statsSegmentColumn", "Segment"),
+            f"{self.lan.get('statsMaxSpeedColumnBase', 'Max speed')} [{self.actualSpeedUnitLabel()}]",
+            f"{self.lan.get('statsChainageColumnBase', 'Chainage')} [{self.actualDistanceUnitLabel()}]",
+        ]
 
     def formatActualSpeed(self, value):
         return f"{value:.0f}" if self.useKmh else f"{value:.1f}"
@@ -263,9 +286,15 @@ class TrackStatisticsWidget(QWidget):
 
     def refreshTrackLength(self):
         length = self.computeTrackLength(self.lastDataStorage or {})
-        self.lengthCard.setValue(f"{length:.3f} km" if length is not None else self.noDataText())
+        if length is None:
+            self.lengthCard.setValue(self.noDataText())
+            return
+        self.lengthCard.setValue(
+            f"{self.formatDesignDistance(length)} {self.actualDistanceUnitLabel()}")
 
     def refreshDesignSpeedSection(self):
+        self.designSegmentTable.setHorizontalHeaderLabels(self.designSegmentHeaders())
+
         dataStorage = self.lastDataStorage or {}
         profile = self.designProfileCombo.currentData() or DEFAULT_DESIGN_PROFILE
         speeds, stations = self.resolveDesignSpeedArrays(dataStorage, profile)
@@ -275,10 +304,14 @@ class TrackStatisticsWidget(QWidget):
             self.designMaxCard.setValue(self.noDataText())
         else:
             maxSpeed, location = peak
-            self.designMaxCard.setValue(f"{maxSpeed:.0f} km/h", f"@ {location:.3f} km")
+            self.designMaxCard.setValue(
+                f"{self.formatDesignSpeed(maxSpeed)} {self.actualSpeedUnitLabel()}",
+                f"@ {self.formatDesignDistance(location)} {self.actualDistanceUnitLabel()}")
 
         boundaries = [(km, name) for km, dwell, name in self.stopsList(dataStorage)]
-        self.fillSegmentTable(self.designSegmentTable, speeds, stations, boundaries)
+        self.fillSegmentTable(self.designSegmentTable, speeds, stations, boundaries,
+                              formatSpeed=self.formatDesignSpeed,
+                              formatDistance=self.formatDesignDistance)
 
     # Header labels for the achieved-speed table, tracking whichever unit system is active
     def actualSegmentHeaders(self):
@@ -369,14 +402,7 @@ class TrackStatisticsWidget(QWidget):
         self.actualSection.setTitle(self.lan.get("statsSectionActual", "Achieved segments"))
         self.interstationSection.setTitle(self.lan.get("statsSectionInterstation", "Inter-station times"))
 
-        # Design speed data is always sourced and displayed in km/h, km regardless of the units toggle
-        designSegmentHeaders = [
-            self.lan.get("statsSegmentColumn", "Segment"),
-            self.lan.get("statsMaxSpeedColumn", "Max speed [km/h]"),
-            self.lan.get("statsChainageColumn", "Chainage [km]"),
-        ]
-        self.designSegmentTable.setHorizontalHeaderLabels(designSegmentHeaders)
-        # Achieved (simulated) headers follow the active units toggle, set inside refreshActualSpeedSection
+        # Both segment tables follow the active units toggle, refreshed by their own sections
         self.interstationTable.setHorizontalHeaderLabels([
             self.lan.get("statsSegmentColumn", "Segment"),
             self.lan.get("statsTravelTimeColumn", "Travel time [mm:ss]"),
@@ -387,12 +413,19 @@ class TrackStatisticsWidget(QWidget):
 
     # Restyle the KPI cards and the tables with the active theme's tokens
     def applyTheme(self, isDark, tokens=None):
-        backgroundColor = tokens.get("base", "#ffffff") if tokens else ("#1e1e1e" if isDark else "#ffffff")
+        tokens = tokens or (DARK_CARD_TOKENS if isDark else LIGHT_CARD_TOKENS)
+        backgroundColor = tokens.get("base", "#1e1e1e" if isDark else "#ffffff")
+        textColor = tokens.get("text", "#1c1c1c")
+        borderColor = tokens.get("border", "#c4c4c4")
 
         for card in (self.lengthCard, self.designMaxCard, self.actualMaxCard,
                     self.totalTimeCard, self.originDestCard):
             card.applyTheme(isDark, tokens)
 
+        # Setting only the background would leave the cell text on whatever the style last used
         for table in (self.designSegmentTable, self.actualSegmentTable, self.interstationTable):
             table.setAlternatingRowColors(True)
-            table.setStyleSheet(f"QTableWidget {{ background: {backgroundColor}; }}")
+            table.setStyleSheet(
+                f"QTableWidget {{ background: {backgroundColor}; color: {textColor};"
+                f" gridline-color: {borderColor}; }}"
+                f"QTableWidget::item {{ color: {textColor}; }}")

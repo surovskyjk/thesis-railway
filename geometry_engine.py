@@ -929,7 +929,8 @@ OPTIMIZATION_MODE_INVERTED_SHIFT = "invertedShift"
 
 OPTIMIZATION_MODES = (OPTIMIZATION_MODE_SHIFT_AND_EXTEND, OPTIMIZATION_MODE_EXTEND_SPIRALS, OPTIMIZATION_MODE_SHIFT_ARC, OPTIMIZATION_MODE_INVERTED_SHIFT)
 # The only modes offered for an L-C-L group, which has no spirals to extend
-LCL_OPTIMIZATION_MODES = (OPTIMIZATION_MODE_SHIFT_AND_EXTEND, OPTIMIZATION_MODE_SHIFT_ARC)
+# An L-C-L group has no transitions to extend, so only the arc shift is meaningful there
+LCL_OPTIMIZATION_MODES = (OPTIMIZATION_MODE_SHIFT_ARC,)
 
 # Per-type parser arrays the optimizer needs, appended to LEAN_LANDXML_KEYS for batch runs
 OPTIMIZER_INPUT_KEYS = (
@@ -955,6 +956,15 @@ SLEW_VISIBLE_THRESHOLD_MM = 5.0
 
 # Offsets below this are numerically zero, an exact comparison would count rounding dust as a shift
 SLEW_ZERO_EPSILON_MM = 1e-6
+
+# Two chainages closer than this are the same node, np.interp needs strictly increasing samples
+CHAINAGE_EPSILON_KM = 1e-9
+
+# An arc allowed to fall below L_min must beat its baseline by at least this margin
+ARC_IMPROVEMENT_EPSILON_M = 1e-6
+
+# Upper bound on an optimized transition length when the configuration does not name one
+DEFAULT_LK_MAX_M = 250.0
 
 # Bisection stops once the search bracket narrows below this, in meters
 BISECTION_TOLERANCE_M = 1e-4
@@ -1171,6 +1181,19 @@ def pointToPolylineNearest(p, polyline):
     return best, bestPoint, bestDirection
 
 
+# Map a chainage from the imported alignment onto the active one, identity while nothing moved
+def projectChainageKm(lxml, stationKm):
+    baselineKm = (lxml or {}).get("chainageMapBaselineKm")
+    activeKm = (lxml or {}).get("chainageMapActiveKm")
+    if baselineKm is None or activeKm is None:
+        return float(stationKm)
+    baselineKm = np.asarray(baselineKm, dtype=float)
+    activeKm = np.asarray(activeKm, dtype=float)
+    if baselineKm.size < 2 or baselineKm.size != activeKm.size:
+        return float(stationKm)
+    return float(np.interp(float(stationKm), baselineKm, activeKm))
+
+
 class AlignmentOptimizer:
     # config keys: dMaxM, lMinM, modeLcl, modeLscsl
     def __init__(self, lxml, config, progressCallback=None):
@@ -1179,6 +1202,7 @@ class AlignmentOptimizer:
         self.timingMs = {"curveSolvingMs": 0.0, "samplingMs": 0.0}
         self.dMaxM = float(config.get("dMaxM", 0.5))
         self.lMinM = float(config.get("lMinM", 25.0))
+        self.lkMaxM = float(config.get("lkMaxM", DEFAULT_LK_MAX_M))
         self.modeLcl = config.get("modeLcl", OPTIMIZATION_MODE_NONE)
         self.modeLscsl = config.get("modeLscsl", OPTIMIZATION_MODE_NONE)
         self.elements = []
@@ -1190,6 +1214,15 @@ class AlignmentOptimizer:
         self.hasOptimizedAny = False
         self.slewSamples = []
         self.baselineSegmentCache = None
+        self.elementStationsKm = []
+        self.hasClampedChainage = False
+        # Per group solve state, refreshed by solveGroup before any candidate is evaluated
+        self.baselineArcLengthM = 0.0
+        self.groupLineBefore = None
+        self.groupLineAfter = None
+        self.baselineEntryStraightM = 0.0
+        self.baselineExitStraightM = 0.0
+        self.wasRelaxationBlockedByTangent = False
 
     def run(self):
         self.buildElementList()
@@ -1204,6 +1237,13 @@ class AlignmentOptimizer:
         solveElapsedMs = (time.perf_counter() - solveStarted) * 1000.0
         # Sampling is measured inside recordSlewProfile, so solving is whatever is left over
         self.timingMs["curveSolvingMs"] = max(0.0, solveElapsedMs - self.timingMs["samplingMs"])
+
+        # Element lengths are final here, so the whole corridor is re-chained before anything
+        # reads a station, keeping stationHorizontalNew monotonic end to end
+        if self.hasOptimizedAny:
+            self.rebuildCumulativeChainage()
+            self.resolveGroupStations()
+            self.resolveSlewSampleStations()
 
         summary = self.buildSummary()
         self.lxml["optimizationSummary"] = summary
@@ -1326,6 +1366,11 @@ class AlignmentOptimizer:
         mode = self.modeLcl if patternType == "lcl" else self.modeLscsl
         if mode == OPTIMIZATION_MODE_NONE:
             self.recordSkip(startIdx, endIdx, patternType, "optSkipPatternDisabled")
+            return
+
+        # A stale project or preset may still carry a spiral mode for a group that has no spirals
+        if patternType == "lcl" and mode not in LCL_OPTIMIZATION_MODES:
+            self.recordSkip(startIdx, endIdx, patternType, "optSkipNoSpirals")
             return
 
         lineBefore = self.elements[startIdx-1] if startIdx-1 >= 0 and self.elements[startIdx-1]["type"] == "Line" else None
@@ -1510,48 +1555,46 @@ class AlignmentOptimizer:
         return "L-C-L" if patternType == "lcl" else "L-S-C-S-L"
 
     # Signed perpendicular offsets of an accepted candidate axis, run once per optimized group
-    def recordSlewProfile(self, groupStartStation, groupEndStation, frame, geometry, baselineAxis):
+    def recordSlewProfile(self, groupSlot, frame, geometry, baselineAxis):
         samplingStarted = time.perf_counter()
         try:
-            return self.recordSlewProfileSamples(groupStartStation, groupEndStation, frame, geometry, baselineAxis)
+            return self.recordSlewProfileSamples(groupSlot, frame, geometry, baselineAxis)
         finally:
             self.timingMs["samplingMs"] += (time.perf_counter() - samplingStarted) * 1000.0
 
-    def recordSlewProfileSamples(self, groupStartStation, groupEndStation, frame, geometry, baselineAxis):
+    def recordSlewProfileSamples(self, groupSlot, frame, geometry, baselineAxis):
         samplePoints = geometry["samplePoints"]
         if len(samplePoints) < 2:
-            return groupStartStation, 0.0
+            return 0.0, 0.0
 
         vertices = np.asarray(samplePoints, dtype=float)
         steps = np.sqrt(np.einsum("ij,ij->i", np.diff(vertices, axis=0), np.diff(vertices, axis=0)))
         cumulativeLength = np.concatenate(([0.0], np.cumsum(steps)))
         totalChordLength = float(cumulativeLength[-1])
         if totalChordLength <= 1e-9:
-            return groupStartStation, 0.0
+            return 0.0, 0.0
 
-        # Chord sampling runs marginally short of the true arc, so lengths are rescaled onto the group span
-        stationSpan = groupEndStation - groupStartStation
         turnSign = frame["turnSign"]
 
         points = np.asarray(samplePoints, dtype=float)
         distances, nearestPoints, baselineDirections = nearestOnPolyline(
             points, self.baselineSegmentsFor(baselineAxis))
         offsetDirections = points - nearestPoints
-        # Offsetting towards the arc centre deepens the turn, the opposite side cuts towards the PI apex
+        # Offsetting towards the arc centre enlarges the radius, the opposite side cuts towards the PI apex
         towardsCentre = (baselineDirections[:, 0] * offsetDirections[:, 1] -
                          baselineDirections[:, 1] * offsetDirections[:, 0]) * turnSign
-        # Positive slew points inward, towards the intersection apex of the bounding tangents
-        slewSigns = np.where(towardsCentre > 0, -1.0, 1.0)
-        stationsKm = groupStartStation + stationSpan * (
-            np.asarray(cumulativeLength, dtype=float) / totalChordLength)
+        # Positive slew points towards the centre of curvature, away from the PI apex, enlarging R
+        slewSigns = np.where(towardsCentre > 0, 1.0, -1.0)
+        # Chord sampling runs marginally short of the true arc, so positions are kept as a group fraction
+        fractions = np.asarray(cumulativeLength, dtype=float) / totalChordLength
         offsetsMm = slewSigns * distances * 1000.0
 
-        groupSamples = list(zip(stationsKm.tolist(), offsetsMm.tolist()))
+        groupSamples = list(zip(fractions.tolist(), offsetsMm.tolist()))
         peakSample = max(groupSamples, key=lambda sample: abs(sample[1]))
         # Zero anchors keep the plotted profile flat between optimized groups
-        self.slewSamples.append((groupStartStation, 0.0))
-        self.slewSamples.extend(groupSamples)
-        self.slewSamples.append((groupEndStation, 0.0))
+        self.slewSamples.append((groupSlot, 0.0, 0.0))
+        self.slewSamples.extend((groupSlot, fraction, offsetMm) for fraction, offsetMm in groupSamples)
+        self.slewSamples.append((groupSlot, 1.0, 0.0))
         return peakSample[0], peakSample[1]
 
     # Collapse every recorded sample into the plot ready arrays and the corridor wide aggregates
@@ -1586,6 +1629,83 @@ class AlignmentOptimizer:
             "meanSlewCurvedM": float(np.mean(curvedOffsets) / 1000.0) if curvedOffsets.size else 0.0,
             "maxSlewStationKm": float(stationKm[peakIndex]),
         }
+
+    # --- Cumulative chainage rebuild ---
+
+    # New length in metres of one element, from the optimizer override or the untouched baseline
+    def elementLengthM(self, k):
+        override = self.newElementData.get(k)
+        if override is not None:
+            return float(override["lengthM"])
+
+        element = self.elements[k]
+        baselineLengthM = (element["staEnd"] - element["staStart"]) * 1000.0
+        endpoints = self.newLineEndpoints.get(k)
+        if element["type"] != "Line" or not endpoints:
+            return float(baselineLengthM)
+
+        # A moved straight keeps its stationing length minus whatever the neighbouring curves consumed
+        startX, startY = endpoints.get("startXY", (element["startX"], element["startY"]))
+        endX, endY = endpoints.get("endXY", (element["endX"], element["endY"]))
+        newChordM = float(np.hypot(endX - startX, endY - startY))
+        return float(baselineLengthM - (self.lineBaselineLength(element) - newChordM))
+
+    # Walk every element from the alignment start so the station array is monotonic by construction
+    def rebuildCumulativeChainage(self):
+        stations = []
+        runningStationKm = float(self.elements[0]["staStart"]) if self.elements else 0.0
+        for k in range(len(self.elements)):
+            lengthM = self.elementLengthM(k)
+            # A negative length would mean the solver overspent a tangent, never emit a retrograde step
+            if lengthM < 0.0:
+                self.hasClampedChainage = True
+                lengthM = 0.0
+            lengthKm = lengthM / 1000.0
+            stations.append((runningStationKm, runningStationKm + lengthKm))
+            runningStationKm += lengthKm
+        self.elementStationsKm = stations
+
+    # Re-chained group boundaries, replacing the provisional stations recorded during the solve
+    def resolveGroupStations(self):
+        for group in self.summaryGroups:
+            startIdx = group.get("startElemIndex")
+            endIdx = group.get("endElemIndex")
+            if startIdx is None or endIdx is None:
+                continue
+            group["startKm"] = float(self.elementStationsKm[startIdx][0])
+            group["endKm"] = float(self.elementStationsKm[endIdx-1][1])
+            peakFraction = group.get("slewPeakFraction")
+            if peakFraction is None:
+                continue
+            group["slewMaxStationKm"] = float(
+                group["startKm"] + peakFraction * (group["endKm"] - group["startKm"]))
+
+    # Place every recorded group fraction onto the re-chained corridor
+    def resolveSlewSampleStations(self):
+        resolved = []
+        for groupSlot, fraction, offsetMm in self.slewSamples:
+            group = self.summaryGroups[groupSlot]
+            spanKm = group["endKm"] - group["startKm"]
+            resolved.append((group["startKm"] + fraction * spanKm, offsetMm))
+        self.slewSamples = resolved
+
+    # Monotone piecewise linear map from baseline chainage onto the re-chained active alignment
+    def buildChainageMap(self):
+        mapBaselineKm, mapActiveKm = [], []
+        nodes = [(float(self.elements[0]["staStart"]), float(self.elementStationsKm[0][0]))]
+        for k, element in enumerate(self.elements):
+            nodes.append((float(element["staEnd"]), float(self.elementStationsKm[k][1])))
+
+        for baselineStationKm, activeStationKm in nodes:
+            # Zero length elements share a node, so the later value simply replaces the earlier one
+            if mapBaselineKm and baselineStationKm <= mapBaselineKm[-1] + CHAINAGE_EPSILON_KM:
+                mapBaselineKm[-1] = baselineStationKm
+                mapActiveKm[-1] = activeStationKm
+                continue
+            mapBaselineKm.append(baselineStationKm)
+            mapActiveKm.append(activeStationKm)
+
+        return (np.array(mapBaselineKm, dtype=float), np.array(mapActiveKm, dtype=float))
 
     # Full chainage span of the imported alignment, the denominator of the shifted length share
     def evaluatedLengthKm(self):
@@ -1741,20 +1861,75 @@ class AlignmentOptimizer:
                 hi = mid
         return lo, True
 
+    # --- Minimum element length gates ---
+
+    # Closed form gate, cheap enough to run before any geometry is sampled
+    def isArcLengthAcceptable(self, frame, radius, entryLength, exitLength):
+        arcLengthM = self.arcLengthFor(frame, radius, entryLength, exitLength)
+        if arcLengthM >= self.lMinM:
+            return True
+        # An arc already under L_min may stay there as long as the optimization does not shorten it
+        return arcLengthM >= self.baselineArcLengthM - ARC_IMPROVEMENT_EPSILON_M
+
+    # Lowest arc length the search may aim for, the relaxation moves the floor down to the baseline
+    def effectiveArcFloorM(self):
+        return min(self.lMinM, self.baselineArcLengthM)
+
+    # Remaining length of one bounding straight once the curve's tangent point has moved onto it
+    def straightLengthAfter(self, lineElement, tangentPoint, isLineBefore):
+        if lineElement is None or lineElement.get("isVirtual"):
+            return np.inf
+        endpoints = self.newLineEndpoints.get(lineElement["elemIndex"], {})
+        if isLineBefore:
+            fixedPoint = endpoints.get("startXY", (lineElement["startX"], lineElement["startY"]))
+        else:
+            fixedPoint = endpoints.get("endXY", (lineElement["endX"], lineElement["endY"]))
+        return float(np.hypot(tangentPoint[0] - fixedPoint[0], tangentPoint[1] - fixedPoint[1]))
+
+    # Both bounding straights must still hold L_min for the sub L_min arc relaxation to apply
+    def boundingStraightsKeepReserve(self, geometry):
+        candidates = ((self.straightLengthAfter(self.groupLineBefore, geometry["ts"], True),
+                       self.baselineEntryStraightM),
+                      (self.straightLengthAfter(self.groupLineAfter, geometry["st"], False),
+                       self.baselineExitStraightM))
+        isSupported = True
+        for candidateLengthM, baselineLengthM in candidates:
+            if candidateLengthM >= self.lMinM:
+                continue
+            isSupported = False
+            # Only a straight the optimization itself pushed under L_min is worth reporting as such
+            if baselineLengthM >= self.lMinM:
+                self.wasRelaxationBlockedByTangent = True
+        return isSupported
+
+    # Geometry aware half of the gate, only a relaxed arc has to prove the straights still fit
+    def isCandidateSupported(self, frame, radius, entryLength, exitLength, geometry):
+        if self.arcLengthFor(frame, radius, entryLength, exitLength) >= self.lMinM:
+            return True
+        return self.boundingStraightsKeepReserve(geometry)
+
+    # Envelope exhaustion and a blocked relaxation look the same to the search, so they are named apart
+    def exhaustionReason(self):
+        return "optSkipShortTangent" if self.wasRelaxationBlockedByTangent else "optSkipEnvelopeExhausted"
+
     # --- Mode solvers ---
 
     def solveShiftArc(self, frame, R0, L0entry, L0exit, baselineAxis):
         def isFeasible(R):
             # The arc length gate is closed form, so an infeasible radius costs no sampled geometry
-            if self.arcLengthFor(frame, R, L0entry, L0exit) < self.lMinM:
+            if not self.isArcLengthAcceptable(frame, R, L0entry, L0exit):
                 return False
             geometry = self.buildCandidateGeometry(frame, R, L0entry, L0exit)
             if geometry is None:
                 return False
+            if not self.isCandidateSupported(frame, R, L0entry, L0exit, geometry):
+                return False
             return self.evaluateSlew(baselineAxis, geometry["samplePoints"]) <= self.dMaxM
 
         if not isFeasible(R0):
-            return {"feasible": False, "reason": "optSkipLMinViolated"}
+            # A blocked relaxation is a tangent problem, not a minimum arc length problem
+            reason = "optSkipShortTangent" if self.wasRelaxationBlockedByTangent else "optSkipLMinViolated"
+            return {"feasible": False, "reason": reason}
 
         analyticRadius = self.solveRadiusForEnvelope(frame, R0, L0entry, L0exit, self.dMaxM)
         if analyticRadius is None or analyticRadius <= R0:
@@ -1764,47 +1939,64 @@ class AlignmentOptimizer:
                                                max(0.05, (analyticRadius - R0) * 0.05))
 
         if Rnew - R0 < 0.01:
-            return {"feasible": False, "reason": "optSkipEnvelopeExhausted"}
+            return {"feasible": False, "reason": self.exhaustionReason()}
         return {"feasible": True, "Rnew": Rnew, "Lentry": L0entry, "Lexit": L0exit}
 
-    # Largest spiral length allowed by the shared tangent budget and the minimum arc length
+    # Largest spiral length allowed by the shared tangent budget, the arc floor and L_k,max
     def spiralLengthCeiling(self, frame, radius, ownLength, otherLength, budget):
         byBudget = ownLength + self.resolveSharedLine(budget, np.inf, self.lMinM)
-        byArc = self.maximumSpiralSumForArcLength(frame, radius, self.lMinM) - otherLength
-        return max(ownLength, min(byBudget, byArc))
+        byArc = self.maximumSpiralSumForArcLength(frame, radius, self.effectiveArcFloorM()) - otherLength
+        return max(ownLength, min(byBudget, byArc, self.lkMaxM))
 
-    def solveShiftAndExtend(self, frame, R0, L0entry, L0exit, baselineAxis, entryBudget, exitBudget, allowEntry, allowExit):
-        stage1 = self.solveShiftArc(frame, R0, L0entry, L0exit, baselineAxis)
-        if not stage1["feasible"]:
-            return stage1
-        Rnew = stage1["Rnew"]
+    # Transition lengths that keep the spiral angle L/(2R) of the imported curve at a new radius
+    def coupledSpiralLengths(self, R0, L0entry, L0exit, radius, entryBudget, exitBudget, allowEntry, allowExit):
+        scale = radius / R0 if R0 > 0 else 1.0
         Lentry, Lexit = L0entry, L0exit
 
         if allowEntry and L0entry > 0:
-            def isFeasibleEntry(L):
-                if self.arcLengthFor(frame, Rnew, L, Lexit) < self.lMinM:
-                    return False
-                if self.resolveSharedLine(entryBudget, L - L0entry, self.lMinM) < L - L0entry - 1e-6:
-                    return False
-                geometry = self.buildCandidateGeometry(frame, Rnew, L, Lexit)
-                if geometry is None:
-                    return False
-                return self.evaluateSlew(baselineAxis, geometry["samplePoints"]) <= self.dMaxM
-            ceiling = self.spiralLengthCeiling(frame, Rnew, L0entry, Lexit, entryBudget)
-            Lentry, _ = self.refineWithinBracket(isFeasibleEntry, L0entry, ceiling, max(1.0, L0entry*0.2))
-
+            Lentry = min(max(L0entry * scale, L0entry), self.lkMaxM)
+            Lentry = L0entry + self.resolveSharedLine(entryBudget, Lentry - L0entry, self.lMinM)
         if allowExit and L0exit > 0:
-            def isFeasibleExit(L):
-                if self.arcLengthFor(frame, Rnew, Lentry, L) < self.lMinM:
-                    return False
-                if self.resolveSharedLine(exitBudget, L - L0exit, self.lMinM) < L - L0exit - 1e-6:
-                    return False
-                geometry = self.buildCandidateGeometry(frame, Rnew, Lentry, L)
-                if geometry is None:
-                    return False
-                return self.evaluateSlew(baselineAxis, geometry["samplePoints"]) <= self.dMaxM
-            ceiling = self.spiralLengthCeiling(frame, Rnew, L0exit, Lentry, exitBudget)
-            Lexit, _ = self.refineWithinBracket(isFeasibleExit, L0exit, ceiling, max(1.0, L0exit*0.2))
+            Lexit = min(max(L0exit * scale, L0exit), self.lkMaxM)
+            Lexit = L0exit + self.resolveSharedLine(exitBudget, Lexit - L0exit, self.lMinM)
+
+        return Lentry, Lexit
+
+    def solveShiftAndExtend(self, frame, R0, L0entry, L0exit, baselineAxis, entryBudget, exitBudget, allowEntry, allowExit):
+        # Solving the radius first would spend the whole envelope before the clothoids were looked at,
+        # which is why this mode used to collapse onto mode 3. Radius and transitions therefore grow
+        # together off one parameter, holding the spiral angle constant, and a capped transition
+        # simply leaves the remaining envelope to the radius alone.
+        def candidateAt(radius):
+            return self.coupledSpiralLengths(R0, L0entry, L0exit, radius,
+                                             entryBudget, exitBudget, allowEntry, allowExit)
+
+        def isFeasible(radius):
+            Lentry, Lexit = candidateAt(radius)
+            if not self.isArcLengthAcceptable(frame, radius, Lentry, Lexit):
+                return False
+            geometry = self.buildCandidateGeometry(frame, radius, Lentry, Lexit)
+            if geometry is None:
+                return False
+            if not self.isCandidateSupported(frame, radius, Lentry, Lexit, geometry):
+                return False
+            return self.evaluateSlew(baselineAxis, geometry["samplePoints"]) <= self.dMaxM
+
+        if not isFeasible(R0):
+            reason = "optSkipShortTangent" if self.wasRelaxationBlockedByTangent else "optSkipLMinViolated"
+            return {"feasible": False, "reason": reason}
+
+        # The fixed spiral seed overshoots because coupled growth spends more envelope, the bracket copes
+        analyticRadius = self.solveRadiusForEnvelope(frame, R0, L0entry, L0exit, self.dMaxM)
+        if analyticRadius is None or analyticRadius <= R0:
+            Rnew, _ = self.bisectMaximize(isFeasible, R0, max(1.0, R0*0.1))
+        else:
+            Rnew, _ = self.refineWithinBracket(isFeasible, R0, analyticRadius,
+                                               max(0.05, (analyticRadius - R0) * 0.05))
+
+        Lentry, Lexit = candidateAt(Rnew)
+        if Rnew - R0 < 0.01 and Lentry - L0entry < 0.01 and Lexit - L0exit < 0.01:
+            return {"feasible": False, "reason": self.exhaustionReason()}
 
         return {"feasible": True, "Rnew": Rnew, "Lentry": Lentry, "Lexit": Lexit}
 
@@ -1816,12 +2008,16 @@ class AlignmentOptimizer:
 
         if allowEntry:
             def isFeasibleEntry(L):
-                if self.arcLengthFor(frame, R0, L, Lexit) < self.lMinM:
+                if L > self.lkMaxM:
+                    return False
+                if not self.isArcLengthAcceptable(frame, R0, L, Lexit):
                     return False
                 if self.resolveSharedLine(entryBudget, L - L0entry, self.lMinM) < L - L0entry - 1e-6:
                     return False
                 geometry = self.buildCandidateGeometry(frame, R0, L, Lexit)
                 if geometry is None:
+                    return False
+                if not self.isCandidateSupported(frame, R0, L, Lexit, geometry):
                     return False
                 return self.evaluateSlew(baselineAxis, geometry["samplePoints"]) <= self.dMaxM
             ceiling = self.spiralLengthCeiling(frame, R0, L0entry, Lexit, entryBudget)
@@ -1829,19 +2025,23 @@ class AlignmentOptimizer:
 
         if allowExit:
             def isFeasibleExit(L):
-                if self.arcLengthFor(frame, R0, Lentry, L) < self.lMinM:
+                if L > self.lkMaxM:
+                    return False
+                if not self.isArcLengthAcceptable(frame, R0, Lentry, L):
                     return False
                 if self.resolveSharedLine(exitBudget, L - L0exit, self.lMinM) < L - L0exit - 1e-6:
                     return False
                 geometry = self.buildCandidateGeometry(frame, R0, Lentry, L)
                 if geometry is None:
                     return False
+                if not self.isCandidateSupported(frame, R0, Lentry, L, geometry):
+                    return False
                 return self.evaluateSlew(baselineAxis, geometry["samplePoints"]) <= self.dMaxM
             ceiling = self.spiralLengthCeiling(frame, R0, L0exit, Lentry, exitBudget)
             Lexit, _ = self.refineWithinBracket(isFeasibleExit, L0exit, ceiling, max(1.0, L0exit*0.2))
 
         if Lentry - L0entry < 0.01 and Lexit - L0exit < 0.01:
-            return {"feasible": False, "reason": "optSkipEnvelopeExhausted"}
+            return {"feasible": False, "reason": self.exhaustionReason()}
         return {"feasible": True, "Rnew": R0, "Lentry": Lentry, "Lexit": Lexit}
 
     def solveInvertedShift(self, frame, R0, L0entry, L0exit, baselineAxis, entryBudget, exitBudget, allowEntry, allowExit):
@@ -1861,21 +2061,24 @@ class AlignmentOptimizer:
                 Lentry = min(Lentry, L0entry + self.resolveSharedLine(entryBudget, Lentry - L0entry, self.lMinM))
             if allowExit:
                 Lexit = min(Lexit, L0exit + self.resolveSharedLine(exitBudget, Lexit - L0exit, self.lMinM))
-            return Rnew, Lentry, Lexit
+            # A transition never grows past the configured ceiling, whatever the envelope still allows
+            return Rnew, min(Lentry, max(L0entry, self.lkMaxM)), min(Lexit, max(L0exit, self.lkMaxM))
 
         def isFeasible(s):
             Rnew, Lentry, Lexit = candidateAt(s)
-            if self.arcLengthFor(frame, Rnew, Lentry, Lexit) < self.lMinM:
+            if not self.isArcLengthAcceptable(frame, Rnew, Lentry, Lexit):
                 return False
             geometry = self.buildCandidateGeometry(frame, Rnew, Lentry, Lexit)
             if geometry is None:
+                return False
+            if not self.isCandidateSupported(frame, Rnew, Lentry, Lexit, geometry):
                 return False
             return self.evaluateSlew(baselineAxis, geometry["samplePoints"]) <= self.dMaxM
 
         # The radius floor bounds the shift, so the bracket is known before any sampling
         sMax, _ = self.refineWithinBracket(isFeasible, 0.0, R0 - Rfloor, max(0.05, self.dMaxM*0.2))
         if sMax < 0.01:
-            return {"feasible": False, "reason": "optSkipEnvelopeExhausted"}
+            return {"feasible": False, "reason": self.exhaustionReason()}
 
         Rnew, Lentry, Lexit = candidateAt(sMax)
         return {"feasible": True, "Rnew": Rnew, "Lentry": Lentry, "Lexit": Lexit}
@@ -1903,6 +2106,14 @@ class AlignmentOptimizer:
         entryBudget = self.availableLineBudget(lineBefore) if allowExtendEntry else 0.0
         exitBudget = self.availableLineBudget(lineAfter) if allowExtendExit else 0.0
 
+        # Gates below compare against this group's own baseline, so prime it before any candidate runs
+        self.baselineArcLengthM = self.arcLengthBaseline(arcElement)
+        self.groupLineBefore = lineBefore
+        self.groupLineAfter = lineAfter
+        self.baselineEntryStraightM = self.availableLineBudget(lineBefore)
+        self.baselineExitStraightM = self.availableLineBudget(lineAfter)
+        self.wasRelaxationBlockedByTangent = False
+
         if mode == OPTIMIZATION_MODE_SHIFT_ARC:
             result = self.solveShiftArc(frame, R0, L0entry, L0exit, baselineAxis)
         elif mode == OPTIMIZATION_MODE_SHIFT_AND_EXTEND:
@@ -1915,7 +2126,7 @@ class AlignmentOptimizer:
             result = {"feasible": False, "reason": "optSkipPatternDisabled"}
 
         if not result["feasible"]:
-            self.recordSkip(startIdx, endIdx, patternType, result.get("reason", "optSkipEnvelopeExhausted"))
+            self.recordSkip(startIdx, endIdx, patternType, result.get("reason", self.exhaustionReason()))
             return
 
         Lentry, Lexit, Rnew = result["Lentry"], result["Lexit"], result["Rnew"]
@@ -1939,9 +2150,11 @@ class AlignmentOptimizer:
                         frame, baselineAxis)
         self.hasOptimizedAny = True
 
-    def registerNewElement(self, k, staStart, staEnd, kappaStart, kappaEnd, radiusStart, radiusEnd, startXY, endXY, centerXY=None, piXY=None):
+    def registerNewElement(self, k, staStart, staEnd, kappaStart, kappaEnd, radiusStart, radiusEnd, startXY, endXY, centerXY=None, piXY=None, lengthM=None):
         self.newElementData[k] = {
             "staStart": staStart, "staEnd": staEnd,
+            # The intrinsic length survives re-chaining, the provisional stations above do not
+            "lengthM": float(lengthM) if lengthM is not None else float((staEnd - staStart) * 1000.0),
             "curvatureStart": kappaStart, "curvatureEnd": kappaEnd,
             "radiusStart": radiusStart, "radiusEnd": radiusEnd,
             "startX": startXY[0], "startY": startXY[1],
@@ -1985,39 +2198,47 @@ class AlignmentOptimizer:
         if entrySpiral is not None:
             entryPi = vecAdd(geometry["ts"], self.tangentAtPoint(geometry["entrySpiralPoints"], 0))
             self.registerNewElement(startIdx, groupStartStation, entryEndStation, 0.0, entryKappaEnd,
-                                     np.inf, Rnew, geometry["ts"], geometry["arcStart"], piXY=entryPi)
+                                     np.inf, Rnew, geometry["ts"], geometry["arcStart"], piXY=entryPi,
+                                     lengthM=Lentry)
             arcIdx = startIdx + 1
         else:
             arcIdx = startIdx
 
         self.registerNewElement(arcIdx, entryEndStation, arcEndStation, arcKappa, arcKappa,
-                                 Rnew, Rnew, geometry["arcStart"], geometry["arcEnd"], centerXY=geometry["center"])
+                                 Rnew, Rnew, geometry["arcStart"], geometry["arcEnd"], centerXY=geometry["center"],
+                                 lengthM=geometry["arcLength"])
 
         if exitSpiral is not None:
             exitPi = vecAdd(geometry["arcEnd"], self.tangentAtPoint(geometry["exitSpiralPoints"], 0))
             self.registerNewElement(arcIdx+1, arcEndStation, exitEndStation, arcKappa, 0.0,
-                                     Rnew, np.inf, geometry["arcEnd"], geometry["st"], piXY=exitPi)
+                                     Rnew, np.inf, geometry["arcEnd"], geometry["st"], piXY=exitPi,
+                                     lengthM=Lexit)
 
         self.updateLineEndpoint(lineBefore, updateStart=False, newPoint=geometry["ts"])
         self.updateLineEndpoint(lineAfter, updateStart=True, newPoint=geometry["st"])
 
         lengthDelta = (Lentry - L0entry) + (Lexit - L0exit) + (geometry["arcLength"] - self.arcLengthBaseline(arcElement))
-        slewMaxStationKm, _ = self.recordSlewProfile(groupStartStation, exitEndStation, frame, geometry, baselineAxis)
+        # Samples are recorded as a fraction of the group so re-chaining can place them afterwards
+        groupSlot = len(self.summaryGroups)
+        slewPeakFraction, _ = self.recordSlewProfile(groupSlot, frame, geometry, baselineAxis)
 
         self.summaryGroups.append({
             "groupIndex": len(self.summaryGroups), "patternType": patternType, "mode": mode,
             "elementPattern": self.describeElementPattern(patternType),
+            "startElemIndex": int(startIdx), "endElemIndex": int(endIdx),
+            "slewPeakFraction": float(slewPeakFraction),
             "startKm": float(groupStartStation), "endKm": float(exitEndStation), "status": "optOk",
             "radiusOldM": float(R0), "radiusNewM": float(Rnew),
             "spiralLengthsOldM": [float(L0entry), float(L0exit)], "spiralLengthsNewM": [float(Lentry), float(Lexit)],
             "offsetOldM": float(self.clothoidShiftAndFoot(L0entry, R0)[1]), "offsetNewM": float(geometry["deltaREntry"]),
-            "slewMaxM": float(slewMax), "slewMaxStationKm": float(slewMaxStationKm), "lengthDeltaM": float(lengthDelta),
+            "slewMaxM": float(slewMax), "slewMaxStationKm": float(groupStartStation), "lengthDeltaM": float(lengthDelta),
         })
 
     def recordSkip(self, startIdx, endIdx, patternType, reasonCode):
         self.summaryGroups.append({
             "groupIndex": len(self.summaryGroups), "patternType": patternType or "unknown", "mode": OPTIMIZATION_MODE_NONE,
             "elementPattern": self.describeElementPattern(patternType),
+            "startElemIndex": int(startIdx), "endElemIndex": int(endIdx),
             "startKm": float(self.elements[startIdx]["staStart"]), "endKm": float(self.elements[endIdx-1]["staEnd"]),
             "status": reasonCode,
             "radiusOldM": None, "radiusNewM": None, "spiralLengthsOldM": None, "spiralLengthsNewM": None,
@@ -2062,12 +2283,14 @@ class AlignmentOptimizer:
         radiusNew = [self.radiusFromCurvature(v) for v in curvatureNew]
 
         for k in range(len(self.elements)):
+            pairIndex = 2 * k
+            # Every element takes its re-chained station, not just the ones the optimizer touched
+            stationHorizontalNew[pairIndex] = self.elementStationsKm[k][0]
+            stationHorizontalNew[pairIndex+1] = self.elementStationsKm[k][1]
+
             override = self.newElementData.get(k)
             if override is None:
                 continue
-            pairIndex = 2 * k
-            stationHorizontalNew[pairIndex] = override["staStart"]
-            stationHorizontalNew[pairIndex+1] = override["staEnd"]
             curvatureNew[pairIndex] = override["curvatureStart"]
             curvatureNew[pairIndex+1] = override["curvatureEnd"]
             radiusNew[pairIndex] = override["radiusStart"]
@@ -2082,6 +2305,11 @@ class AlignmentOptimizer:
         lxml["curvatureSignNew"] = np.array(curvatureSignNew, dtype=float)
         lxml["radiusNew"] = np.array(radiusNew, dtype=float)
 
+        # The map lets stops, markers and reports follow the alignment onto its new stationing
+        chainageMapBaselineKm, chainageMapActiveKm = self.buildChainageMap()
+        lxml["chainageMapBaselineKm"] = chainageMapBaselineKm
+        lxml["chainageMapActiveKm"] = chainageMapActiveKm
+
         return self.buildOptimizedElementsDict()
 
     def buildOptimizedElementsDict(self):
@@ -2093,26 +2321,28 @@ class AlignmentOptimizer:
 
         for k, elem in enumerate(self.elements):
             override = self.newElementData.get(k)
+            # Stationing always comes from the re-chained array so every element type stays in step
+            staStart = self.elementStationsKm[k][0]
             if elem["type"] == "Line":
                 lineOverride = self.newLineEndpoints.get(k, {})
                 startX, startY = lineOverride.get("startXY", (elem["startX"], elem["startY"]))
                 endX, endY = lineOverride.get("endXY", (elem["endX"], elem["endY"]))
                 lineStartX.append(startX); lineStartY.append(startY)
                 lineEndX.append(endX); lineEndY.append(endY)
-                lineStationStart.append(elem["staStart"])
+                lineStationStart.append(staStart)
             elif elem["type"] == "Spiral":
                 if override:
                     spiralStartX.append(override["startX"]); spiralStartY.append(override["startY"])
                     spiralEndX.append(override["endX"]); spiralEndY.append(override["endY"])
                     spiralPIX.append(override["piX"]); spiralPIY.append(override["piY"])
-                    spiralStationStart.append(override["staStart"])
-                    spiralLength.append((override["staEnd"] - override["staStart"]) * 1000.0)
+                    spiralStationStart.append(staStart)
+                    spiralLength.append(override["lengthM"])
                     spiralRadiusStart.append(override["radiusStart"]); spiralRadiusEnd.append(override["radiusEnd"])
                 else:
                     spiralStartX.append(elem["startX"]); spiralStartY.append(elem["startY"])
                     spiralEndX.append(elem["endX"]); spiralEndY.append(elem["endY"])
                     spiralPIX.append(elem["piX"]); spiralPIY.append(elem["piY"])
-                    spiralStationStart.append(elem["staStart"])
+                    spiralStationStart.append(staStart)
                     spiralLength.append(elem["length"])
                     spiralRadiusStart.append(elem["radiusStart"]); spiralRadiusEnd.append(elem["radiusEnd"])
                 spiralRot.append(elem["rot"])
@@ -2121,13 +2351,13 @@ class AlignmentOptimizer:
                     curveStartX.append(override["startX"]); curveStartY.append(override["startY"])
                     curveEndX.append(override["endX"]); curveEndY.append(override["endY"])
                     curveCenterX.append(override["centerX"]); curveCenterY.append(override["centerY"])
-                    curveStationStart.append(override["staStart"])
+                    curveStationStart.append(staStart)
                     curveRadius.append(override["radiusStart"])
                 else:
                     curveStartX.append(elem["startX"]); curveStartY.append(elem["startY"])
                     curveEndX.append(elem["endX"]); curveEndY.append(elem["endY"])
                     curveCenterX.append(elem["centerX"]); curveCenterY.append(elem["centerY"])
-                    curveStationStart.append(elem["staStart"])
+                    curveStationStart.append(staStart)
                     curveRadius.append(elem["radius"])
                 curveRot.append(elem["rot"])
 

@@ -13,6 +13,7 @@ Built with Python and PySide6.
 - Parse and visualize LandXML horizontal alignment files (lines, spirals, curves; cant; vertical profile)
 - Parse line speed limits from XML TTP files (Czech national infrastructure registry format)
 - Append multiple LandXML or TTP files to build a longer corridor
+- Optional alignment optimization: enlarge curve radii and lengthen transition curves inside a bounded lateral slew envelope, preview the new curvature against the imported baseline, and revert at any time
 - Design cant (D) and calculate permissible speed profiles for four speed profiles (difference in global max cant deficiency): V100, V130, V150, VK
 - Enforce norm limits: cant ramp gradient (n), rate of change of cant deficiency (nI), abrupt change of cant deficiency (deltaI)
 - Simulate train kinematics using a forward-backward pass algorithm with traction, resistance, and braking
@@ -43,6 +44,14 @@ The following parameters can be adjusted in the Settings dialog:
 - `maxIterations` - maximum number of solver iterations
 - `designApproach` - norm approach used for limit lookup (standard / alternative)
 - EPSG code - coordinate reference system of the input LandXML file
+- Basemap API key - optional, only needed for a keyed tile provider; may also be supplied through the `COYPU_MAP_API_KEY` environment variable and is never stored in the source
+
+Alignment optimization parameters, set in the Alignment Optimization dialog:
+
+- `dMaxM` - lateral slew envelope, the largest permitted displacement from the imported axis [m]
+- `lMinM` - minimum element length [m]
+- `lkMaxM` - maximum optimized transition curve length [m]
+- `modeLcl` / `modeLscsl` - optimization mode per element pattern
 
 ---
 
@@ -107,6 +116,174 @@ After convergence, D and I values are rounded and the final speed is verified ag
 
 ---
 
+## Alignment Optimization (Lateral Slew)
+
+An optional design phase that enlarges curve radii and lengthens transition curves within a bounded
+lateral displacement envelope, so an existing corridor can carry a higher speed without being
+realigned. It reshapes horizontal geometry only. Cant and speeds are **not** recalculated by it, and
+must be re-run afterwards from the Geometry page.
+
+### Workflow position
+
+The application separates three explicit, user driven phases:
+
+1. **Load** the LandXML alignment (and optionally the XML TTP speed limits).
+2. **Optimize** the alignment (optional). Previews the new curvature against the imported baseline
+   and the resulting lateral slew profile. Any cached cant, speed and kinematics results are cleared,
+   because they describe geometry that no longer exists. A `Revert to Baseline` button in the
+   optimization dialog, and the `Clear Optimization` ribbon command, restore the imported alignment.
+3. **Design cant** (D + I) on whichever alignment is currently active, then run the simulation.
+
+Only one alignment is ever *active*. The plots show a single set of cant, cant deficiency and speed
+curves belonging to that active alignment. The curvature plot is the exception: it keeps the imported
+baseline as a muted dashed curve underneath the vivid active one, and the map does the same with a
+dashed grey baseline polyline under the styled active axis.
+
+**As-built mode** (`Calculate I, D stays the same`) is disabled while an optimization is active. The
+cant recorded in the LandXML file was installed for the imported geometry; on a displaced axis it no
+longer describes anything physical.
+
+### Sign convention
+
+Lateral slew `Δy` is the signed perpendicular distance from the imported axis to the optimized one:
+
+- **Positive `+Δy` (inward)** — displacement **towards the centre of curvature**, away from the
+  intersection point (PI) of the bounding tangents. The radius **grows**.
+- **Negative `−Δy` (outward)** — displacement **towards the PI apex**, away from the curve centre.
+  The radius **shrinks**.
+
+The sign is independent of whether the curve turns left or right: the fixed frame's normals are
+multiplied by the turn sign, so the test is always "is the new axis on the centre side". The plot,
+the slew report table, the CSV export and the map colour scale all follow this one definition.
+
+### Closed-form geometry
+
+For a clothoid of length `L` at radius `R`, with the deflection angle `Δ` between the bounding
+tangents:
+
+| Quantity | Formula |
+|---|---|
+| Spiral (clothoid) angle | `θs = L / (2R)` |
+| Shift of the arc off the tangent | `ΔR = L² / (24R) − L⁴ / (2688R³)` |
+| Tangent foot offset | `x_m = L / 2 − L³ / (240R²)` |
+| Clothoid parameter | `A = sqrt(R · L)` |
+| Circular arc length | `L_C = R · abs(Δ) − ½ (L_e + L_x)` |
+| Apex offset against the baseline | `Δy_apex = (R − R₀)(sec(Δ/2) − 1) + (ΔR̄ − ΔR̄₀) · sec(Δ/2)` |
+
+`ΔR̄` is the mean of the entry and exit clothoid shifts. The last identity is inverted by Newton
+iteration (`solveRadiusForEnvelope`) to seed the search with the radius whose apex offset exactly
+reaches the envelope `d_max`; the seed is then refined by a bracketed bisection against the true
+sampled slew, so the analytic approximation never decides feasibility on its own.
+
+Feasibility of a candidate is always measured as the maximum perpendicular distance between the
+sampled candidate axis and the baseline polyline, not from the apex identity.
+
+### Optimization modes
+
+| Mode | Name | Radius | Transitions | Available for |
+|---|---|---|---|---|
+| — | No optimization | unchanged | unchanged | every pattern |
+| 1 | Shift arc and extend transitions (C+S) | grows | grow with it | L-S-C-S-L |
+| 2 | Extend transitions only (S) | unchanged | grow | L-S-C-S-L |
+| 3 | Enlarge radius only (C) | grows | unchanged | L-C-L, L-S-C-S-L |
+| 4 | Inverted shift (C+S) | shrinks | grow | L-S-C-S-L |
+
+**Mode 1** drives the radius and both clothoids from a single parameter, holding the spiral angle
+`θs = L / (2R)` constant, so `L(R) = L₀ · R / R₀`. That is what "shift the arc **and** extend the
+transitions" means: as the radius grows the transition lengthens proportionally, preserving the
+cant ramp gradient the imported design used. Solving the radius first and the spirals afterwards
+does not work — the radius search alone consumes the whole `d_max` envelope, and every longer
+clothoid then increases `ΔR` and breaches it, which is why a sequential formulation collapses onto
+mode 3. When the tangent budget or `L_k,max` caps a transition, it freezes at its cap and the
+remaining envelope goes to the radius alone.
+
+**Mode 2** keeps `R₀` and spends the whole envelope on the clothoids, raising the permissible speed
+through the cant deficiency change rate rather than through curvature.
+
+**Mode 3** is the only mode offered for L-C-L, and the only one that changes nothing but `R`.
+
+**Mode 4** reduces the radius while lengthening the transitions, both from one parameter
+`s`: `R = R₀ − s` and `L = sqrt(24 R (ΔR₀ + 2s))`. It trades curvature for a gentler cant ramp,
+which helps where the ramp gradient rather than the radius is what limits the speed.
+
+### Element pattern handling
+
+Groups are maximal runs of non-straight elements between two straights.
+
+- **L-C-L** — a bare circular curve. It has no transitions, so only mode 3 is offered; a stale
+  project or batch preset asking for a spiral mode is skipped with `optSkipNoSpirals`.
+- **L-S-C-S-L** — clothoid, arc, clothoid. All four modes apply. Both spirals must be genuine
+  clothoids (one end at infinite radius, length above 0.5 m) and share the arc's turn direction.
+- **Reverse compound (S-curve)** — `S-C-S-S-C-S` with opposite turn directions. C1 continuity at the
+  inflection is validated, a virtual fixed tangent is synthesised there, and each half is then solved
+  as an L-S-C-S-L with extension disabled on the shared side.
+- Anything else is reported as `optSkipCompound` or `optSkipNotClothoid` and left untouched.
+
+A group also needs a real straight on both sides (`optSkipNoTangent`).
+
+### Boundary constraints
+
+- **`d_max`** — the lateral slew envelope in metres (0.05 to 1.50). No sampled point of the optimized
+  axis may lie further than this from the imported one.
+- **`L_min`** — the minimum element length in metres. Enforced on the circular arc and, through the
+  shared tangent budget, on the straights.
+- **`L_k,max`** — an upper bound on an optimized transition length, so a curve cannot be given a
+  disproportionately long clothoid just because the envelope still allows one. It clamps the search
+  ceiling and every candidate, and never shortens a transition that was already longer on import.
+- **Shared tangent budget** — a straight between two curves is consumed by both. The rule is
+  *`L_min`-or-zero*: a straight may be consumed entirely, or it must retain at least `L_min`. The
+  remaining length is tracked per straight across the whole corridor, so two neighbouring curves
+  cannot each spend the same metres.
+
+#### Minimum length relaxation
+
+A strict `L_C ≥ L_min` gate rejects exactly the curves that need help most: a short arc that the
+optimization would *lengthen* is refused because it is still short afterwards. The gate is therefore
+relaxed:
+
+> An arc below `L_min` is accepted provided the optimization does not shorten it further, **and**
+> both bounding straights keep at least `L_min` of their own.
+
+A `500 – 15 – 500 m` L-C-L with `L_min = 30 m` becomes `495 – 25 – 495 m`: the arc is still under
+`L_min`, but it is 10 m longer than it was and the straights keep 495 m each, so it is a net
+geometric improvement and is accepted. If the straights cannot back the relaxation the group is
+skipped with `optSkipShortTangent`, and where they can only partly back it the search stops exactly
+at the point where a straight would fall to `L_min`. An arc that starts *above* `L_min` still faces
+the hard gate and may never be driven below it.
+
+### Chainage
+
+Changing element lengths changes the chainage of everything downstream, so after all groups are
+solved the whole corridor is **re-chained from the alignment start** out of the final element
+lengths. This guarantees the station array is monotonic and that each element's end coincides with
+the next element's start. A curve that expands into its bounding tangents therefore moves its start
+chainage *backwards* and its end chainage *forwards* symmetrically, rather than pushing the whole
+expansion downstream.
+
+Note that enlarging a radius between fixed tangents makes the corridor slightly **shorter** overall:
+the arc grows by `ΔR · Δ` while the two tangents each give up `ΔR · tan(Δ/2)`, and
+`tan(Δ/2) > Δ/2`.
+
+The optimizer also emits a monotone piecewise linear map from baseline chainage to active chainage
+(`chainageMapBaselineKm` / `chainageMapActiveKm`). Scheduled stops are entered against the imported
+chainage, so they are projected through this map before they are drawn as station flags or handed to
+the kinematics engine — a stop stays on the same physical point of the line instead of drifting
+against the new geometry.
+
+### Outputs
+
+- **Lateral slew profile plot** — a third row under the geometry and speed plots, with the `±d_max`
+  envelope drawn as threshold lines.
+- **Slew report** — per curve group: pattern, mode, `R` before and after, both transition lengths
+  before and after, peak local slew and where it occurs, and the resulting speed change. The speed
+  columns are filled once the cant design has been re-run on the new geometry.
+- **Map** — the dashed grey baseline, the styled active axis, and a heat line over every stretch
+  whose displacement clears 5 mm.
+- **Skip reasons** — every group that was not modified reports why, and the reasons are aggregated in
+  the dialog shown at the end of a run.
+
+---
+
 ## Vehicle Kinematics Simulation
 
 Train motion is simulated by numerical integration of the equation of motion at 1 m intervals along the alignment.
@@ -147,7 +324,9 @@ The Batch page runs many track variants unattended and compares them side by sid
 - `main.py` - application entry point
 - `gui.py` - main window, ribbon, docks and data flow
 - `gui_overlay.py` - settings and vehicle dialogs, detached plot window
-- `geometry_engine.py` - cant design and permissible speed calculation
+- `geometry_engine.py` - cant design, permissible speed calculation and the alignment optimizer
+- `optimization_runner.py` - isolated background execution of the alignment optimization
+- `slew_report.py` - lateral slew summary table and its window
 - `vehicle_engine.py` - train kinematics simulation
 - `readfile.py` - LandXML and XML TTP parsers, coordinate transformations
 - `map_viewer.py` - interactive Folium map widget with floating map controls
@@ -160,7 +339,11 @@ The Batch page runs many track variants unattended and compares them side by sid
 - `xml_editor.py` - XML source viewer with folding and syntax highlighting
 - `ribbon.py` - ribbon command bar widgets
 - `lazy_dock.py` - dock widget with deferred rendering and a title bar menu
-- `theme_manager.py` - operating system theme detection and application styling
+- `theme_manager.py` - operating system theme detection, colour tokens and application styling
+- `track_stats_dock.py` - track statistics dock with design and achieved speed sections
+- `ui_kit.py` - small shared widgets, the KPI cards and the collapsible sections
+- `presets_manager.py` - export and import of the interface presets
+- `source_stack.py` - provenance of the imported source files
 - `icons.py` - programmatically generated vector icons and text badges
 - `default_values.py` - built-in default norm limits and vehicle parameters
 - `translations/` - external JSON translation files (cz.json, en.json, de.json)

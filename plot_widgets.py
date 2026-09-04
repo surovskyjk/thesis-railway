@@ -20,22 +20,13 @@ SERIES_STYLES = {
     "cantDef130": {"color": "#35b6c4", "width": 2, "dash": True},
     "cantDef150": {"color": "#b06fe0", "width": 2, "dash": True},
     "cantDefK": {"color": "#5b8ede", "width": 2, "dash": True},
-    "curvature": {"color": "#888888", "width": 2, "dash": True},
-    "curvatureNew": {"color": "#00b4d8", "width": 3},
-    "cantPossibleNew": {"color": "#2e9e4f", "width": 2, "dash": True},
-    "cDef100New": {"color": "#d64545", "width": 2, "dash": True},
-    "cDef130New": {"color": "#0f8b8d", "width": 2, "dash": True},
-    "cDef150New": {"color": "#8a4fd3", "width": 2, "dash": True},
-    "cDefKNew": {"color": "#4a7fd4", "width": 2, "dash": True},
+    "curvature": {"color": "#00b4d8", "width": 3},
+    "curvatureBaseline": {"color": "#888888", "width": 2, "dash": True},
     "speedLimits": {"color": "#111111", "width": 2},
     "speedLimits100": {"color": "#d64545", "width": 2},
     "speedLimits130": {"color": "#0f8b8d", "width": 2},
     "speedLimits150": {"color": "#8a4fd3", "width": 2},
     "speedLimitsK": {"color": "#4a7fd4", "width": 2},
-    "speedLimits100New": {"color": "#d64545", "width": 2, "dash": True},
-    "speedLimits130New": {"color": "#0f8b8d", "width": 2, "dash": True},
-    "speedLimits150New": {"color": "#8a4fd3", "width": 2, "dash": True},
-    "speedLimitsKNew": {"color": "#4a7fd4", "width": 2, "dash": True},
     "slewPositive": {"color": "#e0703d", "width": 2},
     "slewNegative": {"color": "#3d8fe0", "width": 2},
     "slewThreshold": {"color": "#d64545", "width": 1, "dash": True},
@@ -88,6 +79,13 @@ MARKER_LABEL_POSITION_HORIZONTAL = 0.98
 
 # Fraction of the visible range past which a caption flips to the other side
 MARKER_FLIP_FRACTION = 0.75
+
+# Above this many visible curves the legend wraps into a second column, and then a third
+LEGEND_SINGLE_COLUMN_MAX = 6
+LEGEND_TWO_COLUMN_MAX = 12
+
+# Hard ceiling on legend columns, past this the labels themselves become unreadable
+LEGEND_MAX_COLUMNS = 3
 
 # Legend placement offsets, negative values anchor to the opposite plot edge
 LEGEND_OFFSETS = {
@@ -181,6 +179,9 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
         self.cursorAxis = "x"
         self.mouseProxy = None
         self.readoutLabel = None
+
+        # Active unit system, km/h and km when true, m/s and m when false
+        self.useKmh = False
         self.readoutPlotKey = None
         self.detachedWindows = []
 
@@ -211,7 +212,8 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
         if withLegend:
             # Tight vertical spacing keeps the legend compact over the data
             legend = plotItem.addLegend(offset=LEGEND_OFFSETS.get(legendCorner, (10, 10)),
-                                        verSpacing=-4, horSpacing=8, labelTextSize="8pt")
+                                        verSpacing=-6, horSpacing=6, labelTextSize="7pt")
+            legend.layout.setContentsMargins(2, 1, 2, 1)
             self.plotLegends[plotKey] = legend
 
         if withCrosshair:
@@ -385,9 +387,21 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
             return
 
         legend.clear()
-        for entry in self.plotSeries.get(plotKey, {}).values():
-            if entry["visible"] and entry["name"]:
-                legend.addItem(entry["item"], entry["name"])
+        visibleEntries = [entry for entry in self.plotSeries.get(plotKey, {}).values()
+                          if entry["visible"] and entry["name"]]
+
+        # A single tall column overflows the short dock rows, so long legends wrap instead of clipping
+        legend.setColumnCount(self.legendColumnCount(len(visibleEntries)))
+        for entry in visibleEntries:
+            legend.addItem(entry["item"], entry["name"])
+
+    # How many columns a legend needs to stay inside its plot row
+    def legendColumnCount(self, entryCount):
+        if entryCount <= LEGEND_SINGLE_COLUMN_MAX:
+            return 1
+        if entryCount <= LEGEND_TWO_COLUMN_MAX:
+            return 2
+        return LEGEND_MAX_COLUMNS
 
     # Store the stop list and redraw the vertical station indicators
     def setStations(self, stations):
@@ -575,13 +589,37 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
             self.cursorMoved.emit(value)
             return
 
+    # Switch the widget between km/h, km and m/s, m without touching the plotted data
+    def setUnitSystem(self, useKmh):
+        self.useKmh = bool(useKmh)
+
+    # Multiplier turning an internal m/s speed into the displayed unit
+    def displaySpeedFactor(self):
+        return 3.6 if self.useKmh else 1.0
+
+    # Multiplier turning an internal kilometre chainage into the displayed unit
+    def displayDistanceFactor(self):
+        return 1.0 if self.useKmh else 1000.0
+
+    def speedUnitLabel(self):
+        return self.lan.get("unitKmh", "km/h") if self.useKmh else self.lan.get("unitMs", "m/s")
+
+    def distanceUnitLabel(self):
+        return self.lan.get("unitKm", "km") if self.useKmh else self.lan.get("unitM", "m")
+
+    # Chainage formatted in the active distance unit, used by every readout
+    def formatChainage(self, stationKm):
+        if self.useKmh:
+            return f"{stationKm:.3f} {self.distanceUnitLabel()}"
+        return f"{stationKm * 1000.0:.1f} {self.distanceUnitLabel()}"
+
     # Move the readout label to the top of its plot at the current chainage
     def updateReadout(self, value):
         if self.readoutLabel is None or self.readoutPlotKey is None:
             return
         viewRange = self.plotItems[self.readoutPlotKey].vb.viewRange()
         self.readoutLabel.setPos(value, viewRange[1][1])
-        self.readoutLabel.setText(f"{value:.3f} km")
+        self.readoutLabel.setText(self.formatChainage(value))
 
     # Drive every crosshair from an external source such as the map
     def setCursorStation(self, stationKm):
@@ -748,7 +786,7 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
         primary, secondary = self.buildSeriesDescriptors(plotKey)
         title = self.plotTitles.get(plotKey, plotKey)
 
-        window = gui_overlay.PopupPlotWindow(title, self.window())
+        window = gui_overlay.PopupPlotWindow(title, self.window(), self.lan)
         window.drawData(
             primary,
             xlabel=plotItem.getAxis("bottom").labelText,
@@ -756,7 +794,10 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
             title=title,
             secondarySeries=secondary or None,
             secondaryYlabel=plotItem.getAxis("right").labelText if secondary else "",
+            # A secondary axis must keep its zero on the primary zero here too, not only in the dock
+            symmetricYlim=bool(secondary),
         )
+        window.applyTheme(self.isDark, self.tokens)
         window.show()
 
         # Keeping a reference prevents the window from being garbage collected

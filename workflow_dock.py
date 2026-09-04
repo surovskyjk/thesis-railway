@@ -1,4 +1,4 @@
-# Interactive seven step workflow guide shown as a dockable panel
+# Interactive eight step workflow guide shown as a dockable panel
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QFrame, QLabel, QPushButton, QScrollArea, QSizePolicy,
                                QVBoxLayout, QWidget)
@@ -12,6 +12,7 @@ STEP_KEYS = [
     "workflowStep5",
     "workflowStep6",
     "workflowStep7",
+    "workflowStep8",
 ]
 
 
@@ -100,6 +101,12 @@ class WorkflowStepperWidget(QWidget):
             textColor = tokens["text"]
             idleBorder = tokens["border"]
             idleBackground = tokens["button"]
+        elif getattr(self, "isDark", False):
+            doneBorder = "#4cc46e"
+            doneBackground = "#264d33"
+            textColor = "#e6e6e6"
+            idleBorder = "#4d4d4d"
+            idleBackground = "#3a3a3a"
         else:
             doneBorder = "#2e9e4f"
             doneBackground = "#dff3e4"

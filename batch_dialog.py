@@ -159,22 +159,39 @@ class BatchProcessingDialog(QDialog):
 
         self.tabs.addTab(tab, self.lan.get("batchTabStopsProfiles", "Stopping patterns"))
 
+    # Several patterns are usually compared in one batch, so the picker takes them all at once
     def addStopsProfile(self):
-        filePath, _ = QFileDialog.getOpenFileName(
+        filePaths, _ = QFileDialog.getOpenFileNames(
             self, self.lan.get("batchAddStopsProfile", "Add stopping pattern..."), "", "CSV Files (*.csv)")
-        if not filePath:
+        if not filePaths:
             return
-        fileContent = readfile.ReadFile().Read(filePath)
-        if not fileContent or fileContent.startswith("Error"):
-            QMessageBox.critical(self, self.lan.get("error", "Error"), fileContent or "")
-            return
-        trainStops = self.parseStopsCsv(fileContent)
-        label = Path(filePath).stem
-        profileId = f"profile{len(self.stopsProfiles) + 1}"
-        self.stopsProfiles.append({"stopsProfileId": profileId, "label": label,
-                                   "fileName": Path(filePath).name, "trainStops": trainStops})
+
+        problems = []
+        for filePath in filePaths:
+            fileContent = readfile.ReadFile().Read(filePath)
+            if not fileContent or fileContent.startswith("Error"):
+                problems.append(f"{Path(filePath).name}: {fileContent or ''}".strip())
+                continue
+
+            trainStops = self.parseStopsCsv(fileContent)
+            if not trainStops:
+                problems.append(f"{Path(filePath).name}: "
+                                f"{self.lan.get('batchStopsFileEmpty', 'no usable stop rows')}")
+                continue
+
+            profileId = f"profile{len(self.stopsProfiles) + 1}"
+            self.stopsProfiles.append({"stopsProfileId": profileId, "label": Path(filePath).stem,
+                                       "fileName": Path(filePath).name, "trainStops": trainStops})
+
         self.refreshStopsProfileList()
         self.refreshVariantPreview()
+
+        # One dialog for the whole selection, a single bad file never hides the ones that worked
+        if problems:
+            QMessageBox.warning(self, self.lan.get("error", "Error"),
+                                self.lan.get("batchStopsImportProblems",
+                                             "Some stopping patterns could not be imported:")
+                                + "\n" + "\n".join(problems))
 
     # Same contract as StopsSettingsDialog.importCSV: skip one header row, positional [km, dwell, name]
     def parseStopsCsv(self, fileContent):
@@ -280,12 +297,13 @@ class BatchProcessingDialog(QDialog):
         self.includeBaselineCheck.stateChanged.connect(self.refreshVariantPreview)
         layout.addWidget(self.includeBaselineCheck)
 
-        self.scenarioTable = QTableWidget(0, 5)
+        self.scenarioTable = QTableWidget(0, 6)
         self.scenarioTable.setHorizontalHeaderLabels([
             self.lan.get("batchScenarioLabel", "Label"),
             self.lan.get("optPatternLcl", "Line-Curve-Line"),
             self.lan.get("optPatternLscsl", "Line-Spiral-Curve-Spiral-Line"),
             self.lan.get("batchScenarioDMax", "d_max [m]"), self.lan.get("batchScenarioLMin", "L_min [m]"),
+            self.lan.get("batchScenarioLkMax", "L_k,max [m]"),
         ])
         self.scenarioTable.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.scenarioTable, 1)
@@ -319,7 +337,7 @@ class BatchProcessingDialog(QDialog):
 
     def addOptimizationScenarioRow(self, label="", modeLcl=geometry_engine.OPTIMIZATION_MODE_NONE,
                                    modeLscsl=geometry_engine.OPTIMIZATION_MODE_SHIFT_AND_EXTEND,
-                                   dMaxM=0.5, lMinM=25.0):
+                                   dMaxM=0.5, lMinM=25.0, lkMaxM=geometry_engine.DEFAULT_LK_MAX_M):
         row = self.scenarioTable.rowCount()
         self.scenarioTable.insertRow(row)
         self.scenarioTable.setItem(row, 0, QTableWidgetItem(label or f"d_max={dMaxM}"))
@@ -331,6 +349,9 @@ class BatchProcessingDialog(QDialog):
         lMinInput = QLineEdit(str(lMinM))
         lMinInput.textChanged.connect(self.refreshVariantPreview)
         self.scenarioTable.setCellWidget(row, 4, lMinInput)
+        lkMaxInput = QLineEdit(str(lkMaxM))
+        lkMaxInput.textChanged.connect(self.refreshVariantPreview)
+        self.scenarioTable.setCellWidget(row, 5, lkMaxInput)
         self.refreshVariantPreview()
 
     def removeOptimizationScenarioRow(self):
@@ -348,14 +369,16 @@ class BatchProcessingDialog(QDialog):
             modeLscslCombo = self.scenarioTable.cellWidget(row, 2)
             dMaxInput = self.scenarioTable.cellWidget(row, 3)
             lMinInput = self.scenarioTable.cellWidget(row, 4)
+            lkMaxInput = self.scenarioTable.cellWidget(row, 5)
             try:
                 dMaxM = float(dMaxInput.text())
                 lMinM = float(lMinInput.text())
+                lkMaxM = float(lkMaxInput.text())
             except ValueError:
-                dMaxM, lMinM = 0.0, 0.0
+                dMaxM, lMinM, lkMaxM = 0.0, 0.0, 0.0
             scenarios.append({
                 "scenarioId": f"opt{row + 1}", "label": label, "isEnabled": True,
-                "dMaxM": dMaxM, "lMinM": lMinM,
+                "dMaxM": dMaxM, "lMinM": lMinM, "lkMaxM": lkMaxM,
                 "modeLcl": modeLclCombo.currentData() if modeLclCombo else geometry_engine.OPTIMIZATION_MODE_NONE,
                 "modeLscsl": modeLscslCombo.currentData() if modeLscslCombo else geometry_engine.OPTIMIZATION_MODE_NONE,
             })
@@ -551,7 +574,8 @@ class BatchProcessingDialog(QDialog):
             self.addOptimizationScenarioRow(scenario.get("label", ""),
                                             scenario.get("modeLcl", geometry_engine.OPTIMIZATION_MODE_NONE),
                                             scenario.get("modeLscsl", geometry_engine.OPTIMIZATION_MODE_SHIFT_AND_EXTEND),
-                                            scenario.get("dMaxM", 0.5), scenario.get("lMinM", 25.0))
+                                            scenario.get("dMaxM", 0.5), scenario.get("lMinM", 25.0),
+                                            scenario.get("lkMaxM", geometry_engine.DEFAULT_LK_MAX_M))
         self.includeBaselineCheck.setChecked(bool(configData.get("includeBaselineScenario", True)))
 
         sweep = configData.get("sweep", {})
