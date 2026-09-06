@@ -297,13 +297,16 @@ class BatchProcessingDialog(QDialog):
         self.includeBaselineCheck.stateChanged.connect(self.refreshVariantPreview)
         layout.addWidget(self.includeBaselineCheck)
 
-        self.scenarioTable = QTableWidget(0, 6)
+        self.scenarioTable = QTableWidget(0, 9)
         self.scenarioTable.setHorizontalHeaderLabels([
             self.lan.get("batchScenarioLabel", "Label"),
             self.lan.get("optPatternLcl", "Line-Curve-Line"),
             self.lan.get("optPatternLscsl", "Line-Spiral-Curve-Spiral-Line"),
             self.lan.get("batchScenarioDMax", "d_max [m]"), self.lan.get("batchScenarioLMin", "L_min [m]"),
             self.lan.get("batchScenarioLkMax", "L_k,max [m]"),
+            self.lan.get("batchScenarioRMaxOn", "R_max on"),
+            self.lan.get("batchScenarioRMax", "R_max [m]"),
+            self.lan.get("batchScenarioRatioC", "Ratio C [%]"),
         ])
         self.scenarioTable.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.scenarioTable, 1)
@@ -327,6 +330,7 @@ class BatchProcessingDialog(QDialog):
             geometry_engine.OPTIMIZATION_MODE_EXTEND_SPIRALS: "optModeExtendSpirals",
             geometry_engine.OPTIMIZATION_MODE_SHIFT_ARC: "optModeShiftArc",
             geometry_engine.OPTIMIZATION_MODE_INVERTED_SHIFT: "optModeInvertedShift",
+            geometry_engine.OPTIMIZATION_MODE_RATIO_ALLOCATION: "optModeRatioAllocation",
         }
         for mode in allowedModes:
             combo.addItem(self.lan.get(modeLabelKeys[mode], mode), mode)
@@ -337,21 +341,24 @@ class BatchProcessingDialog(QDialog):
 
     def addOptimizationScenarioRow(self, label="", modeLcl=geometry_engine.OPTIMIZATION_MODE_NONE,
                                    modeLscsl=geometry_engine.OPTIMIZATION_MODE_SHIFT_AND_EXTEND,
-                                   dMaxM=0.5, lMinM=25.0, lkMaxM=geometry_engine.DEFAULT_LK_MAX_M):
+                                   dMaxM=0.5, lMinM=25.0, lkMaxM=geometry_engine.DEFAULT_LK_MAX_M,
+                                   isRMaxEnabled=False, rMaxM=geometry_engine.DEFAULT_R_MAX_M,
+                                   ratioCPercent=geometry_engine.DEFAULT_RATIO_C_PERCENT):
         row = self.scenarioTable.rowCount()
         self.scenarioTable.insertRow(row)
         self.scenarioTable.setItem(row, 0, QTableWidgetItem(label or f"d_max={dMaxM}"))
         self.scenarioTable.setCellWidget(row, 1, self.buildOptModeCombo(geometry_engine.LCL_OPTIMIZATION_MODES, modeLcl))
         self.scenarioTable.setCellWidget(row, 2, self.buildOptModeCombo(geometry_engine.OPTIMIZATION_MODES, modeLscsl))
-        dMaxInput = QLineEdit(str(dMaxM))
-        dMaxInput.textChanged.connect(self.refreshVariantPreview)
-        self.scenarioTable.setCellWidget(row, 3, dMaxInput)
-        lMinInput = QLineEdit(str(lMinM))
-        lMinInput.textChanged.connect(self.refreshVariantPreview)
-        self.scenarioTable.setCellWidget(row, 4, lMinInput)
-        lkMaxInput = QLineEdit(str(lkMaxM))
-        lkMaxInput.textChanged.connect(self.refreshVariantPreview)
-        self.scenarioTable.setCellWidget(row, 5, lkMaxInput)
+        for column, value in ((3, dMaxM), (4, lMinM), (5, lkMaxM), (7, rMaxM), (8, ratioCPercent)):
+            valueInput = QLineEdit(str(value))
+            valueInput.textChanged.connect(self.refreshVariantPreview)
+            self.scenarioTable.setCellWidget(row, column, valueInput)
+
+        # The ceiling is opt in per scenario, exactly as it is in the interactive dialog
+        rMaxCheck = QCheckBox()
+        rMaxCheck.setChecked(bool(isRMaxEnabled))
+        rMaxCheck.stateChanged.connect(self.refreshVariantPreview)
+        self.scenarioTable.setCellWidget(row, 6, rMaxCheck)
         self.refreshVariantPreview()
 
     def removeOptimizationScenarioRow(self):
@@ -370,15 +377,26 @@ class BatchProcessingDialog(QDialog):
             dMaxInput = self.scenarioTable.cellWidget(row, 3)
             lMinInput = self.scenarioTable.cellWidget(row, 4)
             lkMaxInput = self.scenarioTable.cellWidget(row, 5)
+            rMaxCheck = self.scenarioTable.cellWidget(row, 6)
+            rMaxInput = self.scenarioTable.cellWidget(row, 7)
+            ratioCInput = self.scenarioTable.cellWidget(row, 8)
             try:
                 dMaxM = float(dMaxInput.text())
                 lMinM = float(lMinInput.text())
                 lkMaxM = float(lkMaxInput.text())
             except ValueError:
                 dMaxM, lMinM, lkMaxM = 0.0, 0.0, 0.0
+            try:
+                rMaxM = float(rMaxInput.text())
+                ratioCPercent = int(float(ratioCInput.text()))
+            except ValueError:
+                # A malformed ceiling or ratio is reported by validateConfig, not silently defaulted
+                rMaxM, ratioCPercent = 0.0, -1
             scenarios.append({
                 "scenarioId": f"opt{row + 1}", "label": label, "isEnabled": True,
                 "dMaxM": dMaxM, "lMinM": lMinM, "lkMaxM": lkMaxM,
+                "isRMaxEnabled": bool(rMaxCheck.isChecked()) if rMaxCheck else False,
+                "rMaxM": rMaxM, "ratioCPercent": ratioCPercent,
                 "modeLcl": modeLclCombo.currentData() if modeLclCombo else geometry_engine.OPTIMIZATION_MODE_NONE,
                 "modeLscsl": modeLscslCombo.currentData() if modeLscslCombo else geometry_engine.OPTIMIZATION_MODE_NONE,
             })
@@ -575,7 +593,10 @@ class BatchProcessingDialog(QDialog):
                                             scenario.get("modeLcl", geometry_engine.OPTIMIZATION_MODE_NONE),
                                             scenario.get("modeLscsl", geometry_engine.OPTIMIZATION_MODE_SHIFT_AND_EXTEND),
                                             scenario.get("dMaxM", 0.5), scenario.get("lMinM", 25.0),
-                                            scenario.get("lkMaxM", geometry_engine.DEFAULT_LK_MAX_M))
+                                            scenario.get("lkMaxM", geometry_engine.DEFAULT_LK_MAX_M),
+                                            scenario.get("isRMaxEnabled", False),
+                                            scenario.get("rMaxM", geometry_engine.DEFAULT_R_MAX_M),
+                                            scenario.get("ratioCPercent", geometry_engine.DEFAULT_RATIO_C_PERCENT))
         self.includeBaselineCheck.setChecked(bool(configData.get("includeBaselineScenario", True)))
 
         sweep = configData.get("sweep", {})

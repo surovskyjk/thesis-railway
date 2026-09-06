@@ -41,7 +41,8 @@ CALCULATED_LANDXML_PREFIXES = ("stationCantPossible", "cantPossible", "cDef", "c
                                "dDdt", "dIdt", "util_D_", "util_I_", "limitReachedD_",
                                "limitReachedI_", "speedLimits", "stationSpeed",
                                "stationHorizontalBaseline", "curvatureBaseline",
-                               "alignmentCoordinatesBaseline", "chainageMap",
+                               "alignmentCoordinatesBaseline", "geometryTypeBaseline",
+                               "curvatureSignBaseline", "chainageMap",
                                "optimizationSummary", "slewProfile")
 
 # How many recently opened projects the File menu keeps

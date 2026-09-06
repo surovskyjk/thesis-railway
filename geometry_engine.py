@@ -926,8 +926,9 @@ OPTIMIZATION_MODE_SHIFT_AND_EXTEND = "shiftAndExtend"
 OPTIMIZATION_MODE_EXTEND_SPIRALS = "extendSpirals"
 OPTIMIZATION_MODE_SHIFT_ARC = "shiftArc"
 OPTIMIZATION_MODE_INVERTED_SHIFT = "invertedShift"
+OPTIMIZATION_MODE_RATIO_ALLOCATION = "ratioAllocation"
 
-OPTIMIZATION_MODES = (OPTIMIZATION_MODE_SHIFT_AND_EXTEND, OPTIMIZATION_MODE_EXTEND_SPIRALS, OPTIMIZATION_MODE_SHIFT_ARC, OPTIMIZATION_MODE_INVERTED_SHIFT)
+OPTIMIZATION_MODES = (OPTIMIZATION_MODE_SHIFT_AND_EXTEND, OPTIMIZATION_MODE_EXTEND_SPIRALS, OPTIMIZATION_MODE_SHIFT_ARC, OPTIMIZATION_MODE_INVERTED_SHIFT, OPTIMIZATION_MODE_RATIO_ALLOCATION)
 # The only modes offered for an L-C-L group, which has no spirals to extend
 # An L-C-L group has no transitions to extend, so only the arc shift is meaningful there
 LCL_OPTIMIZATION_MODES = (OPTIMIZATION_MODE_SHIFT_ARC,)
@@ -965,6 +966,19 @@ ARC_IMPROVEMENT_EPSILON_M = 1e-6
 
 # Upper bound on an optimized transition length when the configuration does not name one
 DEFAULT_LK_MAX_M = 250.0
+
+# Radius ceiling offered when the constraint is switched on without a value of its own
+DEFAULT_R_MAX_M = 10000.0
+
+# Bounds of the optional radius ceiling, wide enough to cover a near straight design curve
+R_MAX_MINIMUM_M = 100.0
+R_MAX_MAXIMUM_M = 99000.0
+
+# Envelope share mode 5 gives the arc radius when the configuration does not name one, in percent
+DEFAULT_RATIO_C_PERCENT = 50
+
+# A radius this far above the ceiling still counts as sitting on it
+RADIUS_CEILING_EPSILON_M = 1e-9
 
 # Bisection stops once the search bracket narrows below this, in meters
 BISECTION_TOLERANCE_M = 1e-4
@@ -1195,7 +1209,7 @@ def projectChainageKm(lxml, stationKm):
 
 
 class AlignmentOptimizer:
-    # config keys: dMaxM, lMinM, modeLcl, modeLscsl
+    # config keys: dMaxM, lMinM, lkMaxM, isRMaxEnabled, rMaxM, ratioCPercent, modeLcl, modeLscsl
     def __init__(self, lxml, config, progressCallback=None):
         self.lxml = lxml
         self.progressCallback = progressCallback
@@ -1203,6 +1217,10 @@ class AlignmentOptimizer:
         self.dMaxM = float(config.get("dMaxM", 0.5))
         self.lMinM = float(config.get("lMinM", 25.0))
         self.lkMaxM = float(config.get("lkMaxM", DEFAULT_LK_MAX_M))
+        # An absent ceiling means the slew envelope is the only thing bounding the radius
+        self.rMaxM = float(config.get("rMaxM", DEFAULT_R_MAX_M)) if config.get("isRMaxEnabled") else None
+        # Share of the envelope mode 5 spends on the radius, the remainder goes to the transitions
+        self.ratioCPercent = float(config.get("ratioCPercent", DEFAULT_RATIO_C_PERCENT))
         self.modeLcl = config.get("modeLcl", OPTIMIZATION_MODE_NONE)
         self.modeLscsl = config.get("modeLscsl", OPTIMIZATION_MODE_NONE)
         self.elements = []
@@ -1562,17 +1580,26 @@ class AlignmentOptimizer:
         finally:
             self.timingMs["samplingMs"] += (time.perf_counter() - samplingStarted) * 1000.0
 
+    # Index spans of the entry spiral, the arc and the exit spiral inside the concatenated samples
+    def sampleSegmentBounds(self, geometry):
+        entryCount = max(0, len(geometry["entrySpiralPoints"]) - 1)
+        arcCount = len(geometry["arcPoints"])
+        exitCount = max(0, len(geometry["exitSpiralPoints"]) - 1)
+        return ((0, entryCount),
+                (entryCount, entryCount + arcCount),
+                (entryCount + arcCount, entryCount + arcCount + exitCount))
+
     def recordSlewProfileSamples(self, groupSlot, frame, geometry, baselineAxis):
         samplePoints = geometry["samplePoints"]
         if len(samplePoints) < 2:
-            return 0.0, 0.0
+            return 0.0, 0.0, [0.0, 0.0, 0.0]
 
         vertices = np.asarray(samplePoints, dtype=float)
         steps = np.sqrt(np.einsum("ij,ij->i", np.diff(vertices, axis=0), np.diff(vertices, axis=0)))
         cumulativeLength = np.concatenate(([0.0], np.cumsum(steps)))
         totalChordLength = float(cumulativeLength[-1])
         if totalChordLength <= 1e-9:
-            return 0.0, 0.0
+            return 0.0, 0.0, [0.0, 0.0, 0.0]
 
         turnSign = frame["turnSign"]
 
@@ -1589,13 +1616,19 @@ class AlignmentOptimizer:
         fractions = np.asarray(cumulativeLength, dtype=float) / totalChordLength
         offsetsMm = slewSigns * distances * 1000.0
 
+        # Displacement is not a parallel shift, so each sub element carries its own local peak
+        elementPeaksMm = []
+        for lowIndex, highIndex in self.sampleSegmentBounds(geometry):
+            segment = offsetsMm[lowIndex:highIndex]
+            elementPeaksMm.append(float(np.max(np.abs(segment))) if segment.size else 0.0)
+
         groupSamples = list(zip(fractions.tolist(), offsetsMm.tolist()))
         peakSample = max(groupSamples, key=lambda sample: abs(sample[1]))
         # Zero anchors keep the plotted profile flat between optimized groups
         self.slewSamples.append((groupSlot, 0.0, 0.0))
         self.slewSamples.extend((groupSlot, fraction, offsetMm) for fraction, offsetMm in groupSamples)
         self.slewSamples.append((groupSlot, 1.0, 0.0))
-        return peakSample[0], peakSample[1]
+        return peakSample[0], peakSample[1], elementPeaksMm
 
     # Collapse every recorded sample into the plot ready arrays and the corridor wide aggregates
     def buildSlewProfile(self):
@@ -1863,6 +1896,16 @@ class AlignmentOptimizer:
 
     # --- Minimum element length gates ---
 
+    # A radius above the ceiling is simply infeasible, so the search converges onto R_max itself
+    def isRadiusWithinCeiling(self, radius):
+        return self.rMaxM is None or radius <= self.rMaxM + RADIUS_CEILING_EPSILON_M
+
+    # Keep an analytic seed inside the ceiling, the bracket must never start above it
+    def cappedRadiusSeed(self, radius):
+        if radius is None or self.rMaxM is None:
+            return radius
+        return min(radius, self.rMaxM)
+
     # Closed form gate, cheap enough to run before any geometry is sampled
     def isArcLengthAcceptable(self, frame, radius, entryLength, exitLength):
         arcLengthM = self.arcLengthFor(frame, radius, entryLength, exitLength)
@@ -1916,6 +1959,9 @@ class AlignmentOptimizer:
 
     def solveShiftArc(self, frame, R0, L0entry, L0exit, baselineAxis):
         def isFeasible(R):
+            # A radius past the configured ceiling is rejected before anything else is computed
+            if not self.isRadiusWithinCeiling(R):
+                return False
             # The arc length gate is closed form, so an infeasible radius costs no sampled geometry
             if not self.isArcLengthAcceptable(frame, R, L0entry, L0exit):
                 return False
@@ -1931,7 +1977,8 @@ class AlignmentOptimizer:
             reason = "optSkipShortTangent" if self.wasRelaxationBlockedByTangent else "optSkipLMinViolated"
             return {"feasible": False, "reason": reason}
 
-        analyticRadius = self.solveRadiusForEnvelope(frame, R0, L0entry, L0exit, self.dMaxM)
+        analyticRadius = self.cappedRadiusSeed(
+            self.solveRadiusForEnvelope(frame, R0, L0entry, L0exit, self.dMaxM))
         if analyticRadius is None or analyticRadius <= R0:
             Rnew, _ = self.bisectMaximize(isFeasible, R0, max(1.0, R0*0.1))
         else:
@@ -1972,6 +2019,8 @@ class AlignmentOptimizer:
                                              entryBudget, exitBudget, allowEntry, allowExit)
 
         def isFeasible(radius):
+            if not self.isRadiusWithinCeiling(radius):
+                return False
             Lentry, Lexit = candidateAt(radius)
             if not self.isArcLengthAcceptable(frame, radius, Lentry, Lexit):
                 return False
@@ -1987,7 +2036,8 @@ class AlignmentOptimizer:
             return {"feasible": False, "reason": reason}
 
         # The fixed spiral seed overshoots because coupled growth spends more envelope, the bracket copes
-        analyticRadius = self.solveRadiusForEnvelope(frame, R0, L0entry, L0exit, self.dMaxM)
+        analyticRadius = self.cappedRadiusSeed(
+            self.solveRadiusForEnvelope(frame, R0, L0entry, L0exit, self.dMaxM))
         if analyticRadius is None or analyticRadius <= R0:
             Rnew, _ = self.bisectMaximize(isFeasible, R0, max(1.0, R0*0.1))
         else:
@@ -2083,6 +2133,90 @@ class AlignmentOptimizer:
         Rnew, Lentry, Lexit = candidateAt(sMax)
         return {"feasible": True, "Rnew": Rnew, "Lentry": Lentry, "Lexit": Lexit}
 
+    # Envelope split between the arc radius and the transitions, as a pair of shares in metres
+    def allocationBudgets(self):
+        ratioC = min(100.0, max(0.0, self.ratioCPercent))
+        return self.dMaxM * ratioC / 100.0, self.dMaxM * (100.0 - ratioC) / 100.0
+
+    # First order inverse of the clothoid shift, the seed a bracketed search then refines
+    def spiralLengthForShift(self, radius, shiftM):
+        if radius <= 0 or shiftM <= 0:
+            return 0.0
+        return float(np.sqrt(24.0 * radius * shiftM))
+
+    def solveRatioAllocation(self, frame, R0, L0entry, L0exit, baselineAxis, entryBudget, exitBudget, allowEntry, allowExit):
+        if L0entry <= 0 or L0exit <= 0:
+            return {"feasible": False, "reason": "optSkipNoSpirals"}
+
+        arcBudgetM, spiralBudgetM = self.allocationBudgets()
+
+        # Step one solves the radius alone against its own share, the transitions stay as imported
+        def isRadiusFeasible(radius, limitM):
+            if not self.isRadiusWithinCeiling(radius):
+                return False
+            if not self.isArcLengthAcceptable(frame, radius, L0entry, L0exit):
+                return False
+            geometry = self.buildCandidateGeometry(frame, radius, L0entry, L0exit)
+            if geometry is None:
+                return False
+            if not self.isCandidateSupported(frame, radius, L0entry, L0exit, geometry):
+                return False
+            return self.evaluateSlew(baselineAxis, geometry["samplePoints"]) <= limitM
+
+        if not isRadiusFeasible(R0, self.dMaxM):
+            reason = "optSkipShortTangent" if self.wasRelaxationBlockedByTangent else "optSkipLMinViolated"
+            return {"feasible": False, "reason": reason}
+
+        Rnew = R0
+        if arcBudgetM > 0:
+            seed = self.cappedRadiusSeed(
+                self.solveRadiusForEnvelope(frame, R0, L0entry, L0exit, arcBudgetM))
+            gate = lambda radius: isRadiusFeasible(radius, arcBudgetM)
+            if seed is None or seed <= R0:
+                Rnew, _ = self.bisectMaximize(gate, R0, max(1.0, R0 * 0.1))
+            else:
+                Rnew, _ = self.refineWithinBracket(gate, R0, seed, max(0.05, (seed - R0) * 0.05))
+
+        # Step two spends the remaining share on the transitions, independently of what step one used
+        _, deltaREntry, _ = self.clothoidShiftAndFoot(L0entry, Rnew)
+        _, deltaRExit, _ = self.clothoidShiftAndFoot(L0exit, Rnew)
+
+        # Both transitions grow off one tangent offset increment, so a symmetric curve stays symmetric
+        def lengthsForShift(shiftM):
+            entryLength, exitLength = L0entry, L0exit
+            if allowEntry:
+                entryLength = max(L0entry, self.spiralLengthForShift(Rnew, deltaREntry + shiftM))
+                entryLength = min(entryLength, self.lkMaxM)
+                entryLength = L0entry + self.resolveSharedLine(entryBudget, entryLength - L0entry, self.lMinM)
+            if allowExit:
+                exitLength = max(L0exit, self.spiralLengthForShift(Rnew, deltaRExit + shiftM))
+                exitLength = min(exitLength, self.lkMaxM)
+                exitLength = L0exit + self.resolveSharedLine(exitBudget, exitLength - L0exit, self.lMinM)
+            return entryLength, exitLength
+
+        # The envelope is the hard gate here, the ratio only steered where the search started
+        def isShiftFeasible(shiftM):
+            entryLength, exitLength = lengthsForShift(shiftM)
+            if not self.isArcLengthAcceptable(frame, Rnew, entryLength, exitLength):
+                return False
+            geometry = self.buildCandidateGeometry(frame, Rnew, entryLength, exitLength)
+            if geometry is None:
+                return False
+            if not self.isCandidateSupported(frame, Rnew, entryLength, exitLength, geometry):
+                return False
+            return self.evaluateSlew(baselineAxis, geometry["samplePoints"]) <= self.dMaxM
+
+        Lentry, Lexit = L0entry, L0exit
+        if spiralBudgetM > 0 and (allowEntry or allowExit):
+            # Backing off inside the bracket keeps the transitions growing when the pair overshoots d_max
+            usedShiftM, _ = self.refineWithinBracket(
+                isShiftFeasible, 0.0, spiralBudgetM, max(0.01, spiralBudgetM * 0.2))
+            Lentry, Lexit = lengthsForShift(usedShiftM)
+
+        if Rnew - R0 < 0.01 and Lentry - L0entry < 0.01 and Lexit - L0exit < 0.01:
+            return {"feasible": False, "reason": self.exhaustionReason()}
+        return {"feasible": True, "Rnew": Rnew, "Lentry": Lentry, "Lexit": Lexit}
+
     # --- Group solve orchestration and output emission ---
 
     def solveGroup(self, startIdx, endIdx, patternType, mode, lineBefore, lineAfter, runElements, allowExtendEntry=True, allowExtendExit=True):
@@ -2122,6 +2256,8 @@ class AlignmentOptimizer:
             result = self.solveExtendSpirals(frame, R0, L0entry, L0exit, baselineAxis, entryBudget, exitBudget, allowExtendEntry, allowExtendExit)
         elif mode == OPTIMIZATION_MODE_INVERTED_SHIFT:
             result = self.solveInvertedShift(frame, R0, L0entry, L0exit, baselineAxis, entryBudget, exitBudget, allowExtendEntry, allowExtendExit)
+        elif mode == OPTIMIZATION_MODE_RATIO_ALLOCATION:
+            result = self.solveRatioAllocation(frame, R0, L0entry, L0exit, baselineAxis, entryBudget, exitBudget, allowExtendEntry, allowExtendExit)
         else:
             result = {"feasible": False, "reason": "optSkipPatternDisabled"}
 
@@ -2220,7 +2356,11 @@ class AlignmentOptimizer:
         lengthDelta = (Lentry - L0entry) + (Lexit - L0exit) + (geometry["arcLength"] - self.arcLengthBaseline(arcElement))
         # Samples are recorded as a fraction of the group so re-chaining can place them afterwards
         groupSlot = len(self.summaryGroups)
-        slewPeakFraction, _ = self.recordSlewProfile(groupSlot, frame, geometry, baselineAxis)
+        slewPeakFraction, slewPeakMm, elementSlewMaxMm = self.recordSlewProfile(
+            groupSlot, frame, geometry, baselineAxis)
+
+        # The reported figure is the sampled local peak, slewMax stays the envelope feasibility measure
+        reportedSlewM = abs(slewPeakMm) / 1000.0 if slewPeakMm else float(slewMax)
 
         self.summaryGroups.append({
             "groupIndex": len(self.summaryGroups), "patternType": patternType, "mode": mode,
@@ -2231,7 +2371,10 @@ class AlignmentOptimizer:
             "radiusOldM": float(R0), "radiusNewM": float(Rnew),
             "spiralLengthsOldM": [float(L0entry), float(L0exit)], "spiralLengthsNewM": [float(Lentry), float(Lexit)],
             "offsetOldM": float(self.clothoidShiftAndFoot(L0entry, R0)[1]), "offsetNewM": float(geometry["deltaREntry"]),
-            "slewMaxM": float(slewMax), "slewMaxStationKm": float(groupStartStation), "lengthDeltaM": float(lengthDelta),
+            "slewMaxM": float(reportedSlewM), "slewPeakSignedMm": float(slewPeakMm),
+            "elementSlewMaxMm": [float(value) for value in elementSlewMaxMm],
+            # Resolved onto the re-chained corridor by resolveGroupStations, once lengths are final
+            "slewMaxStationKm": float(groupStartStation), "lengthDeltaM": float(lengthDelta),
         })
 
     def recordSkip(self, startIdx, endIdx, patternType, reasonCode):
@@ -2243,6 +2386,7 @@ class AlignmentOptimizer:
             "status": reasonCode,
             "radiusOldM": None, "radiusNewM": None, "spiralLengthsOldM": None, "spiralLengthsNewM": None,
             "offsetOldM": None, "offsetNewM": None, "slewMaxM": None, "slewMaxStationKm": None, "lengthDeltaM": None,
+            "slewPeakSignedMm": None, "elementSlewMaxMm": None,
         })
 
     def buildSummary(self):

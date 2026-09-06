@@ -201,6 +201,14 @@ class BatchConfigStore:
             lkMax = float(scenario.get("lkMaxM", geometry_engine.DEFAULT_LK_MAX_M))
             if lkMax <= 0 or lkMax < float(scenario.get("lMinM", 0.0)):
                 problems.append("batchProblemInvalidOptimizationLkMax")
+            # A disabled ceiling is never read by the engine, so only an armed one is validated
+            if scenario.get("isRMaxEnabled"):
+                rMax = float(scenario.get("rMaxM", geometry_engine.DEFAULT_R_MAX_M))
+                if not (geometry_engine.R_MAX_MINIMUM_M <= rMax <= geometry_engine.R_MAX_MAXIMUM_M):
+                    problems.append("batchProblemInvalidOptimizationRMax")
+            ratioC = scenario.get("ratioCPercent", geometry_engine.DEFAULT_RATIO_C_PERCENT)
+            if not (0 <= int(ratioC) <= 100):
+                problems.append("batchProblemInvalidOptimizationRatio")
             modeLcl = scenario.get("modeLcl", geometry_engine.OPTIMIZATION_MODE_NONE)
             modeLscsl = scenario.get("modeLscsl", geometry_engine.OPTIMIZATION_MODE_NONE)
             validLcl = modeLcl in geometry_engine.LCL_OPTIMIZATION_MODES or modeLcl == geometry_engine.OPTIMIZATION_MODE_NONE

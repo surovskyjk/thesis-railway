@@ -18,6 +18,9 @@ SLEW_COLUMN_KEYS = (
     ("slewColSpiral2", "L_k2 orig -> new [m]"),
     ("slewColSlewMax", "d_max,local [mm]"),
     ("slewColSlewAt", "at [km]"),
+    ("slewColSlewEntry", "dy entry [mm]"),
+    ("slewColSlewArc", "dy arc [mm]"),
+    ("slewColSlewExit", "dy exit [mm]"),
     ("slewColSpeedOld", "v_orig [km/h]"),
     ("slewColSpeedNew", "v_new [km/h]"),
     ("slewColSpeedDelta", "dv [km/h]"),
@@ -26,6 +29,11 @@ SLEW_COLUMN_KEYS = (
 
 # Placeholder written wherever a group carries no value, for instance every skipped group
 NO_VALUE_TEXT = "-"
+
+# Fallback wording of the note explaining that the tabulated slew values are local peaks
+NON_PARALLEL_NOTE = ("Note: with the intersection points held fixed, an enlarged curve is not shifted "
+                     "in parallel. Displacement peaks on the apex bisector and tapers to zero at the "
+                     "transition tangent points, so every value below is a local peak, not a constant offset.")
 
 # Row height of the slew table, matching the other result tables of the application
 TABLE_ROW_HEIGHT_PX = 20
@@ -105,6 +113,7 @@ def buildSlewReportRows(dataStorage, lan):
         spiralsOld = group.get("spiralLengthsOldM") or [None, None]
         spiralsNew = group.get("spiralLengthsNewM") or [None, None]
         slewMaxM = group.get("slewMaxM")
+        elementPeaksMm = group.get("elementSlewMaxMm") or [None, None, None]
 
         dataRows.append([
             str(group.get("groupIndex", 0) + 1),
@@ -118,6 +127,9 @@ def buildSlewReportRows(dataStorage, lan):
             formatTransition(spiralsOld[1], spiralsNew[1]),
             formatNumber(slewMaxM * 1000.0 if slewMaxM is not None else None, 1),
             formatNumber(group.get("slewMaxStationKm"), 3),
+            formatNumber(elementPeaksMm[0], 1),
+            formatNumber(elementPeaksMm[1], 1),
+            formatNumber(elementPeaksMm[2], 1),
             formatNumber(group.get("speedOldKmh"), 0),
             formatNumber(group.get("speedNewKmh"), 0),
             formatSigned(group.get("speedDeltaKmh"), 0),
@@ -156,6 +168,9 @@ def buildSlewSummaryLines(dataStorage, lan):
         lines.append(
             f"{lan.get('slewSummaryTravelTime', 'Theoretical travel time change')}: "
             f"{formatSigned(travelTimeDeltaS, 1)} s ({formatDuration(travelTimeDeltaS)})")
+
+    # Enlarging a curve between fixed vertices is not a parallel shift, the table shows peaks
+    lines.append(lan.get("slewNonParallelNote", NON_PARALLEL_NOTE))
     return lines
 
 
@@ -231,6 +246,15 @@ class SlewReportWindow(QDialog):
         table.verticalHeader().setDefaultSectionSize(TABLE_ROW_HEIGHT_PX)
         return table
 
+    # Explain on the slew columns that their values are local peaks rather than a parallel offset
+    def applySlewColumnTooltips(self):
+        tooltip = self.lan.get("slewNonParallelNote", NON_PARALLEL_NOTE)
+        columnKeys = [key for key, _ in SLEW_COLUMN_KEYS]
+        for columnKey in ("slewColSlewMax", "slewColSlewEntry", "slewColSlewArc", "slewColSlewExit"):
+            headerItem = self.groupTable.horizontalHeaderItem(columnKeys.index(columnKey))
+            if headerItem is not None:
+                headerItem.setToolTip(tooltip)
+
     # Refill both the summary block and the group table from the current data storage
     def updateData(self, dataStorage):
         self.dataStorage = dataStorage
@@ -247,6 +271,7 @@ class SlewReportWindow(QDialog):
         self.lan = lan or {}
         self.setWindowTitle(self.lan.get("slewReportTitle", "Lateral Alignment Slew Summary"))
         self.groupTable.setHorizontalHeaderLabels(columnHeaders(self.lan))
+        self.applySlewColumnTooltips()
         self.exportCsvButton.setText(self.lan.get("slewExportCsv", "Export CSV"))
         self.exportTxtButton.setText(self.lan.get("slewExportTxt", "Export TXT"))
         self.closeButton.setText(self.lan.get("close", "Close"))

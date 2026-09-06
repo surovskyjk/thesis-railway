@@ -189,6 +189,14 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
         self.zeroLockBusy = set()
         # Plot keys whose secondary axis keeps its zero line locked to the primary axis
         self.zeroLockedPlots = set()
+        # Span the secondary axis keeps relative to the primary, so proportion survives a vertical zoom
+        self.zeroLockRatios = {}
+        # Plot keys the user explicitly released for vertical zoom, every plot is chainage only by default
+        self.verticalZoomPlots = set()
+        # Callbacks restoring the vertical range a plot wants, registered by the owning dock
+        self.yRangeHandlers = {}
+        # Interaction mode in force per plot, so releasing the vertical axis can re-apply it
+        self.plotModes = {}
 
     # Register a plot row and wire its legend, crosshair and context menu
     def addPlotRow(self, plotKey, row, leftLabel="", bottomLabel="", rightAxis=None,
@@ -203,11 +211,14 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
         plotItem.setLabel("bottom", bottomLabel)
         # No implicit auto range padding, every explicit setYRange call stays exact
         plotItem.vb.setDefaultPadding(0.0)
+        # Navigation runs along the chainage axis, so the vertical scale never moves by accident
+        plotItem.vb.setMouseEnabled(x=True, y=False)
 
         self.plotItems[plotKey] = plotItem
         self.plotSeries[plotKey] = {}
         self.plotStationMarkers[plotKey] = []
         self.highlightedSeries[plotKey] = None
+        self.plotModes[plotKey] = MODE_PAN
 
         if withLegend:
             # Tight vertical spacing keeps the legend compact over the data
@@ -235,6 +246,10 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
         rightView.setXLink(plotItem)
         plotItem.setLabel("right", label)
 
+        # The secondary view sits over the primary one, taking the wheel here would detach its zero line
+        rightView.setMouseEnabled(x=False, y=False)
+        rightView.disableAutoRange()
+
         self.plotRightViews[plotKey] = rightView
         plotItem.vb.sigResized.connect(lambda vb, key=plotKey: self.syncRightView(key))
         self.syncRightView(plotKey)
@@ -242,6 +257,7 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
 
     # Drop the secondary view box so a redraw without one starts clean
     def removeRightAxis(self, plotKey):
+        self.zeroLockRatios.pop(plotKey, None)
         rightView = self.plotRightViews.pop(plotKey, None)
         if rightView is None:
             return
@@ -273,7 +289,24 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
                 lambda viewBox, viewRange, key=plotKey: self.syncZeroAlignment(key))
             self.zeroLockedPlots.add(plotKey)
 
+        self.captureZeroLockRatio(plotKey)
         self.syncZeroAlignment(plotKey)
+
+    # Freeze the span ratio the two axes currently show, so a later zoom scales them together
+    def captureZeroLockRatio(self, plotKey):
+        plotItem = self.plotItems.get(plotKey)
+        rightView = self.plotRightViews.get(plotKey)
+        if plotItem is None or rightView is None:
+            return
+
+        primaryLow, primaryHigh = plotItem.vb.viewRange()[1]
+        secondaryLow, secondaryHigh = rightView.viewRange()[1]
+        primarySpan = primaryHigh - primaryLow
+        secondarySpan = secondaryHigh - secondaryLow
+        if primarySpan <= 0 or secondarySpan <= 0:
+            return
+
+        self.zeroLockRatios[plotKey] = secondarySpan / primarySpan
 
     # Re-anchor the secondary Y range so zero sits at the same fraction of both views
     def syncZeroAlignment(self, plotKey):
@@ -292,7 +325,12 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
         if primarySpan <= 0 or secondarySpan <= 0:
             return
 
-        # The secondary axis keeps its own scale, only its offset moves to match zero
+        # Scaling the secondary by the captured ratio keeps curvature in proportion with cant at any zoom
+        ratio = self.zeroLockRatios.get(plotKey)
+        if ratio is not None and ratio > 0:
+            secondarySpan = primarySpan * ratio
+
+        # Zero of the secondary axis lands on the same view fraction as zero of the primary axis
         zeroFraction = (0.0 - primaryLow) / primarySpan
         newLow = -zeroFraction * secondarySpan
 
@@ -658,6 +696,21 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
             modeMenu.addAction(modeAction)
         menu.addMenu(modeMenu)
 
+        verticalZoomAction = QAction(lan.get("plotVerticalZoom", "Vertical zoom"), menu)
+        verticalZoomAction.setCheckable(True)
+        verticalZoomAction.setChecked(False)
+        verticalZoomAction.setToolTip(lan.get(
+            "plotVerticalZoomTip",
+            "Navigation follows the chainage axis, enable this to rescale the vertical axis as well"))
+        verticalZoomAction.triggered.connect(
+            lambda checked, key=plotKey: self.setVerticalZoomEnabled(key, checked))
+        menu.addAction(verticalZoomAction)
+
+        resetViewAction = QAction(lan.get("plotResetFitY", "Reset view / Fit Y"), menu)
+        resetViewAction.setIcon(icons.makeIcon("resetView"))
+        resetViewAction.triggered.connect(lambda checked=False, key=plotKey: self.resetPlotView(key))
+        menu.addAction(resetViewAction)
+
         gridAction = QAction(lan.get("plotToggleGrid", "Toggle grid lines"), menu)
         gridAction.setCheckable(True)
         gridAction.setChecked(True)
@@ -686,6 +739,8 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
             "expandAction": expandAction,
             "gridAction": gridAction,
             "stationAction": stationAction,
+            "verticalZoomAction": verticalZoomAction,
+            "resetViewAction": resetViewAction,
             "modeActions": modeGroup.actions(),
         }
 
@@ -736,15 +791,71 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
         if plotItem is None:
             return
         viewBox = plotItem.vb
+        self.plotModes[plotKey] = mode
+
+        # Vertical navigation stays off unless the user released it for this plot
+        isVerticalEnabled = plotKey in self.verticalZoomPlots
 
         if mode == MODE_BOX_ZOOM:
             viewBox.setMouseMode(pg.ViewBox.RectMode)
-            viewBox.setMouseEnabled(x=True, y=True)
+            viewBox.setMouseEnabled(x=True, y=isVerticalEnabled)
         elif mode == MODE_AXIS_LOCK:
             viewBox.setMouseEnabled(x=False, y=False)
         else:
             viewBox.setMouseMode(pg.ViewBox.PanMode)
-            viewBox.setMouseEnabled(x=True, y=True)
+            viewBox.setMouseEnabled(x=True, y=isVerticalEnabled)
+
+    # Release or re-lock the vertical axis of one plot, re-applying its current interaction mode
+    def setVerticalZoomEnabled(self, plotKey, isEnabled):
+        if isEnabled:
+            self.verticalZoomPlots.add(plotKey)
+        else:
+            self.verticalZoomPlots.discard(plotKey)
+        self.setInteractionMode(plotKey, self.plotModes.get(plotKey, MODE_PAN))
+
+    # Register the routine that restores the vertical range a plot wants after a reset
+    def setYRangeHandler(self, plotKey, handler):
+        self.yRangeHandlers[plotKey] = handler
+
+        # Owning the vertical policy rules out auto ranging, which would fight it on every redraw
+        plotItem = self.plotItems.get(plotKey)
+        if plotItem is not None:
+            plotItem.vb.disableAutoRange(axis="y")
+
+    # Re-fit one plot, the chainage axis to the data and the vertical axis to its own policy
+    def resetPlotView(self, plotKey):
+        plotItem = self.plotItems.get(plotKey)
+        if plotItem is None:
+            return
+
+        plotItem.vb.enableAutoRange(axis="x")
+        handler = self.yRangeHandlers.get(plotKey)
+        if handler is not None:
+            handler()
+        else:
+            # Without a dock supplied policy the data extent is the best available vertical fit
+            plotItem.vb.enableAutoRange(axis="y")
+            plotItem.vb.disableAutoRange(axis="y")
+
+        if plotKey in self.zeroLockedPlots:
+            self.captureZeroLockRatio(plotKey)
+            self.syncZeroAlignment(plotKey)
+
+    # Shift is the explicit opt in for a vertical zoom while the axis is otherwise locked
+    def wheelEvent(self, event):
+        if not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            super().wheelEvent(event)
+            return
+
+        released = [key for key, plotItem in self.plotItems.items()
+                    if key not in self.verticalZoomPlots and self.plotModes.get(key, MODE_PAN) != MODE_AXIS_LOCK]
+        for plotKey in released:
+            self.plotItems[plotKey].vb.setMouseEnabled(x=True, y=True)
+        try:
+            super().wheelEvent(event)
+        finally:
+            for plotKey in released:
+                self.plotItems[plotKey].vb.setMouseEnabled(x=True, y=False)
 
     # Show or hide the grid of a single plot
     def setGridVisible(self, plotKey, isVisible):
@@ -813,6 +924,11 @@ class CoypuPlotWidget(pg.GraphicsLayoutWidget):
             parts["gridAction"].setText(lan.get("plotToggleGrid", "Toggle grid lines"))
             parts["stationAction"].setText(lan.get("plotToggleStations", "Toggle station markers"))
             parts["highlightMenu"].setTitle(lan.get("plotHighlight", "Highlight series"))
+            parts["verticalZoomAction"].setText(lan.get("plotVerticalZoom", "Vertical zoom"))
+            parts["verticalZoomAction"].setToolTip(lan.get(
+                "plotVerticalZoomTip",
+                "Navigation follows the chainage axis, enable this to rescale the vertical axis as well"))
+            parts["resetViewAction"].setText(lan.get("plotResetFitY", "Reset view / Fit Y"))
 
             modeLabels = [lan.get("plotModeBoxZoom", "Rectangular box zoom"),
                           lan.get("plotModePan", "Mouse drag pan"),
@@ -853,10 +969,12 @@ class PlotNavigationToolbar(QToolBar):
                                            lan.get("plotExportHighRes", "High resolution export"))
         self.exportAction.triggered.connect(self.exportHighRes)
 
-    # Zoom every plot of the attached widget around its current centre
+    # Zoom every plot of the attached widget along the chainage axis
     def scaleView(self, factor):
-        for plotItem in self.plotWidget.plotItems.values():
-            plotItem.vb.scaleBy((factor, factor))
+        for plotKey, plotItem in self.plotWidget.plotItems.items():
+            # Only a plot the user released for vertical zoom is scaled on both axes
+            verticalFactor = factor if plotKey in self.plotWidget.verticalZoomPlots else 1.0
+            plotItem.vb.scaleBy((factor, verticalFactor))
 
     # Switch between drag pan and rectangular box zoom on every plot
     def togglePanMode(self, isChecked):
@@ -864,13 +982,10 @@ class PlotNavigationToolbar(QToolBar):
         for plotKey in self.plotWidget.plotItems:
             self.plotWidget.setInteractionMode(plotKey, mode)
 
-    # Restore the automatic range of every plot
+    # Restore the automatic range of every plot, through the same path as the context menu entry
     def resetView(self):
-        for plotItem in self.plotWidget.plotItems.values():
-            plotItem.vb.autoRange()
-        # Auto range only touches the primary view, so zero locked axes need a manual resync
-        for plotKey in self.plotWidget.zeroLockedPlots:
-            self.plotWidget.syncZeroAlignment(plotKey)
+        for plotKey in self.plotWidget.plotItems:
+            self.plotWidget.resetPlotView(plotKey)
 
     # Save the whole plot canvas as a high resolution raster or vector image
     def exportHighRes(self):

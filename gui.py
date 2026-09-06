@@ -158,7 +158,9 @@ SERIES_SHORT_KEYS = {
 }
 
 # Geometry arrays kept as a muted baseline once an optimization moves the active alignment
-BASELINE_COMPARISON_KEYS = ("stationHorizontal", "curvature", "alignmentCoordinates")
+# geometryType and curvatureSign carry no plot of their own, they let the D+I pass rerun on the import
+BASELINE_COMPARISON_KEYS = ("stationHorizontal", "curvature", "alignmentCoordinates",
+                            "geometryType", "curvatureSign")
 
 # Suffix marking a baseline copy, never cleared by a recalculation
 BASELINE_KEY_SUFFIX = "Baseline"
@@ -262,6 +264,9 @@ class MainWindow(QMainWindow):
         self.optimizationController.progressChanged.connect(self.onOptimizationProgress)
         self.baselineAlignmentCache = None
         self.slewReportWindow = None
+
+        # State the group speed columns were last evaluated for, so two D+I passes are not repeated
+        self.optimizationImpactSignatureCache = None
 
         # Reports and the statistics dock follow every calculation instead of waiting to be reopened
         self.geometryCalculationFinished.connect(self.onCalculationFinished)
@@ -735,6 +740,7 @@ class MainWindow(QMainWindow):
         # View 1 is the interactive alignment map
         self.mapWidget = MapWidget(self, self.translationManager.getLanguage(self.currentLanguage))
         self.mapWidget.setSettingsData(self.dataStorage.get("settingsData", {}))
+        self.mapWidget.mapFailed.connect(self.onMapFailed)
         self.centralStack.addWidget(self.mapWidget)
 
         # View 2 is the generated calculation report
@@ -1195,6 +1201,10 @@ class MainWindow(QMainWindow):
         self.updateStatusTheme()
 
     # Switch the central viewport to the map page
+    # A page or script failure belongs in the status bar, it is not the user's mistake
+    def onMapFailed(self, message):
+        self.setEngineStatus(message)
+
     def showMapView(self):
         self.centralStack.setCurrentIndex(VIEW_MAP)
         self.showMapAction.setChecked(True)
@@ -3052,6 +3062,7 @@ class MainWindow(QMainWindow):
                 del self.dataStorage[key]
 
         self.baselineAlignmentCache = None
+        self.optimizationImpactSignatureCache = None
         self.graphsWidget.clearSlewPlot()
         self.updateOptimizationActionState()
 
@@ -3076,6 +3087,8 @@ class MainWindow(QMainWindow):
         self.sourceStack.clearKind(source_stack.TTP_KIND)
         self.plotSpeedLimits()
         self.plotKinematics()
+        # The geometry stays, only the speed colouring it fed has to be refreshed
+        self.updateMapWithSpeeds()
         self.markProjectModified()
 
     def cleanLandXMLData(self):
@@ -3086,6 +3099,8 @@ class MainWindow(QMainWindow):
         self.plotCant()
         self.plotCurvature()
         self.plotProfile()
+        # The alignment is gone, so the map must not keep showing it
+        self.mapWidget.resetMap()
         self.markProjectModified()
 
     def cleanCalculatedCants(self):
@@ -4413,37 +4428,39 @@ class MainWindow(QMainWindow):
         summary["travelTimeDeltaS"] = self.computeTravelTimeDelta()
         self.refreshSlewReportWindow()
 
-    # Per curve group speed impact, the cached baseline profile against the active one
+    # Two native D+I passes are expensive, so an unchanged summary is annotated only once
+    def optimizationImpactSignature(self, summary):
+        settingsData = self.dataStorage.get("settingsData", {})
+        return (id(summary), summary.get("optimizedGroupCount"),
+                self.dataStorage.get("defaultProfile"), settingsData.get("designApproach"),
+                len(self.dataStorage.get("LandXML", {}).get("stationHorizontal", [])))
+
+    # Per curve group speed impact, evaluated on the fly against the imported alignment
     def annotateGroupSpeedImpact(self, summary):
-        profileSuffix = batch_runner.resolveProfileSuffix(self.dataStorage.get("defaultProfile", "I150"))
-        baselineCache = self.baselineAlignmentCache or {}
-        baselineStations = baselineCache.get(f"stationSpeed{profileSuffix}")
-        baselineSpeeds = baselineCache.get(f"speedLimits{profileSuffix}")
-        optimizedStations = self.dataStorage.get(f"stationSpeed{profileSuffix}")
-        optimizedSpeeds = self.dataStorage.get(f"speedLimits{profileSuffix}")
+        signature = self.optimizationImpactSignature(summary)
+        if signature == self.optimizationImpactSignatureCache:
+            return
 
-        for group in summary.get("groups", []):
-            group["speedOldKmh"] = self.minimumSpeedOverRange(baselineStations, baselineSpeeds,
-                                                              group.get("startKm"), group.get("endKm"))
-            group["speedNewKmh"] = self.minimumSpeedOverRange(optimizedStations, optimizedSpeeds,
-                                                              group.get("startKm"), group.get("endKm"))
-            if group["speedOldKmh"] is None or group["speedNewKmh"] is None:
-                group["speedDeltaKmh"] = None
-            else:
-                group["speedDeltaKmh"] = group["speedNewKmh"] - group["speedOldKmh"]
+        baselineLandXml = self.baselineLandXmlForImpact()
+        optimization_runner.evaluateGroupSpeeds(self.dataStorage, baselineLandXml, summary)
+        self.optimizationImpactSignatureCache = signature
 
-    # Governing speed limit of one curve group, the slowest sample inside its chainage range
-    def minimumSpeedOverRange(self, stations, speeds, startKm, endKm):
-        if stations is None or speeds is None or startKm is None or endKm is None:
+    # Imported geometry the baseline pass runs on, from the live cache or the published comparison
+    def baselineLandXmlForImpact(self):
+        cachedLandXml = (self.baselineAlignmentCache or {}).get("LandXML")
+        if cachedLandXml:
+            return cachedLandXml
+
+        # A reloaded project has no cache, so the pass is rebuilt from the persisted baseline arrays
+        lxml = self.dataStorage.get("LandXML", {})
+        if lxml.get("stationHorizontalBaseline") is None:
             return None
-        stations = np.asarray(stations, dtype=float)
-        speeds = np.asarray(speeds, dtype=float)
-        if stations.size == 0 or stations.size != speeds.size:
-            return None
-        inRange = (stations >= startKm) & (stations <= endKm) & np.isfinite(speeds) & (speeds > 0)
-        if not np.any(inRange):
-            return None
-        return float(np.min(speeds[inRange]))
+        rebuilt = dict(lxml)
+        for comparisonKey in BASELINE_COMPARISON_KEYS:
+            baselineValues = lxml.get(comparisonKey + BASELINE_KEY_SUFFIX)
+            if baselineValues is not None:
+                rebuilt[comparisonKey] = baselineValues
+        return rebuilt
 
     # Active minus baseline total run time of the first vehicle, in seconds
     def computeTravelTimeDelta(self):
@@ -4512,6 +4529,7 @@ class MainWindow(QMainWindow):
     # Drops every optimizer output, reverting the map/plots to the baseline-only view
     def clearOptimizationResults(self, refresh=True):
         lxml = self.dataStorage.setdefault("LandXML", {})
+        self.optimizationImpactSignatureCache = None
         for key in OPTIMIZATION_STATE_KEYS:
             lxml.pop(key, None)
 
@@ -4665,6 +4683,8 @@ class MainWindow(QMainWindow):
     def updateMapWithSpeeds(self):
         lxml = self.dataStorage.get("LandXML", {})
         if not lxml:
+            # Nothing left to draw, so the previous alignment must not survive on the map
+            self.mapWidget.resetMap()
             return
 
         # Geometry profiles (V100 / V130 / V150 / VK)

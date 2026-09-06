@@ -7,13 +7,17 @@ import folium
 from folium import DivIcon
 from folium.features import ColorLine
 import math
-from PySide6.QtCore import QFile, QIODevice, QObject, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import (QBuffer, QFile, QIODevice, QObject, Qt, QTimer, QUrl,
+                            Signal, Slot)
 from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton,
                                QSlider, QWidget, QVBoxLayout)
+from PySide6.QtWebEngineCore import (QWebEnginePage, QWebEngineProfile,
+                                     QWebEngineUrlScheme, QWebEngineUrlSchemeHandler)
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
 import numpy as np
 import branca.colormap as bcm
+from branca.element import MacroElement, Template
 
 import icons
 from geometry_engine import SLEW_VISIBLE_THRESHOLD_MM
@@ -21,6 +25,35 @@ from ribbon import SERIES_TOGGLE_PROPERTY
 
 # Maximum number of alignment samples handed to the page for nearest point lookup
 MAX_LOOKUP_POINTS = 2000
+
+# Maximum number of vertices drawn per line, a coloured line costs one svg path per segment
+MAX_RENDER_POINTS = 20000
+
+# Private scheme the rendered page is served over, so no size limited data url is involved
+MAP_PAGE_SCHEME = b"coypu"
+MAP_PAGE_URL = "coypu://map/page.html"
+
+# Set once the scheme was registered, a second registration would be refused by Qt anyway
+isMapPageSchemeRegistered = False
+
+
+# Qt refuses a scheme registered after QApplication exists, so this runs at import time
+def registerMapPageScheme():
+    global isMapPageSchemeRegistered
+    if isMapPageSchemeRegistered:
+        return
+
+    scheme = QWebEngineUrlScheme(MAP_PAGE_SCHEME)
+    scheme.setSyntax(QWebEngineUrlScheme.Syntax.Host)
+    scheme.setFlags(QWebEngineUrlScheme.Flag.SecureScheme
+                    | QWebEngineUrlScheme.Flag.LocalAccessAllowed
+                    | QWebEngineUrlScheme.Flag.CorsEnabled)
+    QWebEngineUrlScheme.registerScheme(scheme)
+    isMapPageSchemeRegistered = True
+
+
+# main.py imports this module before it builds QApplication, which is what makes this legal
+registerMapPageScheme()
 
 # The imported axis is kept only as a faint reference under the active one
 BASELINE_ALIGNMENT_COLOR = "#888888"
@@ -82,18 +115,24 @@ DRAW_MODE_CHOICES = [
 
 # Offset of the floating control panel, chosen to clear the Leaflet zoom buttons
 CONTROL_PANEL_MARGIN = 10
-CONTROL_PANEL_TOP = 88
+
+# Width of the two compact zoom step buttons
+ZOOM_BUTTON_WIDTH = 34
+CONTROL_PANEL_TOP = 10
 
 # Injected into every rendered map so the chainage crosshair works in both directions
 CURSOR_SCRIPT_TEMPLATE = """
-<script>{webChannelSource}</script>
-<script>
+{webChannelSource}
+
 window.coypuCursorMarker = null;
 window.coypuBridge = null;
 window.coypuPoints = {lookupPoints};
 window.coypuLabels = {tooltipLabels};
 window.coypuTooltip = null;
 window.coypuLastSent = 0;
+window.coypuMeasurePoints = [];
+window.coypuMeasureLayer = null;
+window.coypuMeasureMode = false;
 
 // Railway style chainage caption, 12.345 km becomes km 12+345
 window.coypuFormatChainage = function (stationKm) {{
@@ -117,9 +156,14 @@ window.coypuUpdateTooltip = function (event, point) {{
     }}
 
     var parts = [];
-    if (point.length > 6 && point[6]) {{
-        parts.push(window.coypuLabels.type + ': ' + point[6]);
+    // Element identity first, its number and its type read as one caption
+    var identity = [];
+    if (point.length > 6 && point[6]) {{ identity.push(point[6]); }}
+    if (point.length > 7 && point[7]) {{ identity.push(point[7]); }}
+    if (identity.length) {{
+        parts.push(window.coypuLabels.type + ' ' + identity.join(' \u00b7 '));
     }}
+
     if (point.length > 4 && point[4] !== null && isFinite(point[4])) {{
         var radiusText = point[4].toFixed(0);
         if (point.length > 5 && point[5] !== null && isFinite(point[5]) &&
@@ -127,9 +171,16 @@ window.coypuUpdateTooltip = function (event, point) {{
             radiusText += ' \u2192 ' + point[5].toFixed(0);
         }}
         parts.push(window.coypuLabels.radius + ' ' + radiusText + ' m');
+    }} else if (point.length > 7 && point[7]) {{
+        // A straight has no centre of curvature, saying so beats leaving the field out
+        parts.push(window.coypuLabels.radius + ' \u221e');
     }}
-    if (point.length > 7 && point[7] !== null) {{
-        parts.push(window.coypuLabels.length + ' ' + point[7].toFixed(1) + ' m');
+    if (point.length > 8 && point[8] !== null) {{
+        parts.push(window.coypuLabels.length + ' ' + point[8].toFixed(1) + ' m');
+    }}
+    // Stationing range of the whole element, with the hovered chainage after it
+    if (point.length > 10 && point[9] !== null && point[10] !== null) {{
+        parts.push(window.coypuFormatChainage(point[9]) + ' \u2013 ' + window.coypuFormatChainage(point[10]));
     }}
     parts.push(window.coypuLabels.chainage + ' ' + window.coypuFormatChainage(point[0]));
     if (point.length > 3 && point[3] !== null && Math.abs(point[3]) >= 1.0) {{
@@ -157,6 +208,7 @@ window.setTrackCursor = function (lat, lon) {{
 
 // Report the chainage of the alignment point nearest to the mouse back to Qt
 window.coypuReportNearest = function (event) {{
+    if (window.coypuMeasureMode) {{ return; }}
     if (window.coypuPoints.length === 0) {{ return; }}
     var now = Date.now();
     if (now - window.coypuLastSent < 50) {{ return; }}
@@ -180,15 +232,6 @@ window.coypuReportNearest = function (event) {{
     window.coypuUpdateTooltip(event, window.coypuPoints[bestIndex]);
 }};
 
-if (typeof qt !== 'undefined' && qt.webChannelTransport) {{
-    new QWebChannel(qt.webChannelTransport, function (channel) {{
-        window.coypuBridge = channel.objects.coypuBridge;
-    }});
-}}
-
-{mapName}.on('mousemove', function (event) {{ window.coypuReportNearest(event); }});
-{mapName}.on('mouseout', function () {{ window.coypuHideTooltip(); }});
-
 // Report the camera back to Qt so the viewport survives a rebuild, a save and a reload
 window.coypuReportView = function () {{
     if (!window.coypuBridge) {{ return; }}
@@ -196,30 +239,141 @@ window.coypuReportView = function () {{
     window.coypuBridge.reportViewState(center.lat, center.lng, {mapName}.getZoom());
 }};
 
-{mapName}.on('moveend', window.coypuReportView);
-
-// moveend never fires for the initial programmatic view, so the first toggle would otherwise
-// find no stored camera and silently recentre the map
-{mapName}.whenReady(function () {{ window.setTimeout(window.coypuReportView, 0); }});
-
 // Frame the whole alignment without rebuilding the page
 window.coypuFitBounds = function (south, west, north, east) {{
+    if (![south, west, north, east].every(isFinite)) {{ return; }}
     {mapName}.fitBounds([[south, west], [north, east]], {{padding: [24, 24]}});
 }};
 
-// Opacity and visibility of the railway overlay, changed in place instead of by a full redraw
-window.coypuSetRailOpacity = function (opacity) {{
-    {mapName}.eachLayer(function (layer) {{
-        if (layer.options && layer.options.className === 'coypuRailOverlay') {{
-            layer.setOpacity(opacity);
-        }}
-    }});
+// Step the zoom from the Qt controls, so the page carries no Leaflet zoom widget of its own
+window.coypuZoomBy = function (delta) {{
+    if (delta > 0) {{ {mapName}.zoomIn(delta); }} else if (delta < 0) {{ {mapName}.zoomOut(-delta); }}
 }};
-</script>
+
+// Swap tile providers in place, the camera is never touched so the viewport survives untouched
+window.coypuSetBasemap = function (key) {{
+    var target = window.coypuLayers.basemaps[key];
+    if (!target || key === window.coypuActiveBasemap) {{ return; }}
+    var current = window.coypuLayers.basemaps[window.coypuActiveBasemap];
+    if (current && {mapName}.hasLayer(current)) {{ {mapName}.removeLayer(current); }}
+    {mapName}.addLayer(target);
+    if (target.bringToBack) {{ target.bringToBack(); }}
+    window.coypuActiveBasemap = key;
+}};
+
+// Opacity and visibility of the railway overlay, changed in place instead of by a full redraw
+window.coypuSetRailOverlay = function (isEnabled, opacity) {{
+    var overlay = window.coypuLayers.railOverlay;
+    if (!overlay) {{ return; }}
+    if (isEnabled) {{
+        if (!{mapName}.hasLayer(overlay)) {{ {mapName}.addLayer(overlay); }}
+        overlay.setOpacity(opacity);
+    }} else if ({mapName}.hasLayer(overlay)) {{
+        {mapName}.removeLayer(overlay);
+    }}
+}};
+
+// Station markers live in one group, so showing and hiding them costs no page rebuild either
+window.coypuSetStations = function (isVisible) {{
+    var group = window.coypuLayers.stations;
+    if (!group) {{ return; }}
+    if (isVisible && !{mapName}.hasLayer(group)) {{
+        {mapName}.addLayer(group);
+    }} else if (!isVisible && {mapName}.hasLayer(group)) {{
+        {mapName}.removeLayer(group);
+    }}
+}};
+
+// Kept for backwards compatibility with a page rendered before the overlay helper existed
+window.coypuSetRailOpacity = function (opacity) {{
+    window.coypuSetRailOverlay(true, opacity);
+}};
+
+// Redraw the running measurement and report its total length back to Qt
+window.coypuRenderMeasure = function () {{
+    if (window.coypuMeasureLayer === null) {{
+        window.coypuMeasureLayer = L.layerGroup().addTo({mapName});
+    }}
+    window.coypuMeasureLayer.clearLayers();
+    var total = 0.0;
+    for (var i = 0; i < window.coypuMeasurePoints.length; i++) {{
+        L.circleMarker(window.coypuMeasurePoints[i], {{
+            radius: 4, color: '#2f6fb5', weight: 2,
+            fillColor: '#ffffff', fillOpacity: 1.0
+        }}).addTo(window.coypuMeasureLayer);
+        if (i > 0) {{
+            total += {mapName}.distance(window.coypuMeasurePoints[i - 1],
+                                        window.coypuMeasurePoints[i]);
+        }}
+    }}
+    if (window.coypuMeasurePoints.length > 1) {{
+        L.polyline(window.coypuMeasurePoints, {{
+            color: '#2f6fb5', weight: 2, dashArray: '5,5'
+        }}).addTo(window.coypuMeasureLayer);
+    }}
+    if (window.coypuBridge) {{ window.coypuBridge.reportMeasureDistance(total); }}
+}};
+
+// Collect one vertex per click while the measure tool is armed
+window.coypuAddMeasurePoint = function (event) {{
+    if (!window.coypuMeasureMode) {{ return; }}
+    window.coypuMeasurePoints.push([event.latlng.lat, event.latlng.lng]);
+    window.coypuRenderMeasure();
+}};
+
+// Drop every vertex and tell Qt the measurement is back to zero
+window.coypuClearMeasure = function () {{
+    window.coypuMeasurePoints = [];
+    if (window.coypuMeasureLayer !== null) {{ window.coypuMeasureLayer.clearLayers(); }}
+    if (window.coypuBridge) {{ window.coypuBridge.reportMeasureDistance(0.0); }}
+}};
+
+// Arming the tool starts a fresh measurement, disarming wipes what is on screen
+window.coypuSetMeasureMode = function (isEnabled) {{
+    window.coypuMeasureMode = !!isEnabled;
+    window.coypuClearMeasure();
+    if ({mapName} && {mapName}.getContainer) {{
+        {mapName}.getContainer().style.cursor = isEnabled ? 'crosshair' : '';
+    }}
+}};
+
+// Everything above is a definition, only the bindings below need the map to exist already
+if (typeof {mapName} === 'undefined') {{
+    console.error('coypu: leaflet map global missing, page bindings skipped');
+}} else {{
+    window.coypuLayers = {layerRegistry};
+    window.coypuActiveBasemap = {activeBasemap};
+    {mapName}.on('mousemove', function (event) {{ window.coypuReportNearest(event); }});
+    {mapName}.on('mouseout', function () {{ window.coypuHideTooltip(); }});
+    {mapName}.on('click', function (event) {{ window.coypuAddMeasurePoint(event); }});
+    {mapName}.on('moveend', window.coypuReportView);
+    {mapName}.whenReady(function () {{ window.setTimeout(window.coypuReportView, 0); }});
+}}
+
+// The handshake is asynchronous, so the first camera report waits for the bridge to arrive
+if (typeof qt !== 'undefined' && qt.webChannelTransport) {{
+    new QWebChannel(qt.webChannelTransport, function (channel) {{
+        window.coypuBridge = channel.objects.coypuBridge;
+        if (window.coypuReportView) {{ window.coypuReportView(); }}
+    }});
+}}
 """
 
 
+class CoypuCursorScript(MacroElement):
+    """Carries the cursor script into folium's own script block."""
+
+    # Rendering here rather than into body puts the script after the Leaflet map global exists
+    _template = Template("{% macro script(this, kwargs) %}{{ this.scriptSource }}{% endmacro %}")
+
+    def __init__(self, scriptSource):
+        super().__init__()
+        self.scriptSource = scriptSource
+
+
 class MapControlsPanel(QFrame):
+    """Floating heads up display holding every map control."""
+
     # Emitted with the identifier of the newly selected base map
     baseMapChanged = Signal(str)
 
@@ -235,6 +389,12 @@ class MapControlsPanel(QFrame):
     # Emitted when the user asks to frame the whole alignment
     fitTrackRequested = Signal()
 
+    # Emitted with a positive or negative number of zoom steps
+    zoomRequested = Signal(int)
+
+    # Emitted when the click to measure tool is armed or disarmed
+    measureModeChanged = Signal(bool)
+
     def __init__(self, lan, parent=None):
         super().__init__(parent)
 
@@ -245,6 +405,37 @@ class MapControlsPanel(QFrame):
         panelLayout = QVBoxLayout(self)
         panelLayout.setContentsMargins(6, 6, 6, 6)
         panelLayout.setSpacing(4)
+
+        # Every group heading is retranslated together, so they are tracked as one list
+        self.groupLabels = []
+
+        panelLayout.addWidget(self.makeGroupLabel("mapGroupView", "View"))
+
+        viewRow = QWidget()
+        viewLayout = QHBoxLayout(viewRow)
+        viewLayout.setContentsMargins(0, 0, 0, 0)
+        viewLayout.setSpacing(4)
+
+        self.zoomInButton = QPushButton()
+        self.zoomInButton.setIcon(icons.makeIcon("zoomIn"))
+        self.zoomInButton.setFixedWidth(ZOOM_BUTTON_WIDTH)
+        self.zoomInButton.clicked.connect(self.onZoomInClicked)
+        viewLayout.addWidget(self.zoomInButton)
+
+        self.zoomOutButton = QPushButton()
+        self.zoomOutButton.setIcon(icons.makeIcon("zoomOut"))
+        self.zoomOutButton.setFixedWidth(ZOOM_BUTTON_WIDTH)
+        self.zoomOutButton.clicked.connect(self.onZoomOutClicked)
+        viewLayout.addWidget(self.zoomOutButton)
+
+        self.fitTrackButton = QPushButton()
+        self.fitTrackButton.setIcon(icons.makeIcon("resetView"))
+        self.fitTrackButton.clicked.connect(self.onFitTrackClicked)
+        viewLayout.addWidget(self.fitTrackButton)
+
+        panelLayout.addWidget(viewRow)
+
+        panelLayout.addWidget(self.makeGroupLabel("mapGroupLayers", "Layers"))
 
         self.baseMapCombo = QComboBox()
         for baseMapKey, languageKey, fallbackName in BASEMAP_CHOICES:
@@ -274,12 +465,6 @@ class MapControlsPanel(QFrame):
 
         panelLayout.addWidget(overlayRow)
 
-        self.alignmentStyleCombo = QComboBox()
-        for drawModeKey, languageKey, fallbackName in DRAW_MODE_CHOICES:
-            self.alignmentStyleCombo.addItem(self.lan.get(languageKey, fallbackName), drawModeKey)
-        self.alignmentStyleCombo.currentIndexChanged.connect(self.onAlignmentStyleSelected)
-        panelLayout.addWidget(self.alignmentStyleCombo)
-
         self.stationsButton = QPushButton()
         self.stationsButton.setCheckable(True)
         self.stationsButton.setChecked(True)
@@ -288,13 +473,35 @@ class MapControlsPanel(QFrame):
         self.stationsButton.toggled.connect(self.stationsToggled)
         panelLayout.addWidget(self.stationsButton)
 
-        self.fitTrackButton = QPushButton()
-        self.fitTrackButton.setIcon(icons.makeIcon("resetView"))
-        self.fitTrackButton.clicked.connect(self.fitTrackRequested)
-        panelLayout.addWidget(self.fitTrackButton)
+        self.alignmentStyleCombo = QComboBox()
+        for drawModeKey, languageKey, fallbackName in DRAW_MODE_CHOICES:
+            self.alignmentStyleCombo.addItem(self.lan.get(languageKey, fallbackName), drawModeKey)
+        self.alignmentStyleCombo.currentIndexChanged.connect(self.onAlignmentStyleSelected)
+        panelLayout.addWidget(self.alignmentStyleCombo)
+
+        panelLayout.addWidget(self.makeGroupLabel("mapGroupTools", "Tools"))
+
+        self.measureButton = QPushButton()
+        self.measureButton.setCheckable(True)
+        self.measureButton.setIcon(icons.makeIcon("measure"))
+        self.measureButton.setProperty(SERIES_TOGGLE_PROPERTY, True)
+        self.measureButton.toggled.connect(self.onMeasureToggled)
+        panelLayout.addWidget(self.measureButton)
+
+        self.measureReadoutLabel = QLabel()
+        self.measureReadoutLabel.setObjectName("mapMeasureReadout")
+        self.measureReadoutLabel.setVisible(False)
+        panelLayout.addWidget(self.measureReadoutLabel)
 
         self.currentDrawMode = DRAW_MODE_SPEED
         self.updateTexts(self.lan)
+
+    # Build one heading and remember it so a language change can retranslate it
+    def makeGroupLabel(self, languageKey, fallbackText):
+        groupLabel = QLabel(self.lan.get(languageKey, fallbackText))
+        groupLabel.setObjectName("mapGroupLabel")
+        self.groupLabels.append((groupLabel, languageKey, fallbackText))
+        return groupLabel
 
     # Report the base map the user picked from the combo box
     def onBaseMapSelected(self, index):
@@ -314,6 +521,26 @@ class MapControlsPanel(QFrame):
     def onAlignmentStyleSelected(self, index):
         self.currentDrawMode = self.alignmentStyleCombo.itemData(index)
         self.drawModeChanged.emit(self.currentDrawMode)
+
+    # The clicked signal carries a checked flag the plain request signals do not want
+    def onFitTrackClicked(self):
+        self.fitTrackRequested.emit()
+
+    def onZoomInClicked(self):
+        self.zoomRequested.emit(1)
+
+    def onZoomOutClicked(self):
+        self.zoomRequested.emit(-1)
+
+    # Show the running total only while the tool is actually armed
+    def onMeasureToggled(self, isChecked):
+        self.measureReadoutLabel.setVisible(isChecked)
+        self.measureModeChanged.emit(isChecked)
+
+    # Display the formatted measure total handed over by the map widget
+    def setMeasureReadout(self, readoutText):
+        template = self.lan.get("mapMeasureTotal", "Total: {distance}")
+        self.measureReadoutLabel.setText(template.format(distance=readoutText))
 
     # Adopt the state owned by the map widget without re-emitting signals
     def syncState(self, baseMap, drawMode, railEnabled, railOpacity, showStations):
@@ -343,6 +570,9 @@ class MapControlsPanel(QFrame):
     def updateTexts(self, lan):
         self.lan = lan or {}
 
+        for groupLabel, languageKey, fallbackText in self.groupLabels:
+            groupLabel.setText(self.lan.get(languageKey, fallbackText))
+
         self.baseMapCombo.blockSignals(True)
         for itemIndex, (baseMapKey, languageKey, fallbackName) in enumerate(BASEMAP_CHOICES):
             self.baseMapCombo.setItemText(itemIndex, self.lan.get(languageKey, fallbackName))
@@ -362,17 +592,64 @@ class MapControlsPanel(QFrame):
         self.alignmentStyleCombo.setToolTip(self.lan.get("mapAlignmentStyle", "Alignment style"))
         self.fitTrackButton.setText(self.lan.get("mapFitTrack", "Fit"))
         self.fitTrackButton.setToolTip(self.lan.get("mapFitTrackTip", "Zoom to track extent"))
+        self.zoomInButton.setToolTip(self.lan.get("mapZoomInTip", "Zoom in"))
+        self.zoomOutButton.setToolTip(self.lan.get("mapZoomOutTip", "Zoom out"))
+        self.measureButton.setText(self.lan.get("mapMeasure", "Measure"))
+        self.measureButton.setToolTip(self.lan.get("mapMeasureTip",
+                                                   "Click the map to measure a distance"))
+        self.setMeasureReadout(self.lan.get("mapMeasureHint", "click the map"))
 
     # Rebuild the icons so they follow the active theme colours
     def applyTheme(self, isDark, tokens=None):
+        self.zoomInButton.setIcon(icons.makeIcon("zoomIn"))
+        self.zoomOutButton.setIcon(icons.makeIcon("zoomOut"))
         self.railOverlayButton.setIcon(icons.makeIcon("railway"))
         self.stationsButton.setIcon(icons.makeIcon("station"))
         self.fitTrackButton.setIcon(icons.makeIcon("resetView"))
+        self.measureButton.setIcon(icons.makeIcon("measure"))
 
         background = "rgba(43, 43, 43, 235)" if isDark else "rgba(255, 255, 255, 235)"
         border = tokens["border"] if tokens else "#999999"
-        self.setStyleSheet(f"#mapControlsPanel {{ background: {background};"
-                           f" border: 1px solid {border}; border-radius: 4px; }}")
+        mutedText = tokens["mutedText"] if tokens else "#777777"
+        activeBorder = tokens["accentDone"] if tokens else "#2e7d32"
+        activeBackground = tokens["accentDoneBackground"] if tokens else "#e6f4e6"
+
+        # An armed toggle carries the theme accent so its state reads without hovering it
+        self.setStyleSheet(
+            f"#mapControlsPanel {{ background: {background};"
+            f" border: 1px solid {border}; border-radius: 4px; }}"
+            f" #mapGroupLabel {{ color: {mutedText}; font-size: 10px;"
+            f" text-transform: uppercase; }}"
+            f" #mapMeasureReadout {{ color: {mutedText}; font-size: 10px; }}"
+            f" #mapControlsPanel QPushButton:checked {{ background: {activeBackground};"
+            f" border: 1px solid {activeBorder}; }}"
+            f" #mapControlsPanel QPushButton:disabled {{ color: {mutedText}; }}")
+
+
+class MapPageHandler(QWebEngineUrlSchemeHandler):
+    """Serves the last rendered page over the private map scheme."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.pageBytes = b""
+
+    # Hand the browser whatever publishPage stored last, the query string only defeats caching
+    def requestStarted(self, job):
+        buffer = QBuffer(job)
+        buffer.setData(self.pageBytes)
+        buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+        job.reply(b"text/html", buffer)
+
+
+class MapPage(QWebEnginePage):
+    """Web page that forwards its JavaScript console to Qt."""
+
+    # Emitted with the severity name, the message text and the source line number
+    consoleMessageReceived = Signal(str, str, int)
+
+    def javaScriptConsoleMessage(self, level, message, lineNumber, sourceId):
+        # The level is an enum in PySide6, int() on it raises, so the name is what travels
+        self.consoleMessageReceived.emit(level.name, message, lineNumber)
 
 
 class MapBridge(QObject):
@@ -380,7 +657,10 @@ class MapBridge(QObject):
     chainageReported = Signal(float)
 
     # Emitted with the map centre and zoom level after every pan or zoom
-    viewStateReported = Signal(float, float, int)
+    viewStateReported = Signal(float, float, float)
+
+    # Emitted with the running measure tool total in metres
+    measureDistanceReported = Signal(float)
 
     # Invoked from JavaScript through the web channel on every throttled mouse move
     @Slot(float)
@@ -388,13 +668,21 @@ class MapBridge(QObject):
         self.chainageReported.emit(float(stationKm))
 
     # Invoked from JavaScript once the Leaflet camera settles after a pan or zoom
-    @Slot(float, float, int)
+    @Slot(float, float, float)
     def reportViewState(self, centerLat, centerLon, zoomLevel):
-        self.viewStateReported.emit(float(centerLat), float(centerLon), int(zoomLevel))
+        self.viewStateReported.emit(float(centerLat), float(centerLon), float(zoomLevel))
+
+    # Invoked from JavaScript whenever the measure tool gains or loses a vertex
+    @Slot(float)
+    def reportMeasureDistance(self, distanceMeters):
+        self.measureDistanceReported.emit(float(distanceMeters))
 
 class MapWidget(QWidget):
     # Emitted with the chainage in kilometres when the alignment is hovered on the map
     cursorMoved = Signal(float)
+
+    # Emitted with a translated message whenever the page itself could not do its job
+    mapFailed = Signal(str)
 
     def __init__(self, parent=None, lan=None):
         super().__init__(parent)
@@ -421,8 +709,24 @@ class MapWidget(QWidget):
         self.settingsData = {}
         # Active unit system, km/h when true and m/s when false
         self.useKmh = False
-        # Bounding box of the drawn alignment, the target of the fit view control
+        # Bounding box of everything drawn, the fallback target of the fit view control
         self.trackBounds = None
+        # Bounding box of the active axis alone, what the fit view control aims at first
+        self.activeTrackBounds = None
+        # Set when a fit was asked for before the page was live, flushed once it finishes loading
+        self.isFitPending = False
+        # Scripts issued while a page was loading, keyed so a burst replays only its last value
+        self.pendingScripts = {}
+        # Bumped on every publish, so a superseded page's failure is not blamed on the live one
+        self.loadGeneration = 0
+        # Set once per page so a broken tile source cannot flood the status bar
+        self.wasConsoleErrorReported = False
+        # Latest measure tool total in metres, reported by the page
+        self.measureDistanceMeters = 0.0
+        # Armed state of the click to measure tool
+        self.isMeasureMode = False
+        # Page globals of the layers folium emitted, so a toggle can address them from Qt
+        self.layerRegistry = {"basemaps": {}, "railOverlay": None, "stations": None}
         # Live Leaflet camera, restored from a project file or reported back by the page
         self.viewCenterLat = None
         self.viewCenterLon = None
@@ -436,15 +740,34 @@ class MapWidget(QWidget):
         self.controlsPanel.drawModeChanged.connect(self.setDrawMode)
         self.controlsPanel.stationsToggled.connect(self.setStationsVisible)
         self.controlsPanel.fitTrackRequested.connect(self.fitToTrackExtent)
+        self.controlsPanel.zoomRequested.connect(self.zoomBy)
+        self.controlsPanel.measureModeChanged.connect(self.setMeasureMode)
         self.controlsPanel.applyTheme(False)
 
         # The bridge lets the page report the chainage under the mouse back to Qt
         self.bridge = MapBridge(self)
         self.bridge.chainageReported.connect(self.cursorMoved)
         self.bridge.viewStateReported.connect(self.onViewStateReported)
+        self.bridge.measureDistanceReported.connect(self.onMeasureDistanceReported)
         self.webChannel = QWebChannel(self)
         self.webChannel.registerObject("coypuBridge", self.bridge)
-        self.mapBrowser.page().setWebChannel(self.webChannel)
+
+        # The reference is held because setPage does not take ownership of the page
+        self.mapPage = MapPage(self.mapBrowser)
+        self.mapPage.consoleMessageReceived.connect(self.onPageConsoleMessage)
+        self.mapBrowser.setPage(self.mapPage)
+        self.mapPage.setWebChannel(self.webChannel)
+
+        # One handler serves every rendered page, so it is installed once per widget
+        self.pageHandler = MapPageHandler(self)
+        QWebEngineProfile.defaultProfile().installUrlSchemeHandler(
+            MAP_PAGE_SCHEME, self.pageHandler)
+
+        # Coalesces the bursts of refreshes a single user action can trigger
+        self.redrawTimer = QTimer(self)
+        self.redrawTimer.setSingleShot(True)
+        self.redrawTimer.setInterval(0)
+        self.redrawTimer.timeout.connect(self.redraw)
 
         self.webChannelSource = self.readWebChannelSource()
         self.resetMap()
@@ -469,6 +792,63 @@ class MapWidget(QWidget):
         self.drawMode = drawMode
         self.redraw()
 
+    # The only place a script reaches the page, so every caller shares one guard
+    def runPageScript(self, script, resultHandler=None):
+        if not self.isMapReady:
+            return False
+        if resultHandler is None:
+            self.mapBrowser.page().runJavaScript(script)
+        else:
+            self.mapBrowser.page().runJavaScript(script, resultHandler)
+        return True
+
+    # Run now when the page is live, otherwise keep only the newest script for that intent
+    def queueScript(self, intentKey, script):
+        if self.runPageScript(script):
+            return True
+        self.pendingScripts[intentKey] = script
+        return False
+
+    # Replay whatever was asked for while the page was still loading, in the order it arrived
+    def flushPendingScripts(self):
+        queuedScripts = list(self.pendingScripts.values())
+        self.pendingScripts.clear()
+        for script in queuedScripts:
+            self.runPageScript(script)
+
+    # Run a page helper when the map is live, reporting whether the in place path was taken
+    def runLayerScript(self, script):
+        if not self.isMapReady or not self.layerRegistry["basemaps"]:
+            return False
+        return self.runPageScript(script)
+
+    # Report a page that never loaded, unless a newer page has already superseded it
+    def reportPageFailure(self, failedGeneration):
+        if failedGeneration != self.loadGeneration:
+            return
+        self.pendingScripts.clear()
+        self.mapFailed.emit(self.lan.get("mapPageFailed",
+                                         "The map page could not be displayed"))
+
+    # Surface a page side error once per page, so the cause stops being invisible
+    def onPageConsoleMessage(self, levelName, message, lineNumber):
+        if levelName != "ErrorMessageLevel" or self.wasConsoleErrorReported:
+            return
+        self.wasConsoleErrorReported = True
+        template = self.lan.get("mapScriptFailed", "Map script error: {message}")
+        self.mapFailed.emit(template.format(message=message))
+
+    # Keep the measure readout in the floating controls in step with the page
+    def onMeasureDistanceReported(self, distanceMeters):
+        self.measureDistanceMeters = float(distanceMeters)
+        self.controlsPanel.setMeasureReadout(self.formatMeasureDistance(distanceMeters))
+
+    # Metres below a kilometre and kilometres above it, matching how the rest of the app reads
+    def formatMeasureDistance(self, distanceMeters):
+        if distanceMeters < 1000.0:
+            return f"{distanceMeters:.1f} m"
+        return f"{distanceMeters / 1000.0:.3f} km"
+
     def setBaseMap(self, baseMap):
         # The dedicated rail overlay replaced the former combined orm base map
         if baseMap == "orm":
@@ -477,20 +857,24 @@ class MapWidget(QWidget):
 
         self.currentBaseMap = baseMap
         self.syncControlsPanel()
+
+        # Swapping tiles in the live page keeps the camera exactly where the user left it
+        if self.runLayerScript(
+                f"if (window.coypuSetBasemap) {{ window.coypuSetBasemap({json.dumps(baseMap)}); }}"):
+            return
+
         self.redraw()
 
     # Enable or disable the OpenRailwayMap overlay and set its transparency
     def setRailOverlay(self, isEnabled, opacity=None):
-        wasEnabled = self.railOverlayEnabled
         self.railOverlayEnabled = bool(isEnabled)
-        isOpacityOnly = wasEnabled and self.railOverlayEnabled and opacity is not None
         if opacity is not None:
             self.railOverlayOpacity = float(opacity)
 
-        # Dragging the opacity slider must not cost a full page rebuild and a tile refetch
-        if isOpacityOnly and self.isMapReady:
-            self.mapBrowser.page().runJavaScript(
-                f"if (window.coypuSetRailOpacity) {{ window.coypuSetRailOpacity({self.railOverlayOpacity}); }}")
+        # Neither the toggle nor the opacity slider is worth a page rebuild and a tile refetch
+        if self.runLayerScript(
+                f"if (window.coypuSetRailOverlay) {{ window.coypuSetRailOverlay("
+                f"{json.dumps(self.railOverlayEnabled)}, {self.railOverlayOpacity}); }}"):
             return
 
         self.redraw()
@@ -498,6 +882,12 @@ class MapWidget(QWidget):
     # Show or hide the station and stop markers on the map
     def setStationsVisible(self, isVisible):
         self.showStations = bool(isVisible)
+
+        if self.runLayerScript(
+                f"if (window.coypuSetStations) {{ window.coypuSetStations("
+                f"{json.dumps(self.showStations)}); }}"):
+            return
+
         self.redraw()
 
     # Remember the camera the page just settled on, no redraw is needed for a pure pan or zoom
@@ -516,7 +906,8 @@ class MapWidget(QWidget):
             return
         self.viewCenterLat = float(centerLat)
         self.viewCenterLon = float(centerLon)
-        self.viewZoom = int(zoomLevel)
+        # Leaflet zoom is fractional, truncating it would walk the camera outward on every rebuild
+        self.viewZoom = float(zoomLevel)
 
     # Forget the saved camera so the next draw re-frames the alignment
     def clearViewState(self):
@@ -526,32 +917,87 @@ class MapWidget(QWidget):
 
     # Build the folium map on the saved camera when there is one, otherwise on the computed view
     def buildMap(self, centerLat, centerLon, zoomStart):
-        if self.viewCenterLat is not None and self.viewZoom is not None:
+        if self.viewCenterLat is not None and self.viewCenterLon is not None and self.viewZoom is not None:
             centerLat, centerLon, zoomStart = self.viewCenterLat, self.viewCenterLon, self.viewZoom
-        builtMap = folium.Map(location=[centerLat, centerLon], zoom_start=zoomStart, tiles=None)
+        # Layer identifiers belong to the page about to be built, so the old ones are dropped here
+        self.resetLayerRegistry()
+        builtMap = folium.Map(location=[centerLat, centerLon], zoom_start=zoomStart,
+                              tiles=None, zoom_control=False)
         # With tiles=None folium drops its own zoom arguments, so Leaflet is configured directly
         builtMap.options["maxZoom"] = MAP_MAX_ZOOM
         builtMap.options["minZoom"] = MAP_MIN_ZOOM
         return builtMap
 
-    # Frame the whole alignment, driven from the floating toolbar without rebuilding the page
+    # Frame the alignment, driven from the floating toolbar without rebuilding the page
     def fitToTrackExtent(self):
-        if not self.trackBounds:
+        # The active axis is what the user is working on, the dashed baseline only backs it up
+        bounds = self.activeTrackBounds or self.trackBounds
+        if not self.hasValidBounds(bounds):
+            # Nothing to frame is worth saying, the silent no op was indistinguishable from a bug
+            self.isFitPending = False
+            self.mapFailed.emit(self.lan.get("mapFitNoTrack",
+                                             "No alignment is loaded to zoom to"))
             return
-        south, west, north, east = self.trackBounds
+
         if not self.isMapReady:
+            # Asking before the page is live is honoured once it finishes loading, not dropped
+            self.isFitPending = True
             return
-        self.mapBrowser.page().runJavaScript(
+
+        south, west, north, east = (json.dumps(float(value)) for value in bounds)
+        self.runPageScript(
             f"if (window.coypuFitBounds) {{ window.coypuFitBounds({south}, {west}, {north}, {east}); }}")
 
-    # Bounding box of everything drawn, refreshed whenever the alignment is redrawn
-    def rememberTrackBounds(self, allPoints):
-        if len(allPoints) < 2:
-            self.trackBounds = None
-            return
-        latitudes = [point[0] for point in allPoints]
-        longitudes = [point[1] for point in allPoints]
-        self.trackBounds = (min(latitudes), min(longitudes), max(latitudes), max(longitudes))
+    # A box is only worth handing to Leaflet when it has four real numbers in it
+    def hasValidBounds(self, bounds):
+        if not bounds or len(bounds) != 4:
+            return False
+        return all(math.isfinite(float(value)) for value in bounds)
+
+    # Step the zoom from the floating controls rather than a Leaflet widget over the page
+    def zoomBy(self, delta):
+        self.queueScript("zoom", f"if (window.coypuZoomBy) {{ window.coypuZoomBy({int(delta)}); }}")
+
+    # Arm or disarm the click to measure tool inside the page
+    def setMeasureMode(self, isEnabled):
+        self.isMeasureMode = bool(isEnabled)
+        if not self.isMeasureMode:
+            self.measureDistanceMeters = 0.0
+            self.controlsPanel.setMeasureReadout(self.formatMeasureDistance(0.0))
+        self.queueScript(
+            "measure",
+            f"if (window.coypuSetMeasureMode) {{ window.coypuSetMeasureMode("
+            f"{json.dumps(self.isMeasureMode)}); }}")
+
+    # Thin a point list for drawing only, the cursor lookups keep the full resolution
+    def decimateForRender(self, points):
+        if len(points) <= MAX_RENDER_POINTS:
+            return points
+        step = (len(points) // MAX_RENDER_POINTS) + 1
+        thinned = points[::step]
+        # The stride can drop the final vertex, which would visibly shorten the line
+        if thinned[-1] is not points[-1]:
+            thinned = thinned + [points[-1]]
+        return thinned
+
+    # Bounding box of a point list, or None when there is not enough of it to frame
+    def boundsOf(self, points):
+        if len(points) < 2:
+            return None
+        latitudes = [point[0] for point in points]
+        longitudes = [point[1] for point in points]
+        return (min(latitudes), min(longitudes), max(latitudes), max(longitudes))
+
+    # Both boxes are refreshed whenever the alignment is redrawn, the active one taking priority
+    def rememberTrackBounds(self, allPoints, activePoints=None):
+        self.trackBounds = self.boundsOf(allPoints)
+        self.activeTrackBounds = self.boundsOf(activePoints if activePoints is not None else allPoints)
+        self.refreshFitAvailability()
+
+    # The greyed out control is the primary feedback, the status message only backs it up
+    def refreshFitAvailability(self):
+        hasExtent = self.hasValidBounds(self.activeTrackBounds or self.trackBounds)
+        self.controlsPanel.fitTrackButton.setEnabled(hasExtent)
 
     # Follow the ribbon units toggle, the colour scale and its legend both carry a unit.
     # The caller redraws, so a unit switch never costs two page rebuilds in a row
@@ -564,8 +1010,20 @@ class MapWidget(QWidget):
 
     # Store the scheduled stops so they can be placed along the alignment
     def setStations(self, stations):
-        self.stationList = list(stations or [])
-        self.redraw()
+        newStations = list(stations or [])
+        # A stop list that did not change is not worth a page rebuild
+        if newStations == self.stationList:
+            return
+        self.stationList = newStations
+        self.scheduleRedraw()
+
+    # Collapse a burst of refreshes in one event loop turn into a single page build
+    def scheduleRedraw(self):
+        self.redrawTimer.start()
+
+    # Any render already satisfies a queued redraw, so the timer is stopped alongside it
+    def cancelScheduledRedraw(self):
+        self.redrawTimer.stop()
 
     # Redraw the alignment when there is data, otherwise show the empty map
     def redraw(self):
@@ -580,7 +1038,7 @@ class MapWidget(QWidget):
                                      self.railOverlayEnabled, self.railOverlayOpacity,
                                      self.showStations)
 
-    # Keep the floating controls pinned below the Leaflet zoom buttons
+    # Keep the floating controls pinned to the top left corner of the view
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.controlsPanel.adjustSize()
@@ -591,6 +1049,8 @@ class MapWidget(QWidget):
     def updateTexts(self, lan):
         self.lan = lan or {}
         self.controlsPanel.updateTexts(lan)
+        # Tooltip and legend captions are baked into the page, so they need a rebuild to follow
+        self.redraw()
 
     # Restyle the floating controls when the application theme changes, and default
     # to the dark basemap the first time the app switches into dark mode
@@ -615,46 +1075,60 @@ class MapWidget(QWidget):
             tileUrl = f"{tileUrl}{'&' if '?' in tileUrl else '?'}api_key={quote(apiKey, safe='')}"
         return tileUrl, attribution, nativeZoom
 
-    def addTiles(self, m):
-        if self.currentBaseMap == "cuzk":
-            folium.WmsTileLayer(
+    # One layer object per base map, so switching provider is an addLayer and never a page rebuild
+    def buildBasemapLayer(self, baseMapKey, isActive):
+        if baseMapKey == "cuzk":
+            return folium.WmsTileLayer(
                 url="https://ags.cuzk.gov.cz/arcgis1/services/ORTOFOTO/MapServer/WMSServer",
                 layers="0",
                 name="ČÚZK Ortofoto",
                 fmt="image/jpeg",
                 transparent=False,
                 attr="© ČÚZK",
-                overlay=False
-            ).add_to(m)
-        else:
-            # Explicit endpoints, so no basemap ever falls back to a key gated host
-            tileUrl, attribution, nativeZoom = self.basemapTileUrl(self.currentBaseMap)
-            folium.TileLayer(
-                tiles=tileUrl,
-                attr=attribution,
-                name=self.currentBaseMap,
-                subdomains="abcd",
                 overlay=False,
                 control=False,
-                max_zoom=MAP_MAX_ZOOM,
-                max_native_zoom=nativeZoom
-            ).add_to(m)
+                show=isActive
+            )
+
+        # Explicit endpoints, so no basemap ever falls back to a key gated host
+        tileUrl, attribution, nativeZoom = self.basemapTileUrl(baseMapKey)
+        return folium.TileLayer(
+            tiles=tileUrl,
+            attr=attribution,
+            name=baseMapKey,
+            subdomains="abcd",
+            overlay=False,
+            control=False,
+            max_zoom=MAP_MAX_ZOOM,
+            max_native_zoom=nativeZoom,
+            show=isActive
+        )
+
+    def addTiles(self, m):
+        # Every provider is emitted, only the active one is shown, so a switch stays in the page
+        for baseMapKey, _, _ in BASEMAP_CHOICES:
+            isActive = baseMapKey == self.currentBaseMap
+            layer = self.buildBasemapLayer(baseMapKey, isActive)
+            layer.add_to(m)
+            self.layerRegistry["basemaps"][baseMapKey] = layer.get_name()
 
         # The railway overlay is independent of the chosen base map
-        if self.railOverlayEnabled:
-            folium.TileLayer(
-                tiles='https://{s}.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png',
-                attr='Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> | Style: &copy; <a href="https://www.openrailwaymap.org/">OpenRailwayMap</a>',
-                name='OpenRailwayMap',
-                className='coypuRailOverlay',
-                subdomains='abc',
-                overlay=True,
-                transparent=True,
-                opacity=self.railOverlayOpacity,
-                max_zoom=MAP_MAX_ZOOM,
-                max_native_zoom=RAIL_OVERLAY_NATIVE_ZOOM,
-                show=True
-            ).add_to(m)
+        railOverlay = folium.TileLayer(
+            tiles='https://{s}.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png',
+            attr='Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> | Style: &copy; <a href="https://www.openrailwaymap.org/">OpenRailwayMap</a>',
+            name='OpenRailwayMap',
+            className='coypuRailOverlay',
+            subdomains='abc',
+            overlay=True,
+            control=False,
+            transparent=True,
+            opacity=self.railOverlayOpacity,
+            max_zoom=MAP_MAX_ZOOM,
+            max_native_zoom=RAIL_OVERLAY_NATIVE_ZOOM,
+            show=self.railOverlayEnabled
+        )
+        railOverlay.add_to(m)
+        self.layerRegistry["railOverlay"] = railOverlay.get_name()
 
     # Place one interactive marker per imported station or stop
     # Speed colour scale caption, translated and following the active unit system
@@ -664,9 +1138,12 @@ class MapWidget(QWidget):
         return f"{base} [{unit}]"
 
     def addStationMarkers(self, m):
-        if not self.showStations or not self.stationList or len(self.denseAlignment) < 2:
+        if not self.stationList or len(self.denseAlignment) < 2:
             return
 
+        # One group for every marker, so the visibility toggle never costs a page rebuild
+        stationGroup = folium.FeatureGroup(name="coypuStations", overlay=True, control=False,
+                                           show=self.showStations)
         for stationKm, stationName in self.stationList:
             position = self.interpolatePosition(stationKm)
             if position is None:
@@ -678,9 +1155,18 @@ class MapWidget(QWidget):
                 [latitude, longitude], radius=6, color="#1a3d7c", weight=2,
                 fill=True, fill_color="#ffffff", fill_opacity=1.0,
                 tooltip=f"{caption} ({float(stationKm):.3f} km)",
-                popup=caption).add_to(m)
+                popup=caption).add_to(stationGroup)
+
+        stationGroup.add_to(m)
+        self.layerRegistry["stations"] = stationGroup.get_name()
 
     def resetMap(self):
+        # Nothing is drawn, so a box left over from a previous alignment must not survive
+        self.trackBounds = None
+        self.activeTrackBounds = None
+        # A fit queued against the previous alignment must not fire against this page
+        self.isFitPending = False
+        self.refreshFitAvailability()
         m = self.buildMap(49.8, 15.5, 7)
         self.addTiles(m)
         self.renderMap(m)
@@ -699,13 +1185,13 @@ class MapWidget(QWidget):
 
         # The argument is always the active axis, the imported one survives only for comparison
         baselineAlignment = (lxml or {}).get("alignmentCoordinatesBaseline") or []
-        allPoints = [pt for segmentData in alignment for pt in segmentData[0]]
-        allPoints += [pt for segmentData in baselineAlignment for pt in segmentData[0]]
+        activePoints = [pt for segmentData in alignment for pt in segmentData[0]]
+        allPoints = activePoints + [pt for segmentData in baselineAlignment for pt in segmentData[0]]
         if not allPoints:
             self.resetMap()
             return
 
-        self.rememberTrackBounds(allPoints)
+        self.rememberTrackBounds(allPoints, activePoints)
         lats = [pt[0] for pt in allPoints]
         lons = [pt[1] for pt in allPoints]
         centerLat = (min(lats) + max(lats)) / 2
@@ -773,7 +1259,7 @@ class MapWidget(QWidget):
         # Contiguous runs are drawn one polyline at a time so unshifted stretches stay clean
         runCoords = []
         runPeakMm = 0.0
-        for point in denseOptimized:
+        for point in self.decimateForRender(denseOptimized):
             slewMm = abs(float(np.interp(point[0], stations, offsets)))
             if slewMm > SLEW_VISIBLE_THRESHOLD_MM:
                 runCoords.append((point[1], point[2]))
@@ -794,6 +1280,9 @@ class MapWidget(QWidget):
         denseAlignment = lxml.get("denseAlignment")
         if not denseAlignment or len(denseAlignment) < 2:
             return
+
+        # One svg path per segment, so the drawn copy is capped even though the data is not
+        denseAlignment = self.decimateForRender(list(denseAlignment))
 
         # Resolve data keys — TTP uses its own stored arrays
         if self.speedProfile == "TTP":
@@ -871,6 +1360,9 @@ class MapWidget(QWidget):
             mapName=m.get_name(),
             webChannelSource=self.webChannelSource,
             lookupPoints=json.dumps(self.buildLookupPoints()),
+            # Layer variables are emitted as bare identifiers, they are page globals and not strings
+            layerRegistry=self.renderLayerRegistry(),
+            activeBasemap=json.dumps(self.currentBaseMap),
             tooltipLabels=json.dumps({
                 "slew": self.lan.get("mapSlewTooltip", "Slew"),
                 "type": self.lan.get("mapTipType", "Element"),
@@ -879,12 +1371,34 @@ class MapWidget(QWidget):
                 "chainage": self.lan.get("mapTipChainage", "at"),
             }),
         )
-        m.get_root().html.add_child(folium.Element(cursorScript))
+        CoypuCursorScript(cursorScript).add_to(m)
 
-        self.isMapReady = False
+        # A render satisfies whatever redraw was queued, so the timer must not fire again after it
+        self.cancelScheduledRedraw()
         data = io.BytesIO()
         m.save(data, close_file=False)
-        self.mapBrowser.setHtml(data.getvalue().decode(), QUrl("http://localhost"))
+        self.publishPage(data.getvalue().decode())
+
+    # The one place a rendered page reaches the browser, which is what the tests stub
+    def publishPage(self, html):
+        self.isMapReady = False
+        self.wasConsoleErrorReported = False
+        self.loadGeneration += 1
+        self.pageHandler.pageBytes = html.encode("utf-8")
+        # The generation in the query string keeps the browser from serving a cached page
+        self.mapBrowser.load(QUrl(f"{MAP_PAGE_URL}?g={self.loadGeneration}"))
+
+    # The registry maps a layer name onto the page global folium generated for it
+    def renderLayerRegistry(self):
+        basemaps = ", ".join(f"{json.dumps(key)}: {variableName}"
+                             for key, variableName in self.layerRegistry["basemaps"].items())
+        railOverlay = self.layerRegistry.get("railOverlay") or "null"
+        stations = self.layerRegistry.get("stations") or "null"
+        return f"{{basemaps: {{{basemaps}}}, railOverlay: {railOverlay}, stations: {stations}}}"
+
+    # Layer identifiers are regenerated on every render, so the registry starts each build empty
+    def resetLayerRegistry(self):
+        self.layerRegistry = {"basemaps": {}, "railOverlay": None, "stations": None}
 
     # Subsample the densified alignment so the in page lookup stays responsive
     def buildLookupPoints(self):
@@ -906,13 +1420,15 @@ class MapWidget(QWidget):
             lookupPoints.append(row)
         return lookupPoints
 
-    # Element type caption and length at a chainage, for the hover inspector
+    # Element name, type caption, length and stationing range at a chainage, for the hover inspector
     def buildElementLookup(self):
         lxml = self.lxml or {}
         stations = np.asarray(lxml.get("stationHorizontal", []), dtype=float)
         elementTypes = list(lxml.get("geometryType", []))
-        if stations.size < 2 or len(elementTypes) != stations.size:
-            return lambda stationKm: [None, None]
+        emptyRow = [None, None, None, None, None]
+        # An odd length would leave the last element without an end station to read
+        if stations.size < 2 or stations.size % 2 or len(elementTypes) != stations.size:
+            return lambda stationKm: list(emptyRow)
 
         typeCaptions = {"Line": self.lan.get("elemLine", "Straight"),
                         "Spiral": self.lan.get("elemSpiral", "Spiral"),
@@ -923,14 +1439,22 @@ class MapWidget(QWidget):
         ends = stations[1::2]
         captions = [typeCaptions.get(str(elementTypes[index * 2]), str(elementTypes[index * 2]))
                     for index in range(len(starts))]
+        names = self.elementNames(len(starts))
 
         def lookup(stationKm):
             index = int(np.searchsorted(starts, stationKm, side="right") - 1)
             if index < 0 or index >= len(starts):
-                return [None, None]
-            return [captions[index], float((ends[index] - starts[index]) * 1000.0)]
+                return list(emptyRow)
+            return [names[index], captions[index],
+                    float((ends[index] - starts[index]) * 1000.0),
+                    float(starts[index]), float(ends[index])]
 
         return lookup
+
+    # LandXML names the alignment but not its geometry elements, so the position is the name
+    def elementNames(self, elementCount):
+        label = self.lan.get("mapTipElementNumber", "#{index}")
+        return [label.format(index=index + 1) for index in range(elementCount)]
 
     # Interpolator over the optimizer's slew profile, returns None wherever no profile exists
     def buildSlewLookup(self):
@@ -971,9 +1495,23 @@ class MapWidget(QWidget):
     def onMapLoadFinished(self, isOk):
         self.isMapReady = bool(isOk)
 
+        if not self.isMapReady:
+            # A superseded page reports a failure too, so the complaint waits for a newer generation
+            failedGeneration = self.loadGeneration
+            QTimer.singleShot(0, lambda: self.reportPageFailure(failedGeneration))
+            return
+
+        # Anything asked for while the page was loading is replayed rather than dropped
+        self.flushPendingScripts()
+
+        # A fit asked for while the page was still loading is honoured now rather than lost
+        if self.isFitPending:
+            self.isFitPending = False
+            self.fitToTrackExtent()
+
     # Move the map cursor marker to the position matching a chainage in kilometres
     def setCursorStation(self, stationKm):
-        if not self.isMapReady or len(self.denseAlignment) < 2:
+        if len(self.denseAlignment) < 2:
             return
 
         position = self.interpolatePosition(stationKm)
@@ -981,8 +1519,14 @@ class MapWidget(QWidget):
             return
 
         latitude, longitude = position
-        self.mapBrowser.page().runJavaScript(
-            f"if (window.setTrackCursor) {{ window.setTrackCursor({latitude}, {longitude}); }}")
+        if not math.isfinite(latitude) or not math.isfinite(longitude):
+            return
+
+        # Keyed so a burst of mouse moves during a page load collapses to the last one
+        self.queueScript(
+            "cursor",
+            f"if (window.setTrackCursor) {{ window.setTrackCursor("
+            f"{json.dumps(float(latitude))}, {json.dumps(float(longitude))}); }}")
 
     # Linear interpolation of latitude and longitude along the densified alignment
     def interpolatePosition(self, stationKm):

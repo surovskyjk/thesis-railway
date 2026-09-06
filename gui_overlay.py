@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout,
                                QLineEdit, QTableWidget, QTableWidgetItem,
                                QHeaderView, QFileDialog, QMessageBox,
                                QDialogButtonBox, QPushButton, QComboBox,
-                               QWidget)
+                               QDoubleSpinBox, QSlider, QSpinBox, QWidget)
 from PySide6.QtCore import Qt
 
 import numpy as np
@@ -20,6 +20,10 @@ import geometry_engine
 
 # Extra headroom around a symmetric popup axis, replaces the old setYRange padding argument
 POPUP_RANGE_HEADROOM = 1.05
+
+# The radius ceiling bounds belong to the engine, the dialog and the batch table share them
+R_MAX_MINIMUM_M = geometry_engine.R_MAX_MINIMUM_M
+R_MAX_MAXIMUM_M = geometry_engine.R_MAX_MAXIMUM_M
 
 class TTPSelectSectionDialog(QDialog):
     def __init__(self, sections, HasLandXML, lan, parent=None):
@@ -614,6 +618,19 @@ class AlignmentOptimizationDialog(QDialog):
         self.lkMaxInput = QLineEdit(str(config.get("lkMaxM", geometry_engine.DEFAULT_LK_MAX_M)))
         formLayout.addRow(QLabel(self.lan.get("optLkMaxLabel", "Maximum transition length L_k,max [m]:")), self.lkMaxInput)
 
+        # The radius ceiling is optional, so the value only becomes editable once it is switched on
+        self.rMaxEnableCheck = QCheckBox(self.lan.get("optRMaxEnable", "Limit the maximum curve radius"))
+        self.rMaxEnableCheck.setChecked(bool(config.get("isRMaxEnabled", False)))
+        self.rMaxInput = QDoubleSpinBox()
+        self.rMaxInput.setRange(R_MAX_MINIMUM_M, R_MAX_MAXIMUM_M)
+        self.rMaxInput.setDecimals(0)
+        self.rMaxInput.setSingleStep(100.0)
+        self.rMaxInput.setSuffix(" " + self.lan.get("unitM", "m"))
+        self.rMaxInput.setValue(float(config.get("rMaxM", geometry_engine.DEFAULT_R_MAX_M)))
+        self.rMaxInput.setEnabled(self.rMaxEnableCheck.isChecked())
+        self.rMaxEnableCheck.toggled.connect(self.rMaxInput.setEnabled)
+        formLayout.addRow(self.rMaxEnableCheck, self.rMaxInput)
+
         layout.addLayout(formLayout)
         layout.addWidget(QLabel(self.lan.get("optPatternsLabel", "Pattern optimization modes")))
 
@@ -633,10 +650,14 @@ class AlignmentOptimizationDialog(QDialog):
         self.comboModeLscsl.addItem(self.lan.get("optModeExtendSpirals", "2 - Extend transitions only (S)"), geometry_engine.OPTIMIZATION_MODE_EXTEND_SPIRALS)
         self.comboModeLscsl.addItem(self.lan.get("optModeShiftArc", "3 - Enlarge radius only (C)"), geometry_engine.OPTIMIZATION_MODE_SHIFT_ARC)
         self.comboModeLscsl.addItem(self.lan.get("optModeInvertedShift", "4 - Inverted shift (C+S)"), geometry_engine.OPTIMIZATION_MODE_INVERTED_SHIFT)
+        self.comboModeLscsl.addItem(self.lan.get("optModeRatioAllocation", "5 - Configured slew allocation ratio (C / S)"), geometry_engine.OPTIMIZATION_MODE_RATIO_ALLOCATION)
         self.setComboCurrentData(self.comboModeLscsl, config.get("modeLscsl", geometry_engine.OPTIMIZATION_MODE_NONE))
         patternFormLayout.addRow(QLabel(self.lan.get("optPatternLscsl", "Line-Spiral-Curve-Spiral-Line")), self.comboModeLscsl)
 
         layout.addLayout(patternFormLayout)
+        self.buildRatioControls(layout, config)
+        self.comboModeLscsl.currentIndexChanged.connect(self.updateRatioVisibility)
+        self.updateRatioVisibility()
 
         # Buttons for the whole dialog
         self.buttonBox = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -651,6 +672,62 @@ class AlignmentOptimizationDialog(QDialog):
             QDialogButtonBox.ButtonRole.ResetRole)
         self.revertButton.clicked.connect(self.onRevertRequested)
         layout.addWidget(self.buttonBox)
+
+    # Slider and the two paired spin boxes splitting the envelope, only meaningful for mode 5
+    def buildRatioControls(self, layout, config):
+        ratioC = int(config.get("ratioCPercent", geometry_engine.DEFAULT_RATIO_C_PERCENT))
+        ratioC = min(100, max(0, ratioC))
+
+        self.ratioHeading = QLabel(self.lan.get("optRatioLabel", "Slew allocation ratio"))
+        self.ratioHeading.setToolTip(self.lan.get(
+            "optRatioTip",
+            "Share of the lateral slew envelope offered to the arc radius and to the transition curves"))
+        layout.addWidget(self.ratioHeading)
+
+        self.ratioSlider = QSlider(Qt.Orientation.Horizontal)
+        self.ratioSlider.setRange(0, 100)
+        self.ratioSlider.setValue(ratioC)
+        layout.addWidget(self.ratioSlider)
+
+        self.ratioFormLayout = QFormLayout()
+        self.ratioCLabel = QLabel(self.lan.get("optRatioC", "Radius allocation C [%]:"))
+        self.ratioCInput = QSpinBox()
+        self.ratioCInput.setRange(0, 100)
+        self.ratioCInput.setValue(ratioC)
+        self.ratioFormLayout.addRow(self.ratioCLabel, self.ratioCInput)
+
+        self.ratioSLabel = QLabel(self.lan.get("optRatioS", "Transition allocation S [%]:"))
+        self.ratioSInput = QSpinBox()
+        self.ratioSInput.setRange(0, 100)
+        self.ratioSInput.setValue(100 - ratioC)
+        self.ratioFormLayout.addRow(self.ratioSLabel, self.ratioSInput)
+        layout.addLayout(self.ratioFormLayout)
+
+        self.ratioSlider.valueChanged.connect(self.onRatioCChanged)
+        self.ratioCInput.valueChanged.connect(self.onRatioCChanged)
+        self.ratioSInput.valueChanged.connect(self.onRatioSChanged)
+
+    # Every ratio control shows one number, so each edit rewrites the other two without echoing back
+    def applyRatioC(self, ratioC):
+        ratioC = min(100, max(0, int(ratioC)))
+        for widget, value in ((self.ratioSlider, ratioC), (self.ratioCInput, ratioC),
+                              (self.ratioSInput, 100 - ratioC)):
+            widget.blockSignals(True)
+            widget.setValue(value)
+            widget.blockSignals(False)
+
+    def onRatioCChanged(self, ratioC):
+        self.applyRatioC(ratioC)
+
+    def onRatioSChanged(self, ratioS):
+        self.applyRatioC(100 - int(ratioS))
+
+    # The ratio only means something while mode 5 is chosen, so it is hidden the rest of the time
+    def updateRatioVisibility(self):
+        isRatioMode = self.comboModeLscsl.currentData() == geometry_engine.OPTIMIZATION_MODE_RATIO_ALLOCATION
+        for widget in (self.ratioHeading, self.ratioSlider, self.ratioCLabel, self.ratioCInput,
+                       self.ratioSLabel, self.ratioSInput):
+            widget.setVisible(isRatioMode)
 
     # currentData()-based selection helper, mirrors the addItem(text,dataKey) convention used elsewhere
     def setComboCurrentData(self, combo, dataValue):
@@ -678,6 +755,9 @@ class AlignmentOptimizationDialog(QDialog):
                 problems.append("optErrorLkMaxRange")
         except ValueError:
             problems.append("optErrorLkMaxRange")
+        # A ceiling below the radius that is already there would make every group infeasible
+        if self.rMaxEnableCheck.isChecked() and not (R_MAX_MINIMUM_M <= self.rMaxInput.value() <= R_MAX_MAXIMUM_M):
+            problems.append("optErrorRMaxRange")
         if self.comboModeLcl.currentData() == geometry_engine.OPTIMIZATION_MODE_NONE and \
            self.comboModeLscsl.currentData() == geometry_engine.OPTIMIZATION_MODE_NONE:
             problems.append("optErrorNoPatterns")
@@ -701,6 +781,9 @@ class AlignmentOptimizationDialog(QDialog):
             "dMaxM": float(self.dMaxInput.text()),
             "lMinM": float(self.lMinInput.text()),
             "lkMaxM": float(self.lkMaxInput.text()),
+            "isRMaxEnabled": self.rMaxEnableCheck.isChecked(),
+            "rMaxM": float(self.rMaxInput.value()),
+            "ratioCPercent": int(self.ratioCInput.value()),
             "modeLcl": self.comboModeLcl.currentData(),
             "modeLscsl": self.comboModeLscsl.currentData(),
         }
@@ -1018,10 +1101,22 @@ class PopupPlotWindow(QDialog):
         self.plotWidget.plotTitles["main"] = title or self.windowTitle()
 
         self.mainPlot.enableAutoRange(axis="x")
+        self.applyVerticalRange(symmetricYlim, bool(secondarySeries))
+        # Reset from the context menu has to reach the same policy this draw applied
+        self.plotWidget.setYRangeHandler(
+            "main", lambda: self.applyVerticalRange(symmetricYlim, bool(secondarySeries)))
+
+    # Vertical extents of the detached plot, symmetric about zero or simply fitted to the data
+    def applyVerticalRange(self, symmetricYlim, hasSecondary):
         if symmetricYlim:
             self.applySymmetricRange()
-            if secondarySeries:
+            if hasSecondary:
                 self.plotWidget.enableZeroLock("main")
+            return
+
+        # The axis is mouse locked by default, so the data extent is fitted once here instead
+        self.mainPlot.enableAutoRange(axis="y")
+        self.mainPlot.disableAutoRange(axis="y")
 
     # Drop every item so a repeated drawData call starts from a clean plot
     def resetCanvas(self):

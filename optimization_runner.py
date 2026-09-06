@@ -2,6 +2,7 @@
 import copy
 import time
 
+import numpy as np
 from PySide6.QtCore import QObject, QThread, Signal
 
 import geometry_engine
@@ -41,6 +42,65 @@ def buildOptimizationStorage(dataStorage):
         if dataStorage.get(passthroughKey) is not None:
             workerStorage[passthroughKey] = copy.deepcopy(dataStorage[passthroughKey])
     return workerStorage
+
+
+# One native design pass on an isolated copy, returning the per element permissible speed array
+def evaluateElementSpeeds(dataStorage, landXml):
+    if not landXml:
+        return None
+
+    evaluationStorage = buildOptimizationStorage(dataStorage)
+    evaluationStorage["LandXML"] = {key: copy.deepcopy(value) for key, value in landXml.items()
+                                    if key not in DISPLAY_LANDXML_KEYS}
+    try:
+        # Design mode only, measured cant describes the imported axis and not a displaced one
+        geometry_engine.GeometryCalculator(evaluationStorage).runCalculationLoop()
+    except (KeyError, IndexError, ValueError, ZeroDivisionError):
+        return None
+
+    profileSuffix = resolveProfileSuffix(dataStorage.get("defaultProfile", "I150"))
+    speeds = evaluationStorage.get(f"speedLimits{profileSuffix}")
+    return np.asarray(speeds, dtype=float) if speeds is not None else None
+
+
+# Storage key suffix of a design profile, kept here so the report does not reach into batch_runner
+def resolveProfileSuffix(designProfile):
+    designProfile = designProfile or "I150"
+    return designProfile[1:] if designProfile.startswith("I") else designProfile
+
+
+# Slowest permissible speed over one curve group, addressed by element index rather than by chainage
+def groupSpeedFrom(speeds, group):
+    startIndex = group.get("startElemIndex")
+    endIndex = group.get("endElemIndex")
+    if speeds is None or startIndex is None or endIndex is None:
+        return None
+
+    # Every element owns two entries of the speed array, its start and its end station
+    low, high = 2 * int(startIndex), 2 * int(endIndex)
+    if low < 0 or high > speeds.size or high <= low:
+        return None
+
+    window = speeds[low:high]
+    window = window[np.isfinite(window) & (window > 0)]
+    return float(np.min(window)) if window.size else None
+
+
+# Per group speed impact from two native D+I passes, one on each alignment, mapped by element index
+def evaluateGroupSpeeds(dataStorage, baselineLandXml, summary):
+    if not summary:
+        return
+
+    baselineSpeeds = evaluateElementSpeeds(dataStorage, baselineLandXml)
+    optimizedSpeeds = evaluateElementSpeeds(dataStorage, dataStorage.get("LandXML", {}))
+
+    for group in summary.get("groups", []):
+        group["speedOldKmh"] = groupSpeedFrom(baselineSpeeds, group)
+        group["speedNewKmh"] = groupSpeedFrom(optimizedSpeeds, group)
+        if group["speedOldKmh"] is None or group["speedNewKmh"] is None:
+            group["speedDeltaKmh"] = None
+        else:
+            group["speedDeltaKmh"] = group["speedNewKmh"] - group["speedOldKmh"]
 
 
 # Copy the optimizer's New suffixed geometry over the baseline keys of the isolated copy only

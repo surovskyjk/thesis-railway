@@ -38,6 +38,9 @@ defVal = {
     "dMaxM": 0.5,
     "lMinM": 25.0,
     "lkMaxM": 250.0,
+    "isRMaxEnabled": False,
+    "rMaxM": 10000.0,
+    "ratioCPercent": 50,
     "modeLcl": "shiftArc",
     "modeLscsl": "shiftAndExtend"
     },

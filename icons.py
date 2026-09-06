@@ -56,6 +56,7 @@ ICON_BODIES = {
     "station": "<path d='M4 21h16'/><path d='M6 21V11l6-5 6 5v10'/><path d='M10 21v-6h4v6'/>",
     "layers": "<path d='M12 3l9 5-9 5-9-5z'/><path d='M3 13l9 5 9-5'/>",
     "search": "<circle cx='11' cy='11' r='7'/><path d='M16 16l5 5'/>",
+    "measure": "<rect x='2' y='8' width='20' height='8' rx='1'/><path d='M7 8v3'/><path d='M12 8v4'/><path d='M17 8v3'/>",
     "grid": "<path d='M3 9h18'/><path d='M3 15h18'/><path d='M9 3v18'/><path d='M15 3v18'/>",
     "highlight": "<path d='M4 20l4-1 9-9-3-3-9 9z'/><path d='M14 7l3 3'/>",
     "close": "<path d='M6 6l12 12'/><path d='M18 6L6 18'/>",

@@ -84,6 +84,11 @@ class PerformanceGraphsWidget(CoypuPlotWidget):
         # Keep the curvature zero line locked onto the cant zero line during zoom and pan
         self.enableZeroLock("geometry")
 
+        # Each row restores its own vertical policy on a reset, instead of auto ranging to the data
+        self.setYRangeHandler("geometry", self.restoreGeometryRange)
+        self.setYRangeHandler("speed", self.applyFullSpeedRange)
+        self.setYRangeHandler("slew", self.applySlewRange)
+
         self.updateLabels(lan)
         self.enableCursorTracking("geometry")
         self.applyTheme(False)
@@ -147,6 +152,11 @@ class PerformanceGraphsWidget(CoypuPlotWidget):
         self.plotGeometry.vb.setYRange(-CANT_RANGE, CANT_RANGE, padding=0)
         self.applySymmetricCurvature()
 
+    # Put the cant axis back on its fixed range and re-centre curvature against it
+    def restoreGeometryRange(self):
+        self.plotGeometry.vb.setYRange(-CANT_RANGE, CANT_RANGE, padding=0)
+        self.applySymmetricCurvature()
+
     # Centre the curvature axis on zero so it lines up with the cant axis
     def applySymmetricCurvature(self):
         peak = 1e-9
@@ -161,6 +171,8 @@ class PerformanceGraphsWidget(CoypuPlotWidget):
         rightView = self.plotRightViews.get("geometry")
         if rightView is not None:
             rightView.setYRange(-peak, peak, padding=0)
+            # The new peak defines the proportion the two axes keep from here on
+            self.captureZeroLockRatio("geometry")
             self.syncZeroAlignment("geometry")
 
     # Replace the speed curves from the main data storage dictionary
@@ -212,7 +224,9 @@ class PerformanceGraphsWidget(CoypuPlotWidget):
                 peak = max(peak, float(np.max(finiteValues)))
 
         if peak <= 0.0:
+            # A one shot fit, leaving auto range armed would undo the fixed policy on the next redraw
             self.plotSpeed.vb.enableAutoRange(axis="y")
+            self.plotSpeed.vb.disableAutoRange(axis="y")
             return
 
         self.plotSpeed.vb.setYRange(0.0, peak * SPEED_RANGE_HEADROOM, padding=0)

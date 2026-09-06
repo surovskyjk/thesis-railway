@@ -51,6 +51,8 @@ Alignment optimization parameters, set in the Alignment Optimization dialog:
 - `dMaxM` - lateral slew envelope, the largest permitted displacement from the imported axis [m]
 - `lMinM` - minimum element length [m]
 - `lkMaxM` - maximum optimized transition curve length [m]
+- `isRMaxEnabled` / `rMaxM` - optional ceiling on radius maximization [m], off by default
+- `ratioCPercent` - mode 5 only, the share of the slew envelope given to the arc radius [%]
 - `modeLcl` / `modeLscsl` - optimization mode per element pattern
 
 ---
@@ -187,6 +189,7 @@ sampled candidate axis and the baseline polyline, not from the apex identity.
 | 2 | Extend transitions only (S) | unchanged | grow | L-S-C-S-L |
 | 3 | Enlarge radius only (C) | grows | unchanged | L-C-L, L-S-C-S-L |
 | 4 | Inverted shift (C+S) | shrinks | grow | L-S-C-S-L |
+| 5 | Configured slew allocation ratio (C / S) | grows by its share | grow by their share | L-S-C-S-L |
 
 **Mode 1** drives the radius and both clothoids from a single parameter, holding the spiral angle
 `θs = L / (2R)` constant, so `L(R) = L₀ · R / R₀`. That is what "shift the arc **and** extend the
@@ -205,6 +208,24 @@ through the cant deficiency change rate rather than through curvature.
 **Mode 4** reduces the radius while lengthening the transitions, both from one parameter
 `s`: `R = R₀ − s` and `L = sqrt(24 R (ΔR₀ + 2s))`. It trades curvature for a gentler cant ramp,
 which helps where the ramp gradient rather than the radius is what limits the speed.
+
+**Mode 5** lets the designer split the envelope instead of letting one mechanism take all of it.
+A ratio `C : S` (default 50 : 50, set in the optimization dialog) partitions `d_max` into an arc
+share `d_C = (C/100) · d_max` and a transition share `d_S = (S/100) · d_max`, and the two stages are
+solved independently:
+
+1. The radius is maximised against `d_C` alone, with the clothoids held at `L₀`.
+2. At that new radius, the target tangent offset is raised to `m_new = ΔR(R_new, L₀) + d_S` and both
+   transitions are lengthened to the `L` that produces it, seeded from `L = sqrt(24 · R_new · m_new)`
+   and refined against the exact `ΔR` series.
+
+Both transitions grow off that one offset increment, so a symmetric curve stays symmetric — unlike
+mode 2, whose entry-then-exit search lets the first clothoid consume the envelope and leaves the
+second at its imported length. The ratio only decides *where the search starts*: the accepted
+candidate is still measured against the full `d_max` on the sampled geometry, and when the two
+stages combined would overshoot it the transitions are backed off rather than the extension being
+abandoned. Setting the ratio to 100 : 0 reproduces mode 3 exactly; 0 : 100 keeps `R₀` and spends
+everything on the transitions.
 
 ### Element pattern handling
 
@@ -230,6 +251,12 @@ A group also needs a real straight on both sides (`optSkipNoTangent`).
 - **`L_k,max`** — an upper bound on an optimized transition length, so a curve cannot be given a
   disproportionately long clothoid just because the envelope still allows one. It clamps the search
   ceiling and every candidate, and never shortens a transition that was already longer on import.
+- **`R_max`** — an optional ceiling on radius maximization (100 to 99000 m, off by default), for the
+  modes that grow the radius: 1, 3 and 5. It is enforced as a feasibility gate rather than a
+  post-hoc clamp — a candidate above the ceiling is simply infeasible — so the bisection converges
+  onto `R_max` itself and the matching inward shift `d ≤ d_max` falls out of the same search. Mode 2
+  leaves the radius alone and mode 4 shrinks it, so neither is affected. When the ceiling binds
+  before the envelope does, the group still succeeds and its reported slew sits below `d_max`.
 - **Shared tangent budget** — a straight between two curves is consumed by both. The rule is
   *`L_min`-or-zero*: a straight may be consumed entirely, or it must retain at least `L_min`. The
   remaining length is tracked per straight across the whole corridor, so two neighbouring curves
@@ -275,10 +302,22 @@ against the new geometry.
 - **Lateral slew profile plot** — a third row under the geometry and speed plots, with the `±d_max`
   envelope drawn as threshold lines.
 - **Slew report** — per curve group: pattern, mode, `R` before and after, both transition lengths
-  before and after, peak local slew and where it occurs, and the resulting speed change. The speed
-  columns are filled once the cant design has been re-run on the new geometry.
+  before and after, peak local slew and where it occurs, a per-element breakdown of that peak across
+  the entry transition, the arc and the exit transition, and the resulting speed change.
+
+  The slew columns are **local peaks, not a parallel offset**. With the intersection points held
+  fixed, an enlarged curve is not shifted in parallel: displacement is largest on the apex bisector
+  and tapers to zero at the transition tangent points, which is exactly what the three per-element
+  columns show. Where the envelope is the binding constraint the peak sits on `d_max` by
+  construction; where `R_max`, `L_k,max` or the tangent budget binds first, it sits below it.
+
+  The two speed columns come from running the native D+I design loop twice on the fly, once on the
+  imported alignment and once on the active one, and mapping the result by element index. Element
+  order and count are preserved by the optimizer, so no chainage window is involved and the columns
+  fill in even when the optimization was run before any cant design.
 - **Map** — the dashed grey baseline, the styled active axis, and a heat line over every stretch
-  whose displacement clears 5 mm.
+  whose displacement clears 5 mm. Hovering any segment reports its element number, type, radius
+  (`R_orig → R_new` where it changed), length, full stationing range and local slew.
 - **Skip reasons** — every group that was not modified reports why, and the reasons are aggregated in
   the dialog shown at the end of a run.
 
