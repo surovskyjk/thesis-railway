@@ -685,6 +685,8 @@
   "mapMeasureTip": "Click the map to measure a distance",
   "mapMeasureTotal": "Total: {distance}",
   "mapMeasureHint": "click the map",
+  "mapDetails": "Element details",
+  "mapDetailsTip": "Show stationing, radii and length under the cursor",
   "mapPageFailed": "The map page could not be displayed",
   "mapScriptFailed": "Map script error: {message}",
   "mapTipType": "Element",

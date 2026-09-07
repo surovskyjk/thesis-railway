@@ -228,6 +228,7 @@ class ProjectFileManager:
             "mapRailOverlay": bool(mainWindow.mapWidget.railOverlayEnabled),
             "mapRailOpacity": float(mainWindow.mapWidget.railOverlayOpacity),
             "mapStationsVisible": bool(mainWindow.mapWidget.showStations),
+            "mapElementDetails": bool(mainWindow.mapWidget.showElementDetails),
             "mapCenterLat": mapCenterLat,
             "mapCenterLon": mapCenterLon,
             "mapZoom": mapZoom,
@@ -364,6 +365,8 @@ class ProjectFileManager:
         mainWindow.mapWidget.railOverlayEnabled = bool(viewportState.get("mapRailOverlay", False))
         mainWindow.mapWidget.railOverlayOpacity = float(viewportState.get("mapRailOpacity", 0.7))
         mainWindow.mapWidget.showStations = bool(viewportState.get("mapStationsVisible", True))
+        mainWindow.mapWidget.showElementDetails = bool(
+            viewportState.get("mapElementDetails", True))
         mainWindow.mapWidget.currentBaseMap = viewportState.get("mapBaseMap", "positron")
         mainWindow.mapWidget.drawMode = viewportState.get("mapDrawMode", "single")
         mainWindow.mapWidget.speedProfile = viewportState.get("mapSpeedProfile", "150")

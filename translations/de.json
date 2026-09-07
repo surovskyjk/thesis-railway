@@ -685,6 +685,8 @@
   "mapMeasureTip": "Zum Messen einer Distanz in die Karte klicken",
   "mapMeasureTotal": "Gesamt: {distance}",
   "mapMeasureHint": "in die Karte klicken",
+  "mapDetails": "Elementdetails",
+  "mapDetailsTip": "Stationierung, Radien und Länge unter dem Cursor anzeigen",
   "mapPageFailed": "Die Kartenseite konnte nicht angezeigt werden",
   "mapScriptFailed": "Kartenskriptfehler: {message}",
   "mapTipType": "Element",

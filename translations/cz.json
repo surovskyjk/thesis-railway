@@ -685,6 +685,8 @@
   "mapMeasureTip": "Klikáním do mapy změříte vzdálenost",
   "mapMeasureTotal": "Celkem: {distance}",
   "mapMeasureHint": "klikněte do mapy",
+  "mapDetails": "Detaily prvku",
+  "mapDetailsTip": "Zobrazit staničení, poloměry a délku pod kurzorem",
   "mapPageFailed": "Mapovou stránku se nepodařilo zobrazit",
   "mapScriptFailed": "Chyba skriptu mapy: {message}",
   "mapTipType": "Prvek",

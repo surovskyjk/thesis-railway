@@ -29,6 +29,9 @@ MAX_LOOKUP_POINTS = 2000
 # Maximum number of vertices drawn per line, a coloured line costs one svg path per segment
 MAX_RENDER_POINTS = 20000
 
+# Tile policies want the application named, and OpenRailwayMap refuses a bare browser agent
+MAP_TILE_USER_AGENT = "COYPU/1.0 (railway alignment design tool)"
+
 # Private scheme the rendered page is served over, so no size limited data url is involved
 MAP_PAGE_SCHEME = b"coypu"
 MAP_PAGE_URL = "coypu://map/page.html"
@@ -127,12 +130,14 @@ CURSOR_SCRIPT_TEMPLATE = """
 window.coypuCursorMarker = null;
 window.coypuBridge = null;
 window.coypuPoints = {lookupPoints};
+window.coypuDetailsInitial = {detailsEnabled};
 window.coypuLabels = {tooltipLabels};
 window.coypuTooltip = null;
 window.coypuLastSent = 0;
 window.coypuMeasurePoints = [];
 window.coypuMeasureLayer = null;
 window.coypuMeasureMode = false;
+window.coypuDetailsEnabled = true;
 
 // Railway style chainage caption, 12.345 km becomes km 12+345
 window.coypuFormatChainage = function (stationKm) {{
@@ -229,7 +234,11 @@ window.coypuReportNearest = function (event) {{
     if (window.coypuBridge) {{
         window.coypuBridge.reportChainage(window.coypuPoints[bestIndex][0]);
     }}
-    window.coypuUpdateTooltip(event, window.coypuPoints[bestIndex]);
+    if (window.coypuDetailsEnabled) {{
+        window.coypuUpdateTooltip(event, window.coypuPoints[bestIndex]);
+    }} else {{
+        window.coypuHideTooltip();
+    }}
 }};
 
 // Report the camera back to Qt so the viewport survives a rebuild, a save and a reload
@@ -289,6 +298,12 @@ window.coypuSetRailOpacity = function (opacity) {{
     window.coypuSetRailOverlay(true, opacity);
 }};
 
+// Show or hide the hover inspector, the chainage readout keeps working either way
+window.coypuSetElementDetails = function (isEnabled) {{
+    window.coypuDetailsEnabled = !!isEnabled;
+    if (!isEnabled) {{ window.coypuHideTooltip(); }}
+}};
+
 // Redraw the running measurement and report its total length back to Qt
 window.coypuRenderMeasure = function () {{
     if (window.coypuMeasureLayer === null) {{
@@ -341,6 +356,7 @@ window.coypuSetMeasureMode = function (isEnabled) {{
 if (typeof {mapName} === 'undefined') {{
     console.error('coypu: leaflet map global missing, page bindings skipped');
 }} else {{
+    window.coypuDetailsEnabled = window.coypuDetailsInitial;
     window.coypuLayers = {layerRegistry};
     window.coypuActiveBasemap = {activeBasemap};
     {mapName}.on('mousemove', function (event) {{ window.coypuReportNearest(event); }});
@@ -394,6 +410,9 @@ class MapControlsPanel(QFrame):
 
     # Emitted when the click to measure tool is armed or disarmed
     measureModeChanged = Signal(bool)
+
+    # Emitted when the hover element inspector is switched on or off
+    detailsToggled = Signal(bool)
 
     def __init__(self, lan, parent=None):
         super().__init__(parent)
@@ -481,6 +500,14 @@ class MapControlsPanel(QFrame):
 
         panelLayout.addWidget(self.makeGroupLabel("mapGroupTools", "Tools"))
 
+        self.detailsButton = QPushButton()
+        self.detailsButton.setCheckable(True)
+        self.detailsButton.setChecked(True)
+        self.detailsButton.setIcon(icons.makeIcon("details"))
+        self.detailsButton.setProperty(SERIES_TOGGLE_PROPERTY, True)
+        self.detailsButton.toggled.connect(self.detailsToggled)
+        panelLayout.addWidget(self.detailsButton)
+
         self.measureButton = QPushButton()
         self.measureButton.setCheckable(True)
         self.measureButton.setIcon(icons.makeIcon("measure"))
@@ -543,9 +570,11 @@ class MapControlsPanel(QFrame):
         self.measureReadoutLabel.setText(template.format(distance=readoutText))
 
     # Adopt the state owned by the map widget without re-emitting signals
-    def syncState(self, baseMap, drawMode, railEnabled, railOpacity, showStations):
+    def syncState(self, baseMap, drawMode, railEnabled, railOpacity, showStations,
+                  showElementDetails=True):
         for controlWidget in (self.baseMapCombo, self.railOverlayButton,
-                              self.alignmentStyleCombo, self.stationsButton):
+                              self.alignmentStyleCombo, self.stationsButton,
+                              self.detailsButton):
             controlWidget.blockSignals(True)
 
         comboIndex = self.baseMapCombo.findData(baseMap)
@@ -561,9 +590,11 @@ class MapControlsPanel(QFrame):
         self.railOpacitySlider.setEnabled(bool(railEnabled))
         self.railOpacitySlider.setValue(int(round(railOpacity * 100)))
         self.stationsButton.setChecked(bool(showStations))
+        self.detailsButton.setChecked(bool(showElementDetails))
 
         for controlWidget in (self.baseMapCombo, self.railOverlayButton,
-                              self.alignmentStyleCombo, self.stationsButton):
+                              self.alignmentStyleCombo, self.stationsButton,
+                              self.detailsButton):
             controlWidget.blockSignals(False)
 
     # Refresh every caption after a language change
@@ -594,6 +625,9 @@ class MapControlsPanel(QFrame):
         self.fitTrackButton.setToolTip(self.lan.get("mapFitTrackTip", "Zoom to track extent"))
         self.zoomInButton.setToolTip(self.lan.get("mapZoomInTip", "Zoom in"))
         self.zoomOutButton.setToolTip(self.lan.get("mapZoomOutTip", "Zoom out"))
+        self.detailsButton.setText(self.lan.get("mapDetails", "Element details"))
+        self.detailsButton.setToolTip(self.lan.get(
+            "mapDetailsTip", "Show stationing, radii and length under the cursor"))
         self.measureButton.setText(self.lan.get("mapMeasure", "Measure"))
         self.measureButton.setToolTip(self.lan.get("mapMeasureTip",
                                                    "Click the map to measure a distance"))
@@ -606,6 +640,7 @@ class MapControlsPanel(QFrame):
         self.railOverlayButton.setIcon(icons.makeIcon("railway"))
         self.stationsButton.setIcon(icons.makeIcon("station"))
         self.fitTrackButton.setIcon(icons.makeIcon("resetView"))
+        self.detailsButton.setIcon(icons.makeIcon("details"))
         self.measureButton.setIcon(icons.makeIcon("measure"))
 
         background = "rgba(43, 43, 43, 235)" if isDark else "rgba(255, 255, 255, 235)"
@@ -725,6 +760,8 @@ class MapWidget(QWidget):
         self.measureDistanceMeters = 0.0
         # Armed state of the click to measure tool
         self.isMeasureMode = False
+        # Whether the hover inspector shows element stationing, radii and length
+        self.showElementDetails = True
         # Page globals of the layers folium emitted, so a toggle can address them from Qt
         self.layerRegistry = {"basemaps": {}, "railOverlay": None, "stations": None}
         # Live Leaflet camera, restored from a project file or reported back by the page
@@ -742,6 +779,7 @@ class MapWidget(QWidget):
         self.controlsPanel.fitTrackRequested.connect(self.fitToTrackExtent)
         self.controlsPanel.zoomRequested.connect(self.zoomBy)
         self.controlsPanel.measureModeChanged.connect(self.setMeasureMode)
+        self.controlsPanel.detailsToggled.connect(self.setElementDetailsVisible)
         self.controlsPanel.applyTheme(False)
 
         # The bridge lets the page report the chainage under the mouse back to Qt
@@ -760,8 +798,10 @@ class MapWidget(QWidget):
 
         # One handler serves every rendered page, so it is installed once per widget
         self.pageHandler = MapPageHandler(self)
-        QWebEngineProfile.defaultProfile().installUrlSchemeHandler(
-            MAP_PAGE_SCHEME, self.pageHandler)
+        mapProfile = QWebEngineProfile.defaultProfile()
+        mapProfile.installUrlSchemeHandler(MAP_PAGE_SCHEME, self.pageHandler)
+        # Naming the application is what keeps the railway tiles from answering 403
+        mapProfile.setHttpUserAgent(MAP_TILE_USER_AGENT)
 
         # Coalesces the bursts of refreshes a single user action can trigger
         self.redrawTimer = QTimer(self)
@@ -958,6 +998,14 @@ class MapWidget(QWidget):
     def zoomBy(self, delta):
         self.queueScript("zoom", f"if (window.coypuZoomBy) {{ window.coypuZoomBy({int(delta)}); }}")
 
+    # Show or hide the hover element inspector, no rebuild is needed for either
+    def setElementDetailsVisible(self, isVisible):
+        self.showElementDetails = bool(isVisible)
+        self.queueScript(
+            "details",
+            f"if (window.coypuSetElementDetails) {{ window.coypuSetElementDetails("
+            f"{json.dumps(self.showElementDetails)}); }}")
+
     # Arm or disarm the click to measure tool inside the page
     def setMeasureMode(self, isEnabled):
         self.isMeasureMode = bool(isEnabled)
@@ -1036,7 +1084,7 @@ class MapWidget(QWidget):
     def syncControlsPanel(self):
         self.controlsPanel.syncState(self.currentBaseMap, self.drawMode,
                                      self.railOverlayEnabled, self.railOverlayOpacity,
-                                     self.showStations)
+                                     self.showStations, self.showElementDetails)
 
     # Keep the floating controls pinned to the top left corner of the view
     def resizeEvent(self, event):
@@ -1363,6 +1411,7 @@ class MapWidget(QWidget):
             # Layer variables are emitted as bare identifiers, they are page globals and not strings
             layerRegistry=self.renderLayerRegistry(),
             activeBasemap=json.dumps(self.currentBaseMap),
+            detailsEnabled=json.dumps(self.showElementDetails),
             tooltipLabels=json.dumps({
                 "slew": self.lan.get("mapSlewTooltip", "Slew"),
                 "type": self.lan.get("mapTipType", "Element"),
